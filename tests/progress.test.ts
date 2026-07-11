@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   createDefaultProgress,
+  getRecommendedDrive,
   isFreeDriveUnlocked,
   isLessonUnlocked,
   loadProgress,
+  migrateProgress,
   saveProgress,
   updateLessonProgress,
 } from "../app/game/progress";
+import { LESSONS } from "../app/game/content";
+import type { LessonId, PlayerProgressV1 } from "../app/game/types";
 import type { ProgressStorage } from "../app/game/progress";
 
 function memoryStorage(initial?: string): ProgressStorage {
@@ -17,6 +21,15 @@ function memoryStorage(initial?: string): ProgressStorage {
     setItem: (key, value) => values.set(key, value),
     removeItem: (key) => values.delete(key),
   };
+}
+
+function withoutLauncherMetadata(
+  progress: PlayerProgressV1,
+): Record<string, unknown> {
+  const legacy: Record<string, unknown> = { ...progress };
+  delete legacy.familiarSideConfirmed;
+  delete legacy.lastCountryId;
+  return legacy;
 }
 
 describe("local progress", () => {
@@ -39,6 +52,53 @@ describe("local progress", () => {
     const progress = loadProgress(memoryStorage("{bad json"));
     expect(progress.version).toBe(1);
     expect(progress.completedLessonIds).toEqual([]);
+    expect(progress.familiarSideConfirmed).toBe(false);
+    expect(progress.lastCountryId).toBe("uk");
+  });
+
+  it("keeps fresh or unrecognized progress unconfirmed", () => {
+    expect(createDefaultProgress().familiarSideConfirmed).toBe(false);
+    expect(migrateProgress({ version: 1, unknown: true }).familiarSideConfirmed).toBe(
+      false,
+    );
+  });
+
+  it("confirms a valid legacy save and infers its most recently scored country", () => {
+    const current = createDefaultProgress("2026-07-10T12:00:00.000Z");
+    const legacy = withoutLauncherMetadata(current);
+    const restored = loadProgress(
+      memoryStorage(
+        JSON.stringify({
+          ...legacy,
+          completedLessonIds: ["us-one-way-grid", "jp-left-side-basics"],
+          lessonScores: {
+            "us-one-way-grid": {
+              ...scoreFor("us-one-way-grid"),
+              completedAt: "2026-07-10T12:05:00.000Z",
+            },
+            "jp-left-side-basics": {
+              ...scoreFor("jp-left-side-basics"),
+              completedAt: "2026-07-10T12:10:00.000Z",
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(restored.familiarSideConfirmed).toBe(true);
+    expect(restored.lastCountryId).toBe("jp");
+  });
+
+  it("uses the opposite-side starter when a legacy save has no country score", () => {
+    const current = createDefaultProgress("2026-07-10T12:00:00.000Z");
+    const legacy = withoutLauncherMetadata(current);
+    const restored = migrateProgress({
+      ...legacy,
+      familiarTrafficSide: "left",
+    });
+
+    expect(restored.familiarSideConfirmed).toBe(true);
+    expect(restored.lastCountryId).toBe("us");
   });
 
   it("unlocks the first country lesson after orientation", () => {
@@ -135,5 +195,86 @@ describe("local progress", () => {
     );
     const restored = loadProgress(storage);
     expect(restored.lessonScores["orientation-right"]?.mastered).toBe(false);
+  });
+
+  it("recommends orientation, the next lesson, then destination free drive", () => {
+    const withCompleted = (ids: readonly LessonId[]): PlayerProgressV1 => ({
+      ...createDefaultProgress(),
+      completedLessonIds: ids,
+    });
+
+    expect(getRecommendedDrive(withCompleted([]), "uk")).toMatchObject({
+      countryId: "uk",
+      scenarioId: "orientation-left",
+      kind: "orientation",
+    });
+    expect(
+      getRecommendedDrive(withCompleted(["orientation-right"]), "us"),
+    ).toMatchObject({
+      countryId: "us",
+      scenarioId: "us-one-way-grid",
+      kind: "lesson",
+    });
+    expect(
+      getRecommendedDrive(
+        withCompleted(["orientation-right", "us-one-way-grid"]),
+        "us",
+      ),
+    ).toMatchObject({
+      scenarioId: "us-signals-crosswalks",
+      kind: "lesson",
+    });
+    expect(
+      getRecommendedDrive(
+        withCompleted([
+          "orientation-right",
+          "us-one-way-grid",
+          "us-signals-crosswalks",
+          "us-lane-choice",
+        ]),
+        "us",
+      ),
+    ).toMatchObject({
+      countryId: "us",
+      scenarioId: "free-us",
+      kind: "free_drive",
+    });
+  });
+
+  it("recommends the UK-to-France capstone after every country path", () => {
+    const everyCountryLesson = LESSONS.filter((lesson) => lesson.countryId).map(
+      (lesson) => lesson.id,
+    );
+    const progress: PlayerProgressV1 = {
+      ...createDefaultProgress(),
+      completedLessonIds: [
+        "orientation-left",
+        "orientation-right",
+        ...everyCountryLesson,
+      ],
+    };
+
+    expect(getRecommendedDrive(progress, "jp")).toMatchObject({
+      countryId: "uk",
+      scenarioId: "uk-fr-side-swap",
+      kind: "capstone",
+    });
+
+    expect(
+      getRecommendedDrive(
+        {
+          ...progress,
+          completedLessonIds: [
+            ...progress.completedLessonIds,
+            "uk-fr-side-swap",
+          ],
+        },
+        "jp",
+      ),
+    ).toMatchObject({
+      countryId: "jp",
+      scenarioId: "free-jp",
+      kind: "free_drive",
+    });
   });
 });

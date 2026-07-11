@@ -1422,7 +1422,41 @@ export function getCountryIdForScenario(scenarioId: ScenarioId): CountryId {
   if (lesson.id === "orientation-left") {
     return "uk";
   }
+  if (lesson.profileTransitions?.length) {
+    return lesson.profileTransitions[0].fromCountryId;
+  }
   return "uk";
+}
+
+/**
+ * Keeps the launch destination authoritative. Shared orientation lessons may
+ * run in either country that follows the same traffic side, while the
+ * Folkestone-to-Coquelles capstone must begin with the UK profile.
+ */
+export function isScenarioCompatibleWithCountry(
+  scenarioId: ScenarioId,
+  countryId: CountryId,
+): boolean {
+  const profile = getCountryProfile(countryId);
+
+  if (freeDriveById.has(scenarioId as FreeDriveId)) {
+    return getFreeDrive(scenarioId as FreeDriveId).countryId === countryId;
+  }
+
+  const lesson = getLesson(scenarioId as LessonId);
+  if (lesson.countryId) {
+    return lesson.countryId === countryId && lesson.trafficSide === profile.trafficSide;
+  }
+  if (lesson.kind === "orientation") {
+    return lesson.trafficSide === profile.trafficSide;
+  }
+  if (lesson.kind === "transition") {
+    return (
+      lesson.profileTransitions?.[0]?.fromCountryId === countryId &&
+      lesson.trafficSide === profile.trafficSide
+    );
+  }
+  return false;
 }
 
 export function resolveSteeringSide(
@@ -1433,11 +1467,14 @@ export function resolveSteeringSide(
 }
 
 export function resolveSessionConfig(config: GameSessionConfig): ResolvedGameSessionConfig {
-  const countryId = getCountryIdForScenario(config.scenarioId);
-  const profile = getCountryProfile(countryId);
+  const profile = getCountryProfile(config.countryId);
+  if (!isScenarioCompatibleWithCountry(config.scenarioId, config.countryId)) {
+    throw new Error(
+      `SideSwap scenario ${config.scenarioId} is not compatible with country ${config.countryId}`,
+    );
+  }
   return {
     ...config,
-    countryId,
     trafficSide: profile.trafficSide,
     steeringSide: resolveSteeringSide(config.steeringPreference, profile),
     speedUnit: profile.speedUnit,

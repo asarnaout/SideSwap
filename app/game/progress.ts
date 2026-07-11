@@ -2,7 +2,11 @@ import {
   FREE_DRIVES,
   LESSONS,
   SCORING_CONFIG,
+  getCountryIdForScenario,
+  getCountryProfile,
+  getLessonsForCountry,
   getLesson,
+  getOrientationForTrafficSide,
   isLessonId,
 } from "./content";
 import type {
@@ -16,6 +20,7 @@ import type {
   LessonProgressUpdate,
   LessonScore,
   PlayerProgressV1,
+  RecommendedDrive,
   TrafficSide,
 } from "./types";
 
@@ -101,6 +106,11 @@ const readNestedRecord = (record: UnknownRecord, key: string): UnknownRecord =>
 
 const parseTrafficSide = (value: unknown): TrafficSide =>
   value === "left" ? "left" : "right";
+
+const parseCountryId = (value: unknown): CountryId | undefined =>
+  typeof value === "string" && COUNTRY_IDS.has(value as CountryId)
+    ? (value as CountryId)
+    : undefined;
 
 const parseCamera = (value: unknown): CameraMode => {
   if (value === "first_person" || value === "first" || value === "cockpit") {
@@ -245,6 +255,78 @@ const parseLessonScores = (
   return scores;
 };
 
+const oppositeSideStarterCountry = (familiarTrafficSide: TrafficSide): CountryId =>
+  familiarTrafficSide === "right" ? "uk" : "us";
+
+const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
+  if (value.version === 1) {
+    return (
+      Array.isArray(value.completedLessonIds) &&
+      isRecord(value.lessonScores) &&
+      Array.isArray(value.badges) &&
+      Array.isArray(value.passportStamps) &&
+      (value.familiarTrafficSide === "left" || value.familiarTrafficSide === "right") &&
+      (value.preferredCamera === "first_person" ||
+        value.preferredCamera === "third_person") &&
+      (value.preferredInput === "keyboard" ||
+        value.preferredInput === "gamepad" ||
+        value.preferredInput === "touch") &&
+      isRecord(value.accessibility) &&
+      typeof value.updatedAt === "string"
+    );
+  }
+
+  if (value.version !== undefined && value.version !== 0) {
+    return false;
+  }
+
+  const settings = readNestedRecord(value, "settings");
+  const preferences = readNestedRecord(value, "preferences");
+  const familiarSide =
+    value.familiarTrafficSide ?? settings.familiarTrafficSide ?? preferences.familiarTrafficSide;
+  const camera =
+    value.preferredCamera ?? settings.camera ?? preferences.camera ?? preferences.preferredCamera;
+  const input =
+    value.preferredInput ?? settings.input ?? preferences.input ?? preferences.preferredInput;
+
+  return (
+    Array.isArray(value.completedLessonIds) ||
+    Array.isArray(value.completedLessons) ||
+    isRecord(value.lessonScores) ||
+    isRecord(value.scores) ||
+    familiarSide === "left" ||
+    familiarSide === "right" ||
+    camera === "first_person" ||
+    camera === "third_person" ||
+    camera === "first" ||
+    camera === "third" ||
+    input === "keyboard" ||
+    input === "gamepad" ||
+    input === "touch"
+  );
+};
+
+const inferLastCountryId = (
+  scores: Readonly<Partial<Record<LessonId, LessonScore>>>,
+  familiarTrafficSide: TrafficSide,
+): CountryId => {
+  let latestCountry: CountryId | undefined;
+  let latestCompletedAt = Number.NEGATIVE_INFINITY;
+
+  for (const score of Object.values(scores)) {
+    if (!score) continue;
+    const countryId = getLesson(score.lessonId).countryId;
+    if (!countryId) continue;
+    const completedAt = Date.parse(score.completedAt);
+    if (Number.isFinite(completedAt) && completedAt >= latestCompletedAt) {
+      latestCountry = countryId;
+      latestCompletedAt = completedAt;
+    }
+  }
+
+  return latestCountry ?? oppositeSideStarterCountry(familiarTrafficSide);
+};
+
 export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 {
   const updatedAt = asIsoDate(now, nowIso());
   return {
@@ -254,6 +336,8 @@ export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 
     badges: [],
     passportStamps: [],
     familiarTrafficSide: "right",
+    familiarSideConfirmed: false,
+    lastCountryId: "uk",
     preferredCamera: "third_person",
     preferredInput: "keyboard",
     accessibility: { ...DEFAULT_ACCESSIBILITY },
@@ -290,6 +374,14 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
 
   const scores = parseLessonScores(scoresCandidate, updatedAt);
   const completedFromScores = Object.keys(scores).filter(isLessonId);
+  const familiarTrafficSide = parseTrafficSide(familiarCandidate);
+  const recognizedProgress = hasLegacyProgressShape(value);
+  const familiarSideConfirmed = recognizedProgress
+    ? asBoolean(value.familiarSideConfirmed, true)
+    : false;
+  const lastCountryId =
+    (recognizedProgress ? parseCountryId(value.lastCountryId) : undefined) ??
+    inferLastCountryId(scores, familiarTrafficSide);
 
   return {
     version: 1,
@@ -300,7 +392,9 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
     lessonScores: scores,
     badges: parseBadges(value.badges),
     passportStamps: parseStamps(value.passportStamps ?? value.stamps),
-    familiarTrafficSide: parseTrafficSide(familiarCandidate),
+    familiarTrafficSide,
+    familiarSideConfirmed,
+    lastCountryId,
     preferredCamera: parseCamera(cameraCandidate),
     preferredInput: parseInput(inputCandidate),
     accessibility: parseAccessibility(accessibilityCandidate),
@@ -319,6 +413,12 @@ export function isPlayerProgressV1(value: unknown): value is PlayerProgressV1 {
     return false;
   }
   if (value.familiarTrafficSide !== "left" && value.familiarTrafficSide !== "right") {
+    return false;
+  }
+  if (typeof value.familiarSideConfirmed !== "boolean") {
+    return false;
+  }
+  if (typeof value.lastCountryId !== "string" || !COUNTRY_IDS.has(value.lastCountryId as CountryId)) {
     return false;
   }
   if (value.preferredCamera !== "first_person" && value.preferredCamera !== "third_person") {
@@ -504,6 +604,64 @@ export function getUnlockedFreeDriveIds(
   return FREE_DRIVES.filter((freeDrive) =>
     progress.completedLessonIds.includes(freeDrive.unlockAfter),
   ).map((freeDrive) => freeDrive.id);
+}
+
+export function getRecommendedDrive(
+  progress: PlayerProgressV1,
+  countryId: CountryId,
+): RecommendedDrive {
+  const profile = getCountryProfile(countryId);
+  const orientation = getOrientationForTrafficSide(profile.trafficSide);
+
+  if (!progress.completedLessonIds.includes(orientation.id)) {
+    return {
+      countryId,
+      scenarioId: orientation.id,
+      kind: "orientation",
+      ctaLabel: `Start ${profile.destinationName} orientation`,
+    };
+  }
+
+  const nextLesson = getLessonsForCountry(countryId).find(
+    (lesson) =>
+      !progress.completedLessonIds.includes(lesson.id) &&
+      isLessonUnlocked(progress, lesson.id),
+  );
+  if (nextLesson) {
+    return {
+      countryId,
+      scenarioId: nextLesson.id,
+      kind: "lesson",
+      ctaLabel: `Continue — ${nextLesson.title}`,
+    };
+  }
+
+  const allCountryPathsComplete = LESSONS.filter((lesson) => lesson.countryId).every(
+    (lesson) => progress.completedLessonIds.includes(lesson.id),
+  );
+  const capstone = getLesson("uk-fr-side-swap");
+  if (
+    allCountryPathsComplete &&
+    !progress.completedLessonIds.includes(capstone.id)
+  ) {
+    return {
+      countryId: getCountryIdForScenario(capstone.id),
+      scenarioId: capstone.id,
+      kind: "capstone",
+      ctaLabel: `Continue — ${capstone.title}`,
+    };
+  }
+
+  const freeDrive = FREE_DRIVES.find((scenario) => scenario.countryId === countryId);
+  if (!freeDrive) {
+    throw new Error(`Missing SideSwap free-drive scenario for country ${countryId}`);
+  }
+  return {
+    countryId,
+    scenarioId: freeDrive.id,
+    kind: "free_drive",
+    ctaLabel: `Continue — ${freeDrive.title}`,
+  };
 }
 
 export function resetProgress(

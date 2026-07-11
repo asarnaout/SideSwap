@@ -1,14 +1,43 @@
 import { describe, expect, it } from "vitest";
 import {
   COUNTRY_PROFILES,
+  FREE_DRIVES,
   LESSONS,
   MAP_PACKS,
   getCountryProfile,
   getLesson,
   getMapPack,
   getOrientationForTrafficSide,
+  isScenarioCompatibleWithCountry,
+  resolveSessionConfig,
   resolveSteeringSide,
 } from "../app/game/content";
+import type {
+  CountryId,
+  GameSessionConfig,
+  ScenarioId,
+  SteeringPreference,
+} from "../app/game/types";
+
+const sessionConfig = (
+  countryId: CountryId,
+  scenarioId: ScenarioId,
+  steeringPreference: SteeringPreference = "auto",
+): GameSessionConfig => ({
+  countryId,
+  scenarioId,
+  familiarTrafficSide: "right",
+  steeringPreference,
+  camera: "third_person",
+  inputFamily: "keyboard",
+  assistance: {
+    coachPrompts: true,
+    subtitles: true,
+    wrongSideWarnings: true,
+    autoResetAfterCriticalError: true,
+    reducedMotion: false,
+  },
+});
 
 describe("SideSwap content", () => {
   it("ships the four destinations and complete 15-lesson curriculum", () => {
@@ -50,6 +79,91 @@ describe("SideSwap content", () => {
   it("maps each traffic side to its mirrored orientation", () => {
     expect(getOrientationForTrafficSide("right").id).toBe("orientation-right");
     expect(getOrientationForTrafficSide("left").id).toBe("orientation-left");
+  });
+
+  it("resolves shared orientations against the selected destination", () => {
+    for (const country of COUNTRY_PROFILES) {
+      for (const orientationId of [
+        "orientation-right",
+        "orientation-left",
+      ] as const) {
+        const expected = orientationId.endsWith(country.trafficSide);
+        expect(
+          isScenarioCompatibleWithCountry(orientationId, country.id),
+        ).toBe(expected);
+
+        if (expected) {
+          const resolved = resolveSessionConfig(
+            sessionConfig(country.id, orientationId),
+          );
+          expect(resolved.countryId).toBe(country.id);
+          expect(resolved.trafficSide).toBe(country.trafficSide);
+          expect(resolved.steeringSide).toBe(country.defaultSteeringSide);
+          expect(resolved.speedUnit).toBe(country.speedUnit);
+        } else {
+          expect(() =>
+            resolveSessionConfig(sessionConfig(country.id, orientationId)),
+          ).toThrow(/not compatible/);
+        }
+      }
+    }
+  });
+
+  it("accepts every jurisdiction scenario only for its own destination", () => {
+    const countryScenarios = [
+      ...LESSONS.filter((lesson) => lesson.countryId),
+      ...FREE_DRIVES,
+    ];
+
+    for (const scenario of countryScenarios) {
+      for (const country of COUNTRY_PROFILES) {
+        expect(
+          isScenarioCompatibleWithCountry(scenario.id, country.id),
+          `${scenario.id} with ${country.id}`,
+        ).toBe(scenario.countryId === country.id);
+      }
+    }
+  });
+
+  it("rejects traffic-side and destination mismatches", () => {
+    expect(() =>
+      resolveSessionConfig(sessionConfig("us", "orientation-left")),
+    ).toThrow(/not compatible/);
+    expect(() =>
+      resolveSessionConfig(sessionConfig("uk", "us-one-way-grid")),
+    ).toThrow(/not compatible/);
+    expect(() => resolveSessionConfig(sessionConfig("fr", "free-jp"))).toThrow(
+      /not compatible/,
+    );
+  });
+
+  it("keeps wheel overrides independent in every valid country session", () => {
+    for (const country of COUNTRY_PROFILES) {
+      const orientationId =
+        country.trafficSide === "right" ? "orientation-right" : "orientation-left";
+      for (const steeringPreference of ["left", "right"] as const) {
+        const resolved = resolveSessionConfig(
+          sessionConfig(country.id, orientationId, steeringPreference),
+        );
+        expect(resolved.steeringSide).toBe(steeringPreference);
+        expect(resolved.trafficSide).toBe(country.trafficSide);
+      }
+    }
+  });
+
+  it("starts the travel-transition capstone with the UK profile only", () => {
+    expect(isScenarioCompatibleWithCountry("uk-fr-side-swap", "uk")).toBe(true);
+    for (const countryId of ["us", "fr", "jp"] as const) {
+      expect(isScenarioCompatibleWithCountry("uk-fr-side-swap", countryId)).toBe(
+        false,
+      );
+    }
+
+    const resolved = resolveSessionConfig(
+      sessionConfig("uk", "uk-fr-side-swap"),
+    );
+    expect(resolved.trafficSide).toBe("left");
+    expect(resolved.speedUnit).toBe("mph");
   });
 
   it("links every assessed lesson to reviewed official sources", () => {

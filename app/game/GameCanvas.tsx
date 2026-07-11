@@ -203,6 +203,7 @@ export interface GameCanvasProps {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
+  onInputFamilyChange?: (family: InputFamily) => void;
   onComplete?: (score: number) => void;
 }
 
@@ -221,6 +222,7 @@ interface SessionCallbacks {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
+  onInputFamilyChange?: (family: InputFamily) => void;
   onComplete?: (score: number) => void;
   onReady?: () => void;
   onContextLost?: () => void;
@@ -231,6 +233,7 @@ interface SessionOptions {
   trafficSide: TrafficSide;
   steeringSide: SteeringSide;
   cameraMode: CameraMode;
+  inputFamily: InputFamily;
   speedUnit: SpeedUnit;
   paused: boolean;
   reducedMotion: boolean;
@@ -522,6 +525,7 @@ class BabylonGameSession {
   private touch: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private gamepad: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private gamepadButtons: boolean[] = [];
+  private lastInputFamily: InputFamily;
   private indicatorBlinkSeconds = 0;
   private trafficLightSeconds = 0;
   private trafficLightIsRed = false;
@@ -542,6 +546,7 @@ class BabylonGameSession {
     this.options = options;
     this.callbacks = callbacks;
     this.cameraMode = options.cameraMode;
+    this.lastInputFamily = options.inputFamily;
     this.paused = options.paused;
     this.activeTrafficSide = options.lesson?.trafficSide ?? options.trafficSide;
     this.routePoints = scenarioRoutePoints(options.lesson, options.mapPack);
@@ -668,6 +673,7 @@ class BabylonGameSession {
 
   updateOptions(options: Partial<SessionOptions>) {
     this.options = { ...this.options, ...options };
+    if (options.inputFamily) this.lastInputFamily = options.inputFamily;
     this.thirdCamera.fov = this.options.fieldOfView;
     this.firstCamera.fov = this.options.fieldOfView;
     if (options.cameraMode) this.setCameraMode(options.cameraMode, false);
@@ -680,6 +686,12 @@ class BabylonGameSession {
 
   clearTouch() {
     this.touch = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+  }
+
+  registerInputFamily(family: InputFamily) {
+    if (this.lastInputFamily === family) return;
+    this.lastInputFamily = family;
+    this.callbacks.onInputFamilyChange?.(family);
   }
 
   setPaused(paused: boolean, notify = true) {
@@ -2012,6 +2024,7 @@ class BabylonGameSession {
         "KeyH", "KeyP", "KeyR", "KeyG", "KeyZ", "KeyX", "KeyV", "Escape",
       ].includes(event.code);
       if (drivingKey) event.preventDefault();
+      if (drivingKey) this.registerInputFamily("keyboard");
       switch (event.code) {
         case "ArrowUp":
         case "KeyW":
@@ -2097,7 +2110,10 @@ class BabylonGameSession {
     const onResize = () => this.engine.resize();
     const onOrientationChange = () => {
       this.engine.resize();
-      this.setPaused(true);
+      const portraitGateManagedByReact =
+        this.options.inputFamily === "touch" ||
+        window.matchMedia("(pointer: coarse)").matches;
+      if (!portraitGateManagedByReact) this.setPaused(true);
       this.clearHeldInputs();
     };
     const onContextLost = (event: Event) => {
@@ -2115,6 +2131,7 @@ class BabylonGameSession {
     };
     const onPointerDown = (event: PointerEvent) => {
       if (event.pointerType !== "touch" || this.swipePointer !== null) return;
+      this.registerInputFamily("touch");
       this.swipePointer = event.pointerId;
       this.swipeStartX = event.clientX;
     };
@@ -2171,17 +2188,30 @@ class BabylonGameSession {
     const pad = Array.from(navigator.getGamepads()).find(Boolean);
     if (!pad) {
       this.gamepad = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+      this.gamepadButtons = [];
       return;
     }
     const deadzone = (value: number) =>
       Math.abs(value) < 0.14 ? 0 : Math.sign(value) * ((Math.abs(value) - 0.14) / 0.86);
-    this.gamepad.steer = clamp(deadzone(pad.axes[0] ?? 0), -1, 1);
-    this.gamepad.quickLook = clamp(deadzone(pad.axes[2] ?? 0), -1, 1);
-    this.gamepad.throttle = pad.buttons[7]?.value ?? 0;
-    this.gamepad.brake = pad.buttons[6]?.value ?? 0;
+    const nextGamepad: AnalogInput = {
+      steer: clamp(deadzone(pad.axes[0] ?? 0), -1, 1),
+      quickLook: clamp(deadzone(pad.axes[2] ?? 0), -1, 1),
+      throttle: pad.buttons[7]?.value ?? 0,
+      brake: pad.buttons[6]?.value ?? 0,
+    };
 
     const pressed = pad.buttons.map((button) => button.pressed);
     const edge = (index: number) => pressed[index] && !this.gamepadButtons[index];
+    const buttonUsed = pressed.some(
+      (isPressed, index) => isPressed && !this.gamepadButtons[index],
+    );
+    const analogUsed = (Object.keys(nextGamepad) as Array<keyof AnalogInput>).some(
+      (control) =>
+        Math.abs(nextGamepad[control]) >= 0.08 &&
+        Math.abs(nextGamepad[control] - this.gamepad[control]) >= 0.04,
+    );
+    this.gamepad = nextGamepad;
+    if (buttonUsed || analogUsed) this.registerInputFamily("gamepad");
     if (edge(0)) this.horn();
     if (edge(1)) this.toggleCamera();
     if (edge(2)) this.setIndicator("left");
@@ -2394,6 +2424,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       onEvent,
       onPauseChange,
       onCameraChange,
+      onInputFamilyChange,
       onComplete,
     },
     ref,
@@ -2401,11 +2432,15 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const sessionRef = useRef<BabylonGameSession | null>(null);
     const callbackRef = useRef<SessionCallbacks>({});
+    const viewportReadyRef = useRef(false);
+    const touchPortraitGateRef = useRef(false);
+    const activeInputFamilyRef = useRef<InputFamily>(inputFamily);
     const [runtimeState, setRuntimeState] = useState<
       "loading" | "ready" | "unsupported" | "context-lost" | "error"
     >("loading");
     const [isCoarsePointer, setIsCoarsePointer] = useState(false);
     const [isPortrait, setIsPortrait] = useState(false);
+    const [sessionActivation, setSessionActivation] = useState(0);
     const [hud, setHud] = useState<GameHudSnapshot>({
       speed: 0,
       speedUnit,
@@ -2427,6 +2462,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       trafficSide: lesson?.trafficSide ?? trafficSide,
     });
 
+    activeInputFamilyRef.current = inputFamily;
     callbackRef.current = {
       onHudUpdate: (snapshot) => {
         setHud(snapshot);
@@ -2435,6 +2471,11 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       onEvent,
       onPauseChange,
       onCameraChange,
+      onInputFamilyChange: (family) => {
+        if (activeInputFamilyRef.current === family) return;
+        activeInputFamilyRef.current = family;
+        onInputFamilyChange?.(family);
+      },
       onComplete,
       onReady: () => setRuntimeState("ready"),
       onContextLost: () => setRuntimeState("context-lost"),
@@ -2443,8 +2484,26 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
 
     useEffect(() => {
       const updateViewportFlags = () => {
-        setIsCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
-        setIsPortrait(window.innerHeight > window.innerWidth);
+        const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+        const portrait = window.matchMedia("(orientation: portrait)").matches;
+        const portraitGate = portrait && (inputFamily === "touch" || coarsePointer);
+        const wasReady = viewportReadyRef.current;
+        const wasPortraitGate = touchPortraitGateRef.current;
+        viewportReadyRef.current = true;
+        touchPortraitGateRef.current = portraitGate;
+        setIsCoarsePointer(coarsePointer);
+        setIsPortrait(portrait);
+
+        if (portraitGate) {
+          sessionRef.current?.clearTouch();
+          sessionRef.current?.setPaused(true);
+        } else if (wasReady && wasPortraitGate) {
+          if (sessionRef.current) {
+            sessionRef.current.setPaused(paused, false);
+          } else {
+            setSessionActivation((activation) => activation + 1);
+          }
+        }
       };
       updateViewportFlags();
       window.addEventListener("resize", updateViewportFlags);
@@ -2453,11 +2512,15 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         window.removeEventListener("resize", updateViewportFlags);
         window.removeEventListener("orientationchange", updateViewportFlags);
       };
-    }, []);
+    }, [inputFamily, paused]);
 
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
+      if (!viewportReadyRef.current || touchPortraitGateRef.current) {
+        setRuntimeState("loading");
+        return;
+      }
       const testCanvas = document.createElement("canvas");
       if (!testCanvas.getContext("webgl2")) {
         setRuntimeState("unsupported");
@@ -2465,6 +2528,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       }
 
       let alive = true;
+      let ownedSession: BabylonGameSession | null = null;
       setRuntimeState("loading");
       try {
         const session = new BabylonGameSession(
@@ -2475,8 +2539,9 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             lesson,
             mapPack,
             cameraMode,
+            inputFamily,
             speedUnit,
-            paused,
+            paused: paused || touchPortraitGateRef.current,
             reducedMotion,
             steeringSensitivity: clamp(steeringSensitivity, 0.45, 1.8),
             fieldOfView: clamp(fieldOfView, 0.65, 1.2),
@@ -2491,12 +2556,15 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             onEvent: (event) => callbackRef.current.onEvent?.(event),
             onPauseChange: (value) => callbackRef.current.onPauseChange?.(value),
             onCameraChange: (value) => callbackRef.current.onCameraChange?.(value),
+            onInputFamilyChange: (value) =>
+              callbackRef.current.onInputFamilyChange?.(value),
             onComplete: (score) => callbackRef.current.onComplete?.(score),
             onReady: () => callbackRef.current.onReady?.(),
             onContextLost: () => callbackRef.current.onContextLost?.(),
             onContextRestored: () => callbackRef.current.onContextRestored?.(),
           },
         );
+        ownedSession = session;
         if (!alive) {
           session.dispose();
           return;
@@ -2508,19 +2576,19 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       }
       return () => {
         alive = false;
-        const session = sessionRef.current;
-        sessionRef.current = null;
-        session?.dispose();
+        if (sessionRef.current === ownedSession) sessionRef.current = null;
+        ownedSession?.dispose();
       };
       // Rebuild only when scene-defining jurisdiction/cockpit choices change.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [trafficSide, steeringSide, lesson?.id, mapPack?.id]);
+    }, [trafficSide, steeringSide, lesson?.id, mapPack?.id, sessionActivation]);
 
     useEffect(() => {
       sessionRef.current?.updateOptions({
         cameraMode,
+        inputFamily,
         speedUnit,
-        paused,
+        paused: paused || touchPortraitGateRef.current,
         reducedMotion,
         steeringSensitivity: clamp(steeringSensitivity, 0.45, 1.8),
         fieldOfView: clamp(fieldOfView, 0.65, 1.2),
@@ -2530,7 +2598,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         cameraShake,
         headBob,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob]);
+    }, [cameraMode, inputFamily, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob]);
 
     useImperativeHandle(
       ref,
@@ -2545,6 +2613,12 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       }),
       [],
     );
+
+    const registerTouchPointer = useCallback((pointerType: string) => {
+      if (pointerType === "touch" || pointerType === "pen") {
+        sessionRef.current?.registerInputFamily("touch");
+      }
+    }, []);
 
     const updateSteeringPad = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
       const bounds = event.currentTarget.getBoundingClientRect();
@@ -2563,6 +2637,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
     }, []);
 
     const touchVisible = inputFamily === "touch" || isCoarsePointer;
+    const touchPortraitGate = touchVisible && isPortrait;
     const criticalOverlay = runtimeState !== "ready";
 
     return (
@@ -2675,7 +2750,10 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         )}
 
         {touchVisible && runtimeState === "ready" && !isPortrait && (
-          <div aria-label="Touch driving controls">
+          <div
+            aria-label="Touch driving controls"
+            onPointerDownCapture={(event) => registerTouchPointer(event.pointerType)}
+          >
             <div
               role="slider"
               aria-label="Steering"
@@ -2836,7 +2914,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
           </div>
         )}
 
-        {touchVisible && isPortrait && (
+        {touchPortraitGate && (
           <div
             role="dialog"
             aria-label="Rotate device"

@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import dynamic from "next/dynamic";
 import type {
   GameCanvasLesson,
@@ -16,10 +23,12 @@ import {
   getLessonsForCountry,
   getMapPack,
   getOrientationForTrafficSide,
+  resolveSessionConfig,
   resolveSteeringSide,
 } from "./game/content";
 import {
   createDefaultProgress,
+  getRecommendedDrive,
   isFreeDriveUnlocked,
   isLessonUnlocked,
   loadProgress,
@@ -30,16 +39,26 @@ import {
 import type {
   CameraMode,
   CountryId,
+  FreeDriveId,
+  GameSessionConfig,
   InputFamily,
   LessonDefinition,
   LessonId,
   LessonScore,
   PlayerProgressV1,
+  ScenarioId,
   SteeringPreference,
   TrafficSide,
 } from "./game/types";
 
-type View = "setup" | "driving" | "results" | "passport" | "settings" | "credits";
+type View =
+  | "launcher"
+  | "training"
+  | "driving"
+  | "results"
+  | "passport"
+  | "settings"
+  | "credits";
 
 const GameCanvas = dynamic(() => import("./game/GameCanvas"), {
   ssr: false,
@@ -96,34 +115,62 @@ function initialSelectedCountry(side: TrafficSide): CountryId {
   return side === "right" ? "uk" : "us";
 }
 
+const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
+  scenarioId.startsWith("free-");
+
+const scenarioTitle = (scenarioId: ScenarioId) =>
+  isFreeDriveScenario(scenarioId)
+    ? getFreeDrive(scenarioId).title
+    : getLesson(scenarioId).title;
+
+const assistanceFromProgress = (
+  progress: PlayerProgressV1,
+): GameSessionConfig["assistance"] => ({
+  coachPrompts: true,
+  subtitles: progress.accessibility.subtitles,
+  wrongSideWarnings: true,
+  autoResetAfterCriticalError: true,
+  reducedMotion: progress.accessibility.reducedMotion,
+});
+
 export default function SideSwapApp() {
   const [progress, setProgress] = useState<PlayerProgressV1>(() =>
     createDefaultProgress(),
   );
   const [hydrated, setHydrated] = useState(false);
-  const [view, setView] = useState<View>("setup");
-  const [familiarSide, setFamiliarSide] = useState<TrafficSide>("right");
+  const [view, setView] = useState<View>("launcher");
+  const [familiarSide, setFamiliarSide] = useState<TrafficSide | null>(null);
   const [countryId, setCountryId] = useState<CountryId>("uk");
+  const [countryChosenManually, setCountryChosenManually] = useState(false);
   const [wheelPreference, setWheelPreference] =
     useState<SteeringPreference>("auto");
   const [camera, setCamera] = useState<CameraMode>("third_person");
   const [input, setInput] = useState<InputFamily>("keyboard");
-  const [selectedLessonId, setSelectedLessonId] =
-    useState<LessonId>("orientation-left");
-  const [practiceMode, setPracticeMode] = useState(false);
+  const [activeSession, setActiveSession] = useState<GameSessionConfig | null>(
+    null,
+  );
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const customizeTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeCustomize = useCallback(() => setCustomizeOpen(false), []);
   const [paused, setPaused] = useState(false);
   const [hud, setHud] = useState<GameHudSnapshot | null>(null);
   const [events, setEvents] = useState<GameRuntimeEvent[]>([]);
   const [lastScore, setLastScore] = useState<LessonScore | null>(null);
   const [startedAt, setStartedAt] = useState(0);
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const loaded = loadProgress();
+      const firstVisit = !loaded.familiarSideConfirmed;
+      const defaultInput = window.matchMedia("(pointer: coarse)").matches
+        ? "touch"
+        : "keyboard";
       setProgress(loaded);
-      setFamiliarSide(loaded.familiarTrafficSide);
-      setCountryId(initialSelectedCountry(loaded.familiarTrafficSide));
+      setFamiliarSide(firstVisit ? null : loaded.familiarTrafficSide);
+      setCountryId(loaded.lastCountryId);
       setCamera(loaded.preferredCamera);
-      setInput(loaded.preferredInput);
+      setInput(firstVisit ? defaultInput : loaded.preferredInput);
       setHydrated(true);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -133,85 +180,112 @@ export default function SideSwapApp() {
   const countryLessons = getLessonsForCountry(countryId);
   const orientation = getOrientationForTrafficSide(country.trafficSide);
   const trainingPath = [orientation, ...countryLessons];
-  const selectedLesson = getLesson(selectedLessonId);
-  const activeLesson = isLessonUnlocked(progress, selectedLesson.id)
-    ? selectedLesson
-    : orientation;
   const steeringSide = resolveSteeringSide(wheelPreference, country);
   const completedCount = progress.completedLessonIds.length;
   const masteryCount = Object.values(progress.lessonScores).filter(
     (score) => score?.mastered,
   ).length;
-  const freeDriveUnlocked = isFreeDriveUnlocked(
-    progress,
-    `free-${countryId}`,
+  const recommendation = useMemo(
+    () => getRecommendedDrive(progress, countryId),
+    [countryId, progress],
   );
-  const runtimeMap = getMapPack(activeLesson.mapId);
-  const runtimeLesson: GameCanvasLesson = practiceMode
-    ? (() => {
-        const freeDrive = getFreeDrive(`free-${countryId}`);
-        const routeTemplate = countryLessons[0] ?? orientation;
-        return {
-          id: freeDrive.id,
-          title: freeDrive.title,
-          kind: "free_drive",
-          trafficSide: country.trafficSide,
-          route: routeTemplate.route,
-          objectives: [
-            {
-              id: `${freeDrive.id}-explore`,
-              label: "Explore safely with no fixed finish",
-            },
-          ],
-          trafficSeed: freeDrive.trafficSeed,
-          trafficDensity: "moderate",
-          vulnerableRoadUsers: routeTemplate.vulnerableRoadUsers,
-          checkpoints: runtimeMap.laneGraph.checkpoints.map(
-            (checkpoint) => checkpoint.id,
-          ),
-          coachPrompts: [
-            {
-              id: `${freeDrive.id}-start`,
-              trigger: { type: "start" },
-              message:
-                "Free drive has no finish line. Explore the map and practise the local road habits at your own pace.",
-            },
-          ],
-        };
-      })()
+  const driveCountry = getCountryProfile(activeSession?.countryId ?? countryId);
+  const activeSteeringSide = resolveSteeringSide(
+    activeSession?.steeringPreference ?? wheelPreference,
+    driveCountry,
+  );
+  const activeScenarioId = activeSession?.scenarioId ?? orientation.id;
+  const activeIsFreeDrive = isFreeDriveScenario(activeScenarioId);
+  const activeFreeDrive = activeIsFreeDrive
+    ? getFreeDrive(activeScenarioId)
+    : null;
+  const activeLesson = activeIsFreeDrive
+    ? getLessonsForCountry(driveCountry.id)[0] ??
+      getOrientationForTrafficSide(driveCountry.trafficSide)
+    : getLesson(activeScenarioId as LessonId);
+  const runtimeMap = getMapPack(activeFreeDrive?.mapId ?? activeLesson.mapId);
+  const runtimeLesson: GameCanvasLesson = activeFreeDrive
+    ? {
+        id: activeFreeDrive.id,
+        title: activeFreeDrive.title,
+        kind: "free_drive",
+        trafficSide: driveCountry.trafficSide,
+        route: activeLesson.route,
+        objectives: [
+          {
+            id: `${activeFreeDrive.id}-explore`,
+            label: "Explore safely with no fixed finish",
+          },
+        ],
+        trafficSeed: activeFreeDrive.trafficSeed,
+        trafficDensity: "moderate",
+        vulnerableRoadUsers: activeLesson.vulnerableRoadUsers,
+        checkpoints: runtimeMap.laneGraph.checkpoints.map(
+          (checkpoint) => checkpoint.id,
+        ),
+        coachPrompts: [
+          {
+            id: `${activeFreeDrive.id}-start`,
+            trigger: { type: "start" },
+            message:
+              "Free drive has no finish line. Explore the map and practise the local road habits at your own pace.",
+          },
+        ],
+      }
     : activeLesson;
 
+  const themeCountry =
+    view === "driving" || view === "results" ? driveCountry : country;
   const themeStyle = {
-    "--destination-accent": country.visualTheme.accent,
-    "--destination-sky": country.visualTheme.sky,
-    "--destination-ground": country.visualTheme.ground,
+    "--destination-accent": themeCountry.visualTheme.accent,
+    "--destination-sky": themeCountry.visualTheme.sky,
+    "--destination-ground": themeCountry.visualTheme.ground,
   } as CSSProperties;
 
   const chooseFamiliarSide = (side: TrafficSide) => {
     setFamiliarSide(side);
-    setCountryId(initialSelectedCountry(side));
-    setWheelPreference("auto");
-    const nextCountry = getCountryProfile(initialSelectedCountry(side));
-    setSelectedLessonId(getOrientationForTrafficSide(nextCountry.trafficSide).id);
+    if (!countryChosenManually) {
+      setCountryId(initialSelectedCountry(side));
+      setWheelPreference("auto");
+    }
   };
 
   const chooseCountry = (id: CountryId) => {
-    const next = getCountryProfile(id);
     setCountryId(id);
+    setCountryChosenManually(true);
     setWheelPreference("auto");
-    const firstCountryLesson = getLessonsForCountry(id)[0];
-    setSelectedLessonId(
-      firstCountryLesson && isLessonUnlocked(progress, firstCountryLesson.id)
-        ? firstCountryLesson.id
-        : getOrientationForTrafficSide(next.trafficSide).id,
-    );
-    setPracticeMode(false);
   };
 
-  const beginDrive = (practice = false) => {
-    const lesson = practice ? countryLessons[0] ?? orientation : activeLesson;
-    setSelectedLessonId(lesson.id);
-    setPracticeMode(practice);
+  const beginDrive = (scenarioId: ScenarioId, nextCountryId = countryId) => {
+    if (!familiarSide) return;
+    const nextWheelPreference =
+      nextCountryId === countryId ? wheelPreference : "auto";
+    const session: GameSessionConfig = {
+      countryId: nextCountryId,
+      scenarioId,
+      familiarTrafficSide: familiarSide,
+      steeringPreference: nextWheelPreference,
+      camera,
+      inputFamily: input,
+      assistance: assistanceFromProgress(progress),
+    };
+    // Fail fast if a UI regression ever pairs a jurisdiction-specific
+    // scenario with the wrong destination profile.
+    resolveSessionConfig(session);
+    const committedProgress: PlayerProgressV1 = {
+      ...progress,
+      familiarSideConfirmed: true,
+      familiarTrafficSide: familiarSide,
+      lastCountryId: nextCountryId,
+      preferredCamera: camera,
+      preferredInput: input,
+      updatedAt: new Date().toISOString(),
+    };
+    setProgress(committedProgress);
+    saveProgress(committedProgress);
+    setCountryId(nextCountryId);
+    if (nextCountryId !== countryId) setWheelPreference("auto");
+    setActiveSession(session);
     setEvents([]);
     setHud(null);
     setPaused(false);
@@ -252,14 +326,16 @@ export default function SideSwapApp() {
       durationMs: Math.max(0, completedAt.getTime() - startedAt),
     };
     setLastScore(score);
-    if (!practiceMode) {
+    if (!activeIsFreeDrive && activeSession) {
       const updated = updateLessonProgress(progress, {
         score,
         cameraUsed: camera,
       });
       const withPreferences: PlayerProgressV1 = {
         ...updated,
-        familiarTrafficSide: familiarSide,
+        familiarSideConfirmed: true,
+        familiarTrafficSide: activeSession.familiarTrafficSide,
+        lastCountryId: activeSession.countryId,
         preferredCamera: camera,
         preferredInput: input,
       };
@@ -277,6 +353,11 @@ export default function SideSwapApp() {
   const saveSettings = (next: PlayerProgressV1) => {
     setProgress(next);
     setFamiliarSide(next.familiarTrafficSide);
+    setCountryId(
+      !next.familiarSideConfirmed && !countryChosenManually
+        ? initialSelectedCountry(next.familiarTrafficSide)
+        : next.lastCountryId,
+    );
     setCamera(next.preferredCamera);
     setInput(next.preferredInput);
     saveProgress(next);
@@ -295,15 +376,15 @@ export default function SideSwapApp() {
     return (
       <main className="game-page" style={themeStyle}>
         <GameCanvas
-          key={`${country.id}-${runtimeLesson.id}-${steeringSide}`}
+          key={`${driveCountry.id}-${runtimeLesson.id}-${activeSteeringSide}`}
           className="game-canvas"
           trafficSide={runtimeLesson.trafficSide}
-          steeringSide={steeringSide}
+          steeringSide={activeSteeringSide}
           lesson={runtimeLesson}
           mapPack={runtimeMap}
           cameraMode={toCanvasCamera(camera)}
           inputFamily={input}
-          speedUnit={country.speedUnit === "kmh" ? "km/h" : "mph"}
+          speedUnit={driveCountry.speedUnit === "kmh" ? "km/h" : "mph"}
           paused={paused}
           reducedMotion={progress.accessibility.reducedMotion}
           steeringSensitivity={progress.accessibility.steeringSensitivity}
@@ -318,6 +399,7 @@ export default function SideSwapApp() {
           onEvent={recordEvent}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
+          onInputFamilyChange={setInput}
           onComplete={finishDrive}
         />
         <div className="game-brand" aria-hidden="true">
@@ -325,11 +407,11 @@ export default function SideSwapApp() {
           <span>SIDESWAP</span>
         </div>
         <div className="game-context">
-          <span>{country.flagEmoji}</span>
+          <span>{driveCountry.flagEmoji}</span>
           <div>
-            <strong>{practiceMode ? "Free drive" : activeLesson.title}</strong>
+            <strong>{activeIsFreeDrive ? "Free drive" : activeLesson.title}</strong>
             <small>
-              {country.destinationName} · traffic keeps {activeLesson.trafficSide}
+              {driveCountry.destinationName} · traffic keeps {runtimeLesson.trafficSide}
             </small>
           </div>
         </div>
@@ -338,7 +420,7 @@ export default function SideSwapApp() {
           className="game-exit"
           onClick={() => {
             setPaused(false);
-            setView("setup");
+            setView("launcher");
           }}
         >
           Exit lesson
@@ -353,6 +435,10 @@ export default function SideSwapApp() {
   }
 
   if (view === "results" && lastScore) {
+    const nextDrive = getRecommendedDrive(
+      progress,
+      activeSession?.countryId ?? countryId,
+    );
     return (
       <main className="results-page" style={themeStyle}>
         <div className="results-card">
@@ -362,7 +448,7 @@ export default function SideSwapApp() {
           <p className="eyebrow">DRIVE DEBRIEF</p>
           <h1>{lastScore.mastered ? "Instincts switched." : "Good practice run."}</h1>
           <p className="result-lead">
-            {practiceMode
+            {activeIsFreeDrive
               ? "Free drive results are not saved, so you can experiment without pressure."
               : lastScore.mastered
                 ? "You completed this route without a critical safety error."
@@ -406,11 +492,31 @@ export default function SideSwapApp() {
             )}
           </section>
           <div className="results-actions">
-            <button className="secondary-button" type="button" onClick={() => beginDrive(practiceMode)}>
-              Drive again
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setView("training")}
+            >
+              Training Hub
             </button>
-            <button className="primary-button" type="button" onClick={() => setView("setup")}>
-              Continue training <span aria-hidden="true">→</span>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() =>
+                beginDrive(
+                  activeSession?.scenarioId ?? nextDrive.scenarioId,
+                  activeSession?.countryId ?? nextDrive.countryId,
+                )
+              }
+            >
+              Retry
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => beginDrive(nextDrive.scenarioId, nextDrive.countryId)}
+            >
+              Next — {scenarioTitle(nextDrive.scenarioId)} <span aria-hidden="true">→</span>
             </button>
           </div>
         </div>
@@ -418,10 +524,21 @@ export default function SideSwapApp() {
     );
   }
 
+  const configured = progress.familiarSideConfirmed;
+  const launcherScenarioId = configured ? recommendation.scenarioId : orientation.id;
+
   return (
-    <main className="app-shell" style={themeStyle}>
+    <main
+      className={`app-shell ${view === "launcher" ? "launcher-shell" : ""}`}
+      style={themeStyle}
+    >
       <header className="app-header">
-        <button className="brand-button" type="button" onClick={() => setView("setup")}>
+        <button
+          className="brand-button"
+          type="button"
+          onClick={() => setView("launcher")}
+          aria-label="SideSwap home"
+        >
           <span className="brand-mark">S</span>
           <span className="brand-copy">
             <strong>SIDESWAP</strong>
@@ -429,20 +546,58 @@ export default function SideSwapApp() {
           </span>
         </button>
         <nav className="header-actions" aria-label="Main navigation">
-          <button className={view === "passport" ? "active" : ""} type="button" onClick={() => setView("passport")}>
+          <button
+            className={view === "training" ? "active" : ""}
+            type="button"
+            onClick={() => setView("training")}
+          >
+            Training
+          </button>
+          <button
+            className={view === "passport" ? "active" : ""}
+            type="button"
+            onClick={() => setView("passport")}
+          >
             Passport <span>{progress.passportStamps.length}/4</span>
           </button>
-          <button className={view === "settings" ? "active" : ""} type="button" onClick={() => setView("settings")}>
+          <button
+            className={view === "settings" ? "active" : ""}
+            type="button"
+            onClick={() => setView("settings")}
+          >
             Settings
           </button>
-          <button className={view === "credits" ? "active" : ""} type="button" onClick={() => setView("credits")}>
+          <button
+            className={view === "credits" ? "active" : ""}
+            type="button"
+            onClick={() => setView("credits")}
+          >
             Sources
           </button>
         </nav>
+        <div className="mobile-menu">
+          <button
+            className="mobile-menu-trigger"
+            type="button"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-menu-panel"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            Menu
+          </button>
+          {mobileMenuOpen && (
+            <nav id="mobile-menu-panel" aria-label="Mobile navigation">
+              <button type="button" onClick={() => { setView("training"); setMobileMenuOpen(false); }}>Training Hub</button>
+              <button type="button" onClick={() => { setView("passport"); setMobileMenuOpen(false); }}>Passport <span>{progress.passportStamps.length}/4</span></button>
+              <button type="button" onClick={() => { setView("settings"); setMobileMenuOpen(false); }}>Settings & accessibility</button>
+              <button type="button" onClick={() => { setView("credits"); setMobileMenuOpen(false); }}>Sources & credits</button>
+            </nav>
+          )}
+        </div>
       </header>
 
       {view === "passport" && (
-        <PassportView progress={progress} onBack={() => setView("setup")} />
+        <PassportView progress={progress} onBack={() => setView("launcher")} />
       )}
       {view === "settings" && (
         <SettingsView
@@ -451,219 +606,396 @@ export default function SideSwapApp() {
           onReset={() => {
             const reset = resetProgress();
             setProgress(reset);
-            setFamiliarSide(reset.familiarTrafficSide);
+            setFamiliarSide(null);
+            setCountryId(reset.lastCountryId);
+            setCountryChosenManually(false);
+            setWheelPreference("auto");
             setCamera(reset.preferredCamera);
-            setInput(reset.preferredInput);
+            setInput(
+              window.matchMedia("(pointer: coarse)").matches
+                ? "touch"
+                : "keyboard",
+            );
+            setView("launcher");
           }}
-          onBack={() => setView("setup")}
+          onBack={() => setView("launcher")}
         />
       )}
       {view === "credits" && (
-        <CreditsView onBack={() => setView("setup")} />
+        <CreditsView onBack={() => setView("launcher")} />
       )}
 
-      {view === "setup" && (
-        <>
-          <section className="hero-section">
-            <div className="hero-copy">
-              <p className="eyebrow">A ROAD-FAMILIARISATION GAME</p>
-              <h1>
-                Build the right instincts
-                <br />
-                <em>when the road feels backwards.</em>
-              </h1>
-              <p className="hero-lead">
-                Practice lane position, turns, signals, roundabouts and local road habits before your next trip—without racing the clock.
-              </p>
-              <div className="hero-stats" aria-label="Your SideSwap progress">
-                <div><strong>{completedCount}</strong><span>lessons complete</span></div>
+      {view === "launcher" && (
+        <section className={`launcher-page ${configured ? "returning" : "first-run"}`}>
+          <div className="launcher-copy">
+            <p className="eyebrow">
+              {configured ? "READY FOR YOUR NEXT DRIVE" : "A ROAD-FAMILIARISATION GAME"}
+            </p>
+            <h1
+              aria-label={
+                configured
+                  ? "Swap your instincts. Start driving."
+                  : "Which side feels normal to you?"
+              }
+            >
+              {configured ? (
+                <>Swap your instincts.<br /><em>Start driving.</em></>
+              ) : (
+                <>Which side feels<br /><em>normal to you?</em></>
+              )}
+            </h1>
+            <p className="launcher-lead">
+              {configured
+                ? `Continue in ${country.destinationName}, or choose a different training route.`
+                : "Tell us where you normally drive. We’ll suggest the opposite side and put you straight into orientation."}
+            </p>
+
+            {!configured && (
+              <fieldset className="launcher-familiar">
+                <legend>Where do you normally drive?</legend>
+                <div className="segmented two">
+                  {(["right", "left"] as const).map((side) => (
+                    <button
+                      key={side}
+                      type="button"
+                      className={familiarSide === side ? "active" : ""}
+                      aria-pressed={familiarSide === side}
+                      onClick={() => chooseFamiliarSide(side)}
+                    >
+                      <span className={`lane-icon ${side}`} aria-hidden="true"><i /></span>
+                      Traffic keeps {side}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
+            <div
+              className="launcher-destinations"
+              role="group"
+              aria-label="Destination"
+            >
+              {COUNTRY_PROFILES.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={countryId === item.id ? "active" : ""}
+                  aria-pressed={countryId === item.id}
+                  onClick={() => chooseCountry(item.id)}
+                >
+                  <span>{item.flagEmoji}</span>
+                  <strong>{item.destinationName}</strong>
+                  <small>Keep {item.trafficSide}</small>
+                </button>
+              ))}
+            </div>
+
+            <div className="launcher-setup-summary" aria-label="Current car setup">
+              <button type="button" onClick={() => setCustomizeOpen(true)}>
+                <small>Wheel</small><strong>{steeringSide} {wheelPreference === "auto" && "· local"}</strong>
+              </button>
+              <button type="button" onClick={() => setCustomizeOpen(true)}>
+                <small>Camera</small><strong>{cameraLabels[camera]}</strong>
+              </button>
+              <button type="button" onClick={() => setCustomizeOpen(true)}>
+                <small>Controls</small><strong>{inputLabels[input]}</strong>
+              </button>
+            </div>
+
+            <div className="launcher-actions">
+              <button
+                className="primary-button launcher-primary"
+                type="button"
+                disabled={!familiarSide}
+                onClick={() =>
+                  beginDrive(
+                    launcherScenarioId,
+                    configured ? recommendation.countryId : countryId,
+                  )
+                }
+              >
+                {configured
+                  ? `Continue — ${scenarioTitle(recommendation.scenarioId)}`
+                  : familiarSide
+                    ? `Start ${country.destinationName} orientation`
+                    : "Choose your usual traffic side"}
+                <span aria-hidden="true">→</span>
+              </button>
+              {configured && (
+                <button className="secondary-button" type="button" onClick={() => setView("training")}>Choose a drive</button>
+              )}
+              <button
+                ref={customizeTriggerRef}
+                className="text-button"
+                type="button"
+                onClick={() => setCustomizeOpen(true)}
+              >
+                Change setup
+              </button>
+            </div>
+          </div>
+
+          <div className="launcher-road-visual" aria-label={`${country.destinationName} training preview`}>
+            <div className="launcher-sky" />
+            <div className="launcher-buildings">
+              {Array.from({ length: 8 }, (_, index) => (
+                <span key={index} style={{ "--i": index } as CSSProperties} />
+              ))}
+            </div>
+            <div className="launcher-road"><i /><i /><i /><i /></div>
+            <div className={`launcher-car ${country.trafficSide}`}><b /></div>
+            <div className="launcher-place">
+              <span>{country.flagEmoji} {country.countryName}</span>
+              <strong>{country.destinationName}</strong>
+              <small>Traffic keeps {country.trafficSide} · {country.speedUnit === "kmh" ? "km/h" : "mph"}</small>
+            </div>
+            {configured && (
+              <div className="launcher-progress" aria-label="Your progress">
+                <div><strong>{completedCount}</strong><span>complete</span></div>
                 <div><strong>{masteryCount}</strong><span>mastered</span></div>
-                <div><strong>{progress.badges.length}</strong><span>skill badges</span></div>
+                <div><strong>{progress.badges.length}</strong><span>badges</span></div>
               </div>
+            )}
+          </div>
+          <p className="launcher-legal">Familiarisation only—not legal advice or driver instruction. Map data © OpenStreetMap contributors.</p>
+        </section>
+      )}
+
+      {view === "training" && (
+        <section className="training-hub subpage" aria-labelledby="training-title">
+          <div className="subpage-heading training-hub-heading">
+            <div>
+              <p className="eyebrow">TRAINING HUB</p>
+              <h1 id="training-title">Choose your next drive.</h1>
+              <p>Start directly from any unlocked lesson. Progress is based on safety and rule use, never speed.</p>
             </div>
-            <div className="route-preview" aria-label={`${country.destinationName} route preview`}>
-              <div className="preview-sky" />
-              <div className="preview-city">
-                {Array.from({ length: 10 }, (_, index) => (
-                  <span key={index} style={{ "--i": index } as CSSProperties} />
-                ))}
-              </div>
-              <div className="preview-road vertical"><i /><i /><i /><i /></div>
-              <div className="preview-road horizontal"><i /><i /><i /></div>
-              <div className={`preview-car ${country.trafficSide}`}><b /></div>
-              <div className="preview-sign">KEEP<br /><strong>{country.trafficSide.toUpperCase()}</strong></div>
-              <div className="preview-label">
-                <span>{country.flagEmoji} LIVE TRAINING AREA</span>
-                <strong>{country.destinationName}</strong>
-                <small>{country.destinationSubtitle}</small>
-              </div>
-            </div>
-          </section>
-
-          <section className="setup-section" aria-labelledby="setup-title">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">PRE-DRIVE CHECK</p>
-                <h2 id="setup-title">Set up your training car</h2>
-              </div>
-              <span className="step-pill">About 30 seconds</span>
-            </div>
-
-            <div className="setup-layout">
-              <div className="setup-controls">
-                <fieldset className="field-group">
-                  <legend><span>01</span> Where do you normally drive?</legend>
-                  <p>We use this only to tailor the coaching language.</p>
-                  <div className="segmented two">
-                    {(["right", "left"] as const).map((side) => (
-                      <button key={side} type="button" className={familiarSide === side ? "active" : ""} onClick={() => chooseFamiliarSide(side)}>
-                        <span className={`lane-icon ${side}`} aria-hidden="true"><i /></span>
-                        Traffic keeps {side}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <fieldset className="field-group destination-field">
-                  <legend><span>02</span> Choose a destination</legend>
-                  <p>Real road patterns, simplified into compact training routes.</p>
-                  <div className="country-grid">
-                    {COUNTRY_PROFILES.map((item) => (
-                      <button key={item.id} type="button" className={`country-card ${countryId === item.id ? "active" : ""}`} onClick={() => chooseCountry(item.id)}>
-                        <span className="country-top"><span>{item.flagEmoji}</span><b>{COUNTRY_MARKS[item.id]}</b></span>
-                        <strong>{item.destinationName}</strong>
-                        <small>{item.countryName} · keep {item.trafficSide}</small>
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <div className="choice-grid">
-                  <fieldset className="field-group compact-field">
-                    <legend><span>03</span> Wheel position</legend>
-                    <p>Traffic rules never change with the wheel.</p>
-                    <div className="segmented three compact">
-                      {(["auto", "left", "right"] as const).map((side) => (
-                        <button key={side} type="button" className={wheelPreference === side ? "active" : ""} onClick={() => setWheelPreference(side)}>
-                          {side === "auto" ? `Local · ${country.defaultSteeringSide}` : side}
-                        </button>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <fieldset className="field-group compact-field">
-                    <legend><span>04</span> Camera & controls</legend>
-                    <div className="inline-selects">
-                      <label>
-                        <span>Camera</span>
-                        <select value={camera} onChange={(event) => setCamera(event.target.value as CameraMode)}>
-                          {Object.entries(cameraLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                        </select>
-                      </label>
-                      <label>
-                        <span>Controls</span>
-                        <select value={input} onChange={(event) => setInput(event.target.value as InputFamily)}>
-                          {Object.entries(inputLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                        </select>
-                      </label>
-                    </div>
-                  </fieldset>
-                </div>
-              </div>
-
-              <aside className="car-summary">
-                <div className="summary-header">
-                  <span className="summary-flag">{country.flagEmoji}</span>
-                  <div><small>YOUR TRAINING CAR</small><strong>{country.destinationName}</strong></div>
-                </div>
-                <div className="car-diagram" aria-label={`Traffic keeps ${country.trafficSide}; wheel is on the ${steeringSide}`}>
-                  <div className={`diagram-road ${country.trafficSide}`}><i /><i /><i /></div>
-                  <div className={`diagram-car wheel-${steeringSide}`}><span>●</span><b /></div>
-                </div>
-                <dl className="car-facts">
-                  <div><dt>Traffic side</dt><dd>{country.trafficSide}</dd></div>
-                  <div><dt>Wheel side</dt><dd>{steeringSide}{wheelPreference === "auto" && " · local"}</dd></div>
-                  <div><dt>Units</dt><dd>{country.speedUnit === "kmh" ? "km/h" : "mph"}</dd></div>
-                  <div><dt>Passing side</dt><dd>{country.lanePolicy.passingSide}</dd></div>
-                </dl>
-                <p className="car-note">The wheel position changes your cockpit and sight lines. It never changes which side of the road you use.</p>
-                <details className="control-help">
-                  <summary>{inputLabels[input]} controls</summary>
-                  {input === "keyboard" && (
-                    <p><kbd>WASD</kbd> drive · <kbd>Q/E</kbd> indicators · <kbd>C</kbd> camera · <kbd>Z/X/V</kbd> look · <kbd>G</kbd> D/R · <kbd>H</kbd> horn · <kbd>Esc</kbd> pause</p>
-                  )}
-                  {input === "gamepad" && (
-                    <p>Left stick steers · triggers accelerate/brake · face buttons control horn, camera and indicators · Menu pauses.</p>
-                  )}
-                  {input === "touch" && (
-                    <p>Left thumb steers · right pedals accelerate/brake · swipe the road to look · on-screen buttons control D/R, indicators, camera, horn and pause.</p>
-                  )}
-                </details>
-              </aside>
-            </div>
-          </section>
-
-          <section className="training-section" aria-labelledby="training-title">
-            <div className="section-heading">
-              <div><p className="eyebrow">YOUR ROUTE</p><h2 id="training-title">Start simple. Add one challenge at a time.</h2></div>
-              <span className="source-date">Rules reviewed 10 Jul 2026</span>
-            </div>
-            <div className="lesson-path">
-              {trainingPath.map((lesson, index) => {
-                const unlocked = isLessonUnlocked(progress, lesson.id);
-                const complete = progress.completedLessonIds.includes(lesson.id);
-                const score = progress.lessonScores[lesson.id];
-                return (
+            <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to launcher</button>
+          </div>
+          <div className="hub-country-tabs" aria-label="Choose destination">
+            {COUNTRY_PROFILES.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={countryId === item.id ? "active" : ""}
+                aria-pressed={countryId === item.id}
+                onClick={() => chooseCountry(item.id)}
+              >
+                <span>{item.flagEmoji}</span>{item.destinationName}
+              </button>
+            ))}
+          </div>
+          <div className="hub-destination-heading">
+            <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{country.destinationName}</h2></div></div>
+            <p>Traffic keeps <strong>{country.trafficSide}</strong> · wheel defaults <strong>{country.defaultSteeringSide}</strong></p>
+          </div>
+          <div className="lesson-path hub-lessons">
+            {trainingPath.map((lesson, index) => {
+              const unlocked = isLessonUnlocked(progress, lesson.id);
+              const complete = progress.completedLessonIds.includes(lesson.id);
+              const score = progress.lessonScores[lesson.id];
+              return (
+                <article className={`lesson-card ${complete ? "complete" : ""}`} key={lesson.id}>
+                  <span className="lesson-index">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "—"}</span>
+                  <span className="lesson-copy">
+                    <small>{lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}</small>
+                    <strong>{lesson.title}</strong>
+                    <em>{lesson.summary}</em>
+                  </span>
                   <button
-                    key={lesson.id}
                     type="button"
-                    disabled={!unlocked}
-                    className={`lesson-card ${selectedLessonId === lesson.id ? "active" : ""} ${complete ? "complete" : ""}`}
-                    onClick={() => { setSelectedLessonId(lesson.id); setPracticeMode(false); }}
+                    className="lesson-start"
+                    disabled={!unlocked || !familiarSide}
+                    onClick={() => beginDrive(lesson.id, countryId)}
                   >
-                    <span className="lesson-index">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "—"}</span>
-                    <span className="lesson-copy"><small>{lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}</small><strong>{lesson.title}</strong><em>{lesson.summary}</em></span>
-                    <span className="lesson-score">{score ? `${score.total}` : unlocked ? "GO" : "LOCKED"}</span>
+                    {score ? `${score.total} · Drive again` : unlocked ? "Start" : "Locked"}
                   </button>
-                );
-              })}
-            </div>
-
-            <div className="launch-bar">
-              <div className="launch-copy">
-                <span className="launch-icon" aria-hidden="true">↗</span>
-                <div><small>{activeLesson.kind.toUpperCase()} · {formatMinutes(activeLesson)}</small><strong>{activeLesson.title}</strong><p>{activeLesson.objectives.map((objective) => objective.label).join(" · ")}</p></div>
-              </div>
-              <div className="launch-actions">
-                <button type="button" className="secondary-button" disabled={!freeDriveUnlocked} onClick={() => beginDrive(true)}>
-                  {freeDriveUnlocked ? "Free drive" : "Free drive unlocks after lesson 1"}
-                </button>
-                <button type="button" className="primary-button large" onClick={() => beginDrive(false)}>
-                  Start {activeLesson.kind === "orientation" ? "orientation" : "lesson"} <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section className="side-swap-banner">
+                </article>
+              );
+            })}
+            <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, `free-${countryId}`) ? "" : "locked"}`}>
+              <span className="lesson-index">∞</span>
+              <span className="lesson-copy"><small>OPEN PRACTICE</small><strong>{getFreeDrive(`free-${countryId}`).title}</strong><em>Explore the map with local traffic and no fixed finish.</em></span>
+              <button
+                type="button"
+                className="lesson-start"
+                disabled={!isFreeDriveUnlocked(progress, `free-${countryId}`) || !familiarSide}
+                onClick={() => beginDrive(`free-${countryId}`, countryId)}
+              >
+                {isFreeDriveUnlocked(progress, `free-${countryId}`) ? "Start free drive" : "Complete lesson 1"}
+              </button>
+            </article>
+          </div>
+          <article className="hub-capstone">
             <div className="swap-graphic" aria-hidden="true"><span>UK</span><i /><b>FR</b></div>
-            <div><p className="eyebrow">FINAL CAPSTONE</p><h2>Keep the same car. Swap the road.</h2><p>Enter at Folkestone, travel by shuttle, and leave Coquelles on the right. The game never pretends there is a continuous road border.</p></div>
+            <div><p className="eyebrow">FINAL CAPSTONE</p><h2>Keep the same car. Swap the road.</h2><p>Travel from Folkestone to Coquelles, then leave the terminal driving on the opposite side.</p></div>
             <button
               type="button"
               className="secondary-button light"
-              disabled={!isLessonUnlocked(progress, "uk-fr-side-swap")}
-              onClick={() => { setCountryId("uk"); setSelectedLessonId("uk-fr-side-swap"); setPracticeMode(false); }}
+              disabled={!isLessonUnlocked(progress, "uk-fr-side-swap") || !familiarSide}
+              onClick={() => beginDrive("uk-fr-side-swap", "uk")}
             >
-              {isLessonUnlocked(progress, "uk-fr-side-swap") ? "Select capstone" : "Complete all four paths"}
+              {isLessonUnlocked(progress, "uk-fr-side-swap") ? "Start capstone" : "Complete all four paths"}
             </button>
-          </section>
-        </>
+          </article>
+        </section>
       )}
 
-      <footer className="app-footer">
-        <span>SideSwap is familiarisation, not legal advice or driver instruction.</span>
-        <span>Map data © OpenStreetMap contributors · ODbL</span>
-      </footer>
+      {view !== "launcher" && (
+        <footer className="app-footer">
+          <span>SideSwap is familiarisation, not legal advice or driver instruction.</span>
+          <span>Map data © OpenStreetMap contributors · ODbL</span>
+        </footer>
+      )}
+
+      {customizeOpen && (
+        <SetupSheet
+          country={country}
+          wheelPreference={wheelPreference}
+          camera={camera}
+          input={input}
+          onWheelChange={setWheelPreference}
+          onCameraChange={setCamera}
+          onInputChange={setInput}
+          onClose={closeCustomize}
+          returnFocusRef={customizeTriggerRef}
+        />
+      )}
     </main>
+  );
+}
+
+function SetupSheet({
+  country,
+  wheelPreference,
+  camera,
+  input,
+  onWheelChange,
+  onCameraChange,
+  onInputChange,
+  onClose,
+  returnFocusRef,
+}: {
+  country: ReturnType<typeof getCountryProfile>;
+  wheelPreference: SteeringPreference;
+  camera: CameraMode;
+  input: InputFamily;
+  onWheelChange: (value: SteeringPreference) => void;
+  onCameraChange: (value: CameraMode) => void;
+  onInputChange: (value: InputFamily) => void;
+  onClose: () => void;
+  returnFocusRef: { readonly current: HTMLButtonElement | null };
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    const returnFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : returnFocusRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusable = () =>
+      Array.from(
+        panel?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), select:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+    focusable()[0]?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      returnFocus?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
+  const resolvedWheel = resolveSteeringSide(wheelPreference, country);
+
+  return (
+    <div
+      className="setup-sheet-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        className="setup-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="setup-sheet-title"
+      >
+        <div className="setup-sheet-heading">
+          <div>
+            <p className="eyebrow">CAR SETUP</p>
+            <h2 id="setup-sheet-title">Ready your drive</h2>
+          </div>
+          <button className="sheet-close" type="button" onClick={onClose} aria-label="Close car setup">×</button>
+        </div>
+        <p className="setup-sheet-intro">
+          {country.flagEmoji} {country.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
+        </p>
+        <fieldset className="sheet-fieldset">
+          <legend>Wheel position</legend>
+          <div className="segmented three compact">
+            {(["auto", "left", "right"] as const).map((side) => (
+              <button
+                key={side}
+                type="button"
+                className={wheelPreference === side ? "active" : ""}
+                aria-pressed={wheelPreference === side}
+                onClick={() => onWheelChange(side)}
+              >
+                {side === "auto" ? `Local · ${country.defaultSteeringSide}` : `${side} wheel`}
+              </button>
+            ))}
+          </div>
+          <small>Selected cockpit: wheel on the {resolvedWheel}.</small>
+        </fieldset>
+        <div className="sheet-selects">
+          <label>
+            <span>Starting camera</span>
+            <select value={camera} onChange={(event) => onCameraChange(event.target.value as CameraMode)}>
+              {Object.entries(cameraLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Control prompts</span>
+            <select value={input} onChange={(event) => onInputChange(event.target.value as InputFamily)}>
+              {Object.entries(inputLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+        </div>
+        <details className="control-help">
+          <summary>{inputLabels[input]} controls</summary>
+          {input === "keyboard" && <p><kbd>WASD</kbd> drive · <kbd>Q/E</kbd> indicators · <kbd>C</kbd> camera · <kbd>Z/X/V</kbd> look · <kbd>G</kbd> D/R · <kbd>H</kbd> horn · <kbd>Esc</kbd> pause</p>}
+          {input === "gamepad" && <p>Left stick steers · triggers accelerate and brake · face buttons control horn, camera and indicators · Menu pauses.</p>}
+          {input === "touch" && <p>Left thumb steers · right pedals accelerate and brake · swipe the road to look · on-screen buttons manage D/R, indicators, camera, horn and pause.</p>}
+        </details>
+        <button className="primary-button sheet-done" type="button" onClick={onClose}>Done</button>
+      </div>
+    </div>
   );
 }
 

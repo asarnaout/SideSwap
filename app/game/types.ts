@@ -335,6 +335,7 @@ export interface AssistanceSettings {
 }
 
 export interface GameSessionConfig {
+  readonly countryId: CountryId;
   readonly scenarioId: ScenarioId;
   readonly familiarTrafficSide: TrafficSide;
   readonly steeringPreference: SteeringPreference;
@@ -417,10 +418,19 @@ export interface PlayerProgressV1 {
   readonly badges: readonly BadgeId[];
   readonly passportStamps: readonly CountryId[];
   readonly familiarTrafficSide: TrafficSide;
+  readonly familiarSideConfirmed: boolean;
+  readonly lastCountryId: CountryId;
   readonly preferredCamera: CameraMode;
   readonly preferredInput: InputFamily;
   readonly accessibility: AccessibilityPreferences;
   readonly updatedAt: string;
+}
+
+export interface RecommendedDrive {
+  readonly countryId: CountryId;
+  readonly scenarioId: ScenarioId;
+  readonly kind: "orientation" | "lesson" | "capstone" | "free_drive";
+  readonly ctaLabel: string;
 }
 
 export interface LessonProgressUpdate {
