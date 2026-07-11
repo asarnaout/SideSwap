@@ -2,14 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   createDefaultProgress,
   getRecommendedDrive,
+  isCapstoneEligible,
   isFreeDriveUnlocked,
   isLessonUnlocked,
+  isPlayerProgressV1,
   loadProgress,
   migrateProgress,
   saveProgress,
   updateLessonProgress,
 } from "../app/game/progress";
-import { LESSONS } from "../app/game/content";
 import type { LessonId, PlayerProgressV1 } from "../app/game/types";
 import type { ProgressStorage } from "../app/game/progress";
 
@@ -29,6 +30,7 @@ function withoutLauncherMetadata(
   const legacy: Record<string, unknown> = { ...progress };
   delete legacy.familiarSideConfirmed;
   delete legacy.lastCountryId;
+  delete legacy.lastDestinationId;
   return legacy;
 }
 
@@ -54,6 +56,7 @@ describe("local progress", () => {
     expect(progress.completedLessonIds).toEqual([]);
     expect(progress.familiarSideConfirmed).toBe(false);
     expect(progress.lastCountryId).toBe("uk");
+    expect(progress.lastDestinationId).toBe("uk-london");
   });
 
   it("keeps fresh or unrecognized progress unconfirmed", () => {
@@ -61,6 +64,18 @@ describe("local progress", () => {
     expect(migrateProgress({ version: 1, unknown: true }).familiarSideConfirmed).toBe(
       false,
     );
+  });
+
+  it("requires a coherent country and destination in normalized v1 progress", () => {
+    const progress = createDefaultProgress();
+    expect(isPlayerProgressV1(progress)).toBe(true);
+    expect(
+      isPlayerProgressV1({
+        ...progress,
+        lastCountryId: "us",
+        lastDestinationId: "uk-london",
+      }),
+    ).toBe(false);
   });
 
   it("confirms a valid legacy save and infers its most recently scored country", () => {
@@ -87,6 +102,7 @@ describe("local progress", () => {
 
     expect(restored.familiarSideConfirmed).toBe(true);
     expect(restored.lastCountryId).toBe("jp");
+    expect(restored.lastDestinationId).toBe("jp-tokyo");
   });
 
   it("uses the opposite-side starter when a legacy save has no country score", () => {
@@ -99,6 +115,29 @@ describe("local progress", () => {
 
     expect(restored.familiarSideConfirmed).toBe(true);
     expect(restored.lastCountryId).toBe("us");
+    expect(restored.lastDestinationId).toBe("us-nyc");
+  });
+
+  it("restores legacy UK scores to Milton Keynes and otherwise defaults UK to London", () => {
+    const current = createDefaultProgress("2026-07-10T12:00:00.000Z");
+    const legacy = withoutLauncherMetadata(current);
+
+    const miltonKeynes = migrateProgress({
+      ...legacy,
+      lastCountryId: "uk",
+      completedLessonIds: ["uk-left-side-basics"],
+      lessonScores: {
+        "uk-left-side-basics": scoreFor("uk-left-side-basics"),
+      },
+    });
+    expect(miltonKeynes.lastDestinationId).toBe("uk-milton-keynes");
+
+    const london = migrateProgress({
+      ...legacy,
+      lastCountryId: "uk",
+      lessonScores: {},
+    });
+    expect(london.lastDestinationId).toBe("uk-london");
   });
 
   it("unlocks the first country lesson after orientation", () => {
@@ -203,13 +242,14 @@ describe("local progress", () => {
       completedLessonIds: ids,
     });
 
-    expect(getRecommendedDrive(withCompleted([]), "uk")).toMatchObject({
+    expect(getRecommendedDrive(withCompleted([]), "uk-london")).toMatchObject({
       countryId: "uk",
+      destinationId: "uk-london",
       scenarioId: "orientation-left",
       kind: "orientation",
     });
     expect(
-      getRecommendedDrive(withCompleted(["orientation-right"]), "us"),
+      getRecommendedDrive(withCompleted(["orientation-right"]), "us-nyc"),
     ).toMatchObject({
       countryId: "us",
       scenarioId: "us-one-way-grid",
@@ -218,7 +258,7 @@ describe("local progress", () => {
     expect(
       getRecommendedDrive(
         withCompleted(["orientation-right", "us-one-way-grid"]),
-        "us",
+        "us-nyc",
       ),
     ).toMatchObject({
       scenarioId: "us-signals-crosswalks",
@@ -232,30 +272,41 @@ describe("local progress", () => {
           "us-signals-crosswalks",
           "us-lane-choice",
         ]),
-        "us",
+        "us-nyc",
       ),
     ).toMatchObject({
       countryId: "us",
+      destinationId: "us-nyc",
       scenarioId: "free-us",
       kind: "free_drive",
     });
   });
 
-  it("recommends the UK-to-France capstone after every country path", () => {
-    const everyCountryLesson = LESSONS.filter((lesson) => lesson.countryId).map(
-      (lesson) => lesson.id,
-    );
+  it("recommends the capstone after US, France, Japan and either UK path", () => {
     const progress: PlayerProgressV1 = {
       ...createDefaultProgress(),
       completedLessonIds: [
         "orientation-left",
         "orientation-right",
-        ...everyCountryLesson,
+        "us-one-way-grid",
+        "us-signals-crosswalks",
+        "us-lane-choice",
+        "uk-left-side-basics",
+        "uk-roundabouts",
+        "uk-dual-carriageway",
+        "fr-right-side-basics",
+        "fr-priority-roundabouts",
+        "fr-speed-merging",
+        "jp-left-side-basics",
+        "jp-vulnerable-road-users",
+        "jp-railway-crossings",
       ],
     };
 
-    expect(getRecommendedDrive(progress, "jp")).toMatchObject({
+    expect(isCapstoneEligible(progress)).toBe(true);
+    expect(getRecommendedDrive(progress, "jp-tokyo")).toMatchObject({
       countryId: "uk",
+      destinationId: "uk-london",
       scenarioId: "uk-fr-side-swap",
       kind: "capstone",
     });
@@ -269,12 +320,38 @@ describe("local progress", () => {
             "uk-fr-side-swap",
           ],
         },
-        "jp",
+        "jp-tokyo",
       ),
     ).toMatchObject({
       countryId: "jp",
+      destinationId: "jp-tokyo",
       scenarioId: "free-jp",
       kind: "free_drive",
     });
+
+    const londonPath = {
+      ...progress,
+      completedLessonIds: progress.completedLessonIds.filter(
+        (id) => id !== "uk-dual-carriageway",
+      ).concat("uk-london-exhibition-road"),
+    };
+    expect(isCapstoneEligible(londonPath)).toBe(true);
+
+    const missingRequiredCountry = {
+      ...progress,
+      completedLessonIds: progress.completedLessonIds.filter(
+        (id) => id !== "jp-railway-crossings",
+      ),
+    };
+    expect(isCapstoneEligible(missingRequiredCountry)).toBe(false);
+    expect(
+      isLessonUnlocked(
+        {
+          ...createDefaultProgress(),
+          completedLessonIds: ["uk-fr-side-swap"],
+        },
+        "uk-fr-side-swap",
+      ),
+    ).toBe(true);
   });
 });

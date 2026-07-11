@@ -26,6 +26,11 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  distanceToPolygon,
+  isPointInPolygon,
+  isRestrictionWindowActive,
+} from "./simulation";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -52,6 +57,7 @@ export interface GameHudSnapshot {
   objective: string;
   checkpoint: string;
   trafficSide: TrafficSide;
+  scenarioClock?: string;
 }
 
 export interface GameRuntimeEvent {
@@ -70,6 +76,9 @@ export interface GameRuntimeEvent {
   message: string;
   severity?: "info" | "warning" | "critical";
   timestamp: number;
+  ruleCode?: "box_junction" | "restricted_lane";
+  penalty?: number;
+  evidence?: Readonly<Record<string, string | number | boolean>>;
 }
 
 /** Structural lesson contract; existing LessonDefinition objects can be passed directly. */
@@ -100,6 +109,12 @@ export interface GameCanvasLesson {
       | { readonly type: "checkpoint"; readonly checkpointId: string }
       | { readonly type: "rule_event"; readonly ruleCode: string };
   }[];
+  readonly assessedRules?: readonly string[];
+  readonly scenarioClock?: Readonly<{
+    readonly weekday: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+    readonly minutesAfterMidnight: number;
+    readonly label: string;
+  }>;
   readonly profileTransitions?: readonly {
     readonly checkpointId: string;
     readonly fromCountryId: string;
@@ -119,6 +134,7 @@ export interface GameCanvasLane {
   readonly role?: string;
   readonly trafficSide?: TrafficSide;
   readonly speedLimit?: number;
+  readonly successors?: readonly string[];
 }
 
 /** Structural map contract; existing MapPack objects can be passed directly. */
@@ -154,6 +170,32 @@ export interface GameCanvasMapPack {
       readonly position: GameCanvasPoint;
       readonly headingDeg: number;
       readonly laneIds: readonly string[];
+      readonly conflictZoneIds?: readonly string[];
+    }[];
+    conflictZones: readonly {
+      readonly id: string;
+      readonly laneIds: readonly string[];
+      readonly polygon: readonly GameCanvasPoint[];
+    }[];
+    restrictions?: readonly {
+      readonly id: string;
+      readonly laneId: string;
+      readonly ruleCode: "restricted_lane";
+      readonly activeWindows: readonly {
+        readonly weekdays: readonly (
+          | "mon"
+          | "tue"
+          | "wed"
+          | "thu"
+          | "fri"
+          | "sat"
+          | "sun"
+        )[];
+        readonly startMinutes: number;
+        readonly endMinutes: number;
+      }[];
+      readonly sourceReferenceId: string;
+      readonly message: string;
     }[];
     spawnPoints: readonly {
       readonly id: string;
@@ -258,6 +300,7 @@ interface AnalogInput {
 interface PlayerState {
   x: number;
   z: number;
+  previousX: number;
   previousZ: number;
   heading: number;
   speedMps: number;
@@ -271,6 +314,7 @@ interface NpcVehicle {
   speed: number;
   z: number;
   laneX: number;
+  laneId?: string;
   path?: readonly GameCanvasPoint[];
   pathSegment?: number;
   pathDistance?: number;
@@ -302,6 +346,11 @@ interface RouteProjection {
   readonly heading: number;
   readonly distance: number;
   readonly distanceAlong: number;
+}
+
+interface ScenarioLaneProjection extends RouteProjection {
+  readonly laneId: string;
+  readonly speedLimit?: number;
 }
 
 const FIXED_STEP = 1 / 60;
@@ -508,6 +557,9 @@ class BabylonGameSession {
   private wrongSideSeconds = 0;
   private offRoadSeconds = 0;
   private score = 100;
+  private ruleElapsedSeconds = 0;
+  private readonly authoredRuleCooldownUntil = new Map<string, number>();
+  private readonly restrictedLaneSeconds = new Map<string, number>();
   private checkpoint = { x: 0, z: START_Z, heading: 0 };
   private instruction = "Settle into the correct lane and drive toward the first junction.";
   private readonly routePoints: readonly GameCanvasPoint[];
@@ -561,6 +613,7 @@ class BabylonGameSession {
     this.playerState = {
       x: start.x,
       z: start.z,
+      previousX: start.x,
       previousZ: start.z,
       heading: start.heading,
       speedMps: 0,
@@ -767,12 +820,14 @@ class BabylonGameSession {
   reset(incidentMessage?: string) {
     this.playerState.x = this.checkpoint.x;
     this.playerState.z = this.checkpoint.z;
+    this.playerState.previousX = this.checkpoint.x;
     this.playerState.previousZ = this.checkpoint.z;
     this.playerState.heading = this.checkpoint.heading;
     this.playerState.speedMps = 0;
     this.playerState.gear = "D";
     this.wrongSideSeconds = 0;
     this.offRoadSeconds = 0;
+    this.restrictedLaneSeconds.clear();
     this.collisionGraceUntil = eventNow() + 1_800;
     this.clearHeldInputs();
     this.displayedX = this.playerState.x;
@@ -830,7 +885,9 @@ class BabylonGameSession {
   private fixedUpdate(dt: number) {
     const input = this.mergedInput();
     const state = this.playerState;
+    state.previousX = state.x;
     state.previousZ = state.z;
+    this.ruleElapsedSeconds += dt;
 
     const throttle = input.throttle;
     const brake = input.brake;
@@ -1053,6 +1110,14 @@ class BabylonGameSession {
       );
     }
 
+    this.evaluateAuthoredRuleZones(
+      dt,
+      lesson,
+      mapPack,
+      roadProjection,
+      roadTolerance,
+    );
+
     if (routeProjection && routeProjection.distance < roadTolerance * 1.4) {
       this.routeSegment = Math.max(this.routeSegment, routeProjection.segmentIndex);
       const candidateProgress =
@@ -1096,6 +1161,168 @@ class BabylonGameSession {
       this.callbacks.onComplete?.(Math.round(this.score));
       this.publishHud(true);
     }
+  }
+
+  private evaluateAuthoredRuleZones(
+    dt: number,
+    lesson: GameCanvasLesson,
+    mapPack: GameCanvasMapPack,
+    roadProjection: ScenarioLaneProjection | null,
+    roadTolerance: number,
+  ) {
+    if (
+      roadProjection &&
+      (lesson.kind === "free_drive" || lesson.assessedRules?.includes("box_junction"))
+    ) {
+      const conflictZones = mapPack.laneGraph.conflictZones ?? [];
+      const zonesById = new Map(conflictZones.map((zone) => [zone.id, zone]));
+      for (const control of mapPack.laneGraph.controls) {
+        if (control.type !== "box_junction") continue;
+        for (const zoneId of control.conflictZoneIds ?? []) {
+          const zone = zonesById.get(zoneId);
+          if (!zone) continue;
+          const laneRelevant =
+            control.laneIds.includes(roadProjection.laneId) ||
+            zone.laneIds.includes(roadProjection.laneId);
+          const entered =
+            laneRelevant &&
+            !isPointInPolygon(
+              { x: this.playerState.previousX, z: this.playerState.previousZ },
+              zone.polygon,
+            ) &&
+            isPointInPolygon(this.playerState, zone.polygon);
+          if (!entered || this.playerState.speedMps < 0.5) continue;
+          const blockingNpc = this.findBlockingAuthoredExit(
+            roadProjection,
+            zone.polygon,
+            mapPack.laneGraph.lanes,
+          );
+          if (!blockingNpc) continue;
+          this.assessAuthoredRule(
+            lesson,
+            "box_junction",
+            "You entered the yellow box before your exit was clear.",
+            "Wait before the box until there is room to clear it completely.",
+            6,
+            {
+              junctionId: control.id,
+              conflictZoneId: zone.id,
+              laneId: roadProjection.laneId,
+              blockingVehicle: blockingNpc.node.name,
+              exitBlocked: true,
+            },
+          );
+        }
+      }
+    }
+
+    const restrictions = mapPack.laneGraph.restrictions ?? [];
+    const clock = lesson.scenarioClock;
+    const assessRestrictions =
+      lesson.kind === "free_drive" ||
+      Boolean(lesson.assessedRules?.includes("restricted_lane"));
+    for (const restriction of restrictions) {
+      const activeWindow = clock
+        ? restriction.activeWindows.find((window) =>
+            isRestrictionWindowActive(clock, window),
+          )
+        : undefined;
+      const usingRestrictedLane =
+        assessRestrictions &&
+        Boolean(activeWindow) &&
+        roadProjection?.laneId === restriction.laneId &&
+        roadProjection.distance <= roadTolerance &&
+        this.playerState.speedMps >= 0.8;
+      const sustainedSeconds = usingRestrictedLane
+        ? (this.restrictedLaneSeconds.get(restriction.id) ?? 0) + dt
+        : 0;
+      this.restrictedLaneSeconds.set(restriction.id, sustainedSeconds);
+      if (sustainedSeconds < 2.5 || !clock || !activeWindow) continue;
+      this.assessAuthoredRule(
+        lesson,
+        "restricted_lane",
+        restriction.message,
+        "Read the signed operating times and move into a general-traffic lane when it is safe.",
+        4,
+        {
+          restrictionId: restriction.id,
+          laneId: restriction.laneId,
+          weekday: clock.weekday,
+          scenarioTime: clock.label,
+          sourceReferenceId: restriction.sourceReferenceId,
+          activeWindow: `${activeWindow.startMinutes}-${activeWindow.endMinutes}`,
+          sustainedSeconds: 2.5,
+        },
+      );
+      this.restrictedLaneSeconds.set(restriction.id, 0);
+    }
+  }
+
+  private findBlockingAuthoredExit(
+    playerProjection: ScenarioLaneProjection,
+    polygon: readonly GameCanvasPoint[],
+    lanes: readonly GameCanvasLane[],
+  ): NpcVehicle | null {
+    const currentLane = lanes.find((lane) => lane.id === playerProjection.laneId);
+    if (!currentLane) return null;
+    const exitLaneIds = new Set([
+      currentLane.id,
+      ...(currentLane.successors ?? []),
+    ]);
+    for (const npc of this.npcVehicles) {
+      if (!npc.laneId || !exitLaneIds.has(npc.laneId)) continue;
+      const npcPoint = { x: npc.node.position.x, z: npc.node.position.z };
+      if (distanceToPolygon(npcPoint, polygon) > 14) continue;
+      if (npc.laneId === currentLane.id) {
+        const npcProjection = this.projectToScenarioLanes(
+          npcPoint.x,
+          npcPoint.z,
+          [currentLane],
+        );
+        if (!npcProjection) continue;
+        const gap = npcProjection.distanceAlong - playerProjection.distanceAlong;
+        if (gap > 0.5 && gap <= 34) return npc;
+        continue;
+      }
+      return npc;
+    }
+    return null;
+  }
+
+  private assessAuthoredRule(
+    lesson: GameCanvasLesson,
+    ruleCode: "box_junction" | "restricted_lane",
+    message: string,
+    correction: string,
+    penalty: number,
+    evidence: Record<string, string | number | boolean>,
+  ): boolean {
+    if ((this.authoredRuleCooldownUntil.get(ruleCode) ?? 0) > this.ruleElapsedSeconds) {
+      return false;
+    }
+    const prompt = lesson.coachPrompts.find(
+      (candidate) =>
+        candidate.trigger.type === "rule_event" &&
+        candidate.trigger.ruleCode === ruleCode &&
+        !this.triggeredPrompts.has(candidate.id),
+    );
+    if (prompt) this.triggeredPrompts.add(prompt.id);
+    const actionableCorrection = prompt?.message ?? correction;
+    this.score = Math.max(0, this.score - penalty);
+    this.instruction = actionableCorrection;
+    this.authoredRuleCooldownUntil.set(
+      ruleCode,
+      this.ruleElapsedSeconds + (ruleCode === "box_junction" ? 10 : 12),
+    );
+    this.playCoachTone();
+    this.emit(
+      "coaching",
+      `${message} ${actionableCorrection}`,
+      "warning",
+      { ruleCode, penalty, evidence },
+    );
+    this.publishHud(true);
+    return true;
   }
 
   private advanceAuthoredCheckpoints(
@@ -1173,8 +1400,8 @@ class BabylonGameSession {
     x: number,
     z: number,
     lanes: readonly GameCanvasLane[],
-  ): (RouteProjection & { readonly speedLimit?: number }) | null {
-    let best: (RouteProjection & { readonly speedLimit?: number }) | null = null;
+  ): ScenarioLaneProjection | null {
+    let best: ScenarioLaneProjection | null = null;
     for (const lane of lanes) {
       let accumulated = 0;
       for (let index = 0; index < lane.centerline.length - 1; index += 1) {
@@ -1193,6 +1420,7 @@ class BabylonGameSession {
         const distance = Math.hypot(x - projectedX, z - projectedZ);
         if (!best || distance < best.distance) {
           best = {
+            laneId: lane.id,
             segmentIndex: index,
             x: projectedX,
             z: projectedZ,
@@ -1387,6 +1615,8 @@ class BabylonGameSession {
     const mapId = mapPack.id.toLowerCase();
     const sky = mapId.includes("tokyo")
       ? new Color4(0.72, 0.82, 0.88, 1)
+      : mapId.includes("london")
+        ? new Color4(0.69, 0.77, 0.81, 1)
       : mapId.includes("milton")
         ? new Color4(0.66, 0.77, 0.8, 1)
         : mapId.includes("calais") || mapId.includes("folkestone")
@@ -1478,11 +1708,36 @@ class BabylonGameSession {
       plaster: new Color3(0.72, 0.7, 0.63),
       tile: new Color3(0.48, 0.52, 0.55),
       "wood-plaster": new Color3(0.58, 0.49, 0.39),
+      "terracotta-museum": new Color3(0.63, 0.34, 0.25),
+      "pale-stone-museum": new Color3(0.77, 0.76, 0.71),
+      "red-brick-museum": new Color3(0.55, 0.29, 0.23),
+      "london-brick": new Color3(0.49, 0.32, 0.27),
+      "white-stucco": new Color3(0.82, 0.81, 0.75),
     };
     for (const block of mapPack.geometry.blocks) {
-      const count = Math.max(1, Math.round(3 + block.density * 7));
       const baseColor = buildingPalette[block.material] ?? new Color3(0.56, 0.5, 0.43);
       const material = makeMaterial(scene, `block-${block.id}`, baseColor);
+      const isLondonMuseumBlock =
+        mapId.includes("london") && block.material.endsWith("-museum");
+      if (isLondonMuseumBlock) {
+        const wingWidth = Math.max(12, block.size.x * 0.23);
+        const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
+        for (const side of [-1, 1]) {
+          createBox(
+            scene,
+            `building-${block.id}-wing-${side}`,
+            { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
+            new Vector3(
+              block.center.x + side * block.size.x * 0.37,
+              wingHeight / 2,
+              block.center.z,
+            ),
+            material,
+          );
+        }
+        continue;
+      }
+      const count = Math.max(1, Math.round(3 + block.density * 7));
       for (let index = 0; index < count; index += 1) {
         const columns = Math.ceil(Math.sqrt(count));
         const row = Math.floor(index / columns);
@@ -1508,6 +1763,9 @@ class BabylonGameSession {
     for (const landmark of mapPack.geometry.landmarks) {
       const color = colorFromHex(landmark.color, new Color3(0.35, 0.5, 0.4));
       const material = makeMaterial(scene, `landmark-${landmark.id}`, color);
+      if (mapId.includes("london") && this.buildLondonLandmark(landmark, material)) {
+        continue;
+      }
       if (mapId.includes("orientation") && landmark.id === "yard-cones") {
         for (let index = 0; index < 9; index += 1) {
           const column = index % 3;
@@ -1567,6 +1825,10 @@ class BabylonGameSession {
           material,
         );
       }
+    }
+
+    if (mapId.includes("london")) {
+      this.buildLondonStreetFurniture();
     }
 
     const redLamp = makeMaterial(scene, "scenario-signal-red", new Color3(0.45, 0.02, 0.01));
@@ -1631,6 +1893,266 @@ class BabylonGameSession {
       marker.position.set(checkpoint.x, 0.22, checkpoint.z);
       setMeshMaterial(marker, checkpointMaterial);
     }
+  }
+
+  /**
+   * Gives the South Kensington miniature a readable silhouette without using
+   * imagery, branding, or detailed replicas of the real museum buildings.
+   */
+  private buildLondonLandmark(
+    landmark: GameCanvasMapPack["geometry"]["landmarks"][number],
+    material: StandardMaterial,
+  ): boolean {
+    const scene = this.scene;
+    const trim = makeMaterial(scene, `${landmark.id}-trim`, new Color3(0.82, 0.76, 0.65));
+    const windows = makeMaterial(scene, `${landmark.id}-windows`, new Color3(0.12, 0.2, 0.23));
+    const roof = makeMaterial(scene, `${landmark.id}-roof`, new Color3(0.25, 0.22, 0.2));
+
+    if (landmark.id === "london-natural-history-museum") {
+      const height = 12;
+      createBox(
+        scene,
+        landmark.id,
+        { width: landmark.size.x, height, depth: landmark.size.z },
+        new Vector3(landmark.center.x, height / 2, landmark.center.z),
+        material,
+      );
+      createBox(
+        scene,
+        `${landmark.id}-parapet`,
+        { width: landmark.size.x + 1.2, height: 1.05, depth: landmark.size.z + 1.2 },
+        new Vector3(landmark.center.x, height + 0.4, landmark.center.z),
+        trim,
+      );
+      for (let column = -3; column <= 3; column += 1) {
+        const x = landmark.center.x + column * (landmark.size.x / 8);
+        createBox(
+          scene,
+          `${landmark.id}-pilaster-${column}`,
+          { width: 1.2, height: 9.5, depth: 0.65 },
+          new Vector3(x, 5.4, landmark.center.z - landmark.size.z / 2 - 0.35),
+          trim,
+        );
+        if (column !== 0) {
+          createBox(
+            scene,
+            `${landmark.id}-window-${column}`,
+            { width: 3.4, height: 2.7, depth: 0.18 },
+            new Vector3(
+              x + landmark.size.x / 16,
+              6.4,
+              landmark.center.z - landmark.size.z / 2 - 0.7,
+            ),
+            windows,
+          );
+        }
+      }
+      createBox(
+        scene,
+        `${landmark.id}-entrance`,
+        { width: 7.5, height: 6.2, depth: 0.85 },
+        new Vector3(
+          landmark.center.x,
+          3.1,
+          landmark.center.z - landmark.size.z / 2 - 0.5,
+        ),
+        roof,
+      );
+      return true;
+    }
+
+    if (landmark.id === "london-natural-history-tower") {
+      const height = 24;
+      createBox(
+        scene,
+        landmark.id,
+        { width: 11, height, depth: 11 },
+        new Vector3(landmark.center.x, height / 2, landmark.center.z),
+        material,
+      );
+      createBox(
+        scene,
+        `${landmark.id}-clock-band`,
+        { width: 12.4, height: 2.2, depth: 12.4 },
+        new Vector3(landmark.center.x, 19, landmark.center.z),
+        trim,
+      );
+      createCylinder(
+        scene,
+        `${landmark.id}-roof`,
+        { height: 7, diameterTop: 0.8, diameterBottom: 13.5, tessellation: 4 },
+        new Vector3(landmark.center.x, height + 3.5, landmark.center.z),
+        roof,
+      ).rotation.y = Math.PI / 4;
+      return true;
+    }
+
+    if (
+      landmark.id === "london-science-museum" ||
+      landmark.id === "london-victoria-and-albert-museum"
+    ) {
+      const isVictoriaAndAlbert = landmark.id.includes("victoria");
+      const height = isVictoriaAndAlbert ? 13 : 10;
+      createBox(
+        scene,
+        landmark.id,
+        { width: landmark.size.x, height, depth: landmark.size.z },
+        new Vector3(landmark.center.x, height / 2, landmark.center.z),
+        material,
+      );
+      createBox(
+        scene,
+        `${landmark.id}-roofline`,
+        { width: landmark.size.x + 0.8, height: 1.1, depth: landmark.size.z + 0.8 },
+        new Vector3(landmark.center.x, height + 0.45, landmark.center.z),
+        trim,
+      );
+      for (let bay = -3; bay <= 3; bay += 1) {
+        const x = landmark.center.x + bay * (landmark.size.x / 8);
+        createBox(
+          scene,
+          `${landmark.id}-bay-${bay}`,
+          {
+            width: isVictoriaAndAlbert ? 2.2 : 4.2,
+            height: isVictoriaAndAlbert ? 6.5 : 3.1,
+            depth: 0.2,
+          },
+          new Vector3(
+            x,
+            isVictoriaAndAlbert ? 6.1 : 5.3,
+            landmark.center.z - landmark.size.z / 2 - 0.12,
+          ),
+          windows,
+        );
+      }
+      return true;
+    }
+
+    if (landmark.id === "london-south-kensington-station") {
+      createBox(
+        scene,
+        landmark.id,
+        { width: landmark.size.x, height: 5.4, depth: landmark.size.z },
+        new Vector3(landmark.center.x, 2.7, landmark.center.z),
+        material,
+      );
+      createBox(
+        scene,
+        `${landmark.id}-awning`,
+        { width: landmark.size.x + 2, height: 0.35, depth: 2.8 },
+        new Vector3(landmark.center.x, 3.1, landmark.center.z - landmark.size.z / 2 - 1.2),
+        roof,
+      );
+      createBox(
+        scene,
+        `${landmark.id}-name-board`,
+        { width: 9, height: 1.1, depth: 0.2 },
+        new Vector3(landmark.center.x, 4.25, landmark.center.z - landmark.size.z / 2 - 0.14),
+        trim,
+      );
+      return true;
+    }
+
+    if (landmark.id === "london-exhibition-road-public-space") {
+      const paving = makeMaterial(scene, `${landmark.id}-paving`, new Color3(0.54, 0.54, 0.5));
+      createBox(
+        scene,
+        landmark.id,
+        { width: landmark.size.x, height: 0.14, depth: landmark.size.z },
+        new Vector3(landmark.center.x, 0.14, landmark.center.z),
+        paving,
+      );
+      for (const zOffset of [-18, -6, 6, 18]) {
+        createBox(
+          scene,
+          `${landmark.id}-paving-band-${zOffset}`,
+          { width: landmark.size.x, height: 0.025, depth: 0.35 },
+          new Vector3(landmark.center.x, 0.23, landmark.center.z + zOffset),
+          trim,
+        );
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  private buildLondonStreetFurniture() {
+    const scene = this.scene;
+    const iron = makeMaterial(scene, "london-street-iron", new Color3(0.055, 0.065, 0.065));
+    const lamp = makeMaterial(
+      scene,
+      "london-street-lamp",
+      new Color3(0.78, 0.72, 0.5),
+      new Color3(0.16, 0.12, 0.05),
+    );
+    const planter = makeMaterial(scene, "london-planter", new Color3(0.2, 0.34, 0.19));
+    const postBoxRed = makeMaterial(scene, "london-post-box", new Color3(0.62, 0.045, 0.04));
+
+    const lampPositions = [
+      [-83, -52],
+      [-50, -52],
+      [-2, -52],
+      [25, -52],
+      [28, 2],
+      [56, 18],
+      [28, 60],
+      [56, 72],
+    ] as const;
+    for (let index = 0; index < lampPositions.length; index += 1) {
+      const [x, z] = lampPositions[index];
+      createCylinder(
+        scene,
+        `london-lamp-post-${index}`,
+        { height: 4.7, diameter: 0.18 },
+        new Vector3(x, 2.35, z),
+        iron,
+      );
+      createBox(
+        scene,
+        `london-lamp-head-${index}`,
+        { width: 0.62, height: 0.78, depth: 0.62 },
+        new Vector3(x, 4.68, z),
+        lamp,
+      );
+    }
+
+    for (const [index, z] of [-2, 22, 46, 70].entries()) {
+      for (const x of [32, 52]) {
+        createCylinder(
+          scene,
+          `london-bollard-${index}-${x}`,
+          { height: 0.95, diameterTop: 0.17, diameterBottom: 0.28 },
+          new Vector3(x, 0.49, z),
+          iron,
+        );
+      }
+    }
+
+    for (const [index, z] of [-8, 36, 68].entries()) {
+      createCylinder(
+        scene,
+        `london-planter-${index}`,
+        { height: 0.72, diameterTop: 1.15, diameterBottom: 0.92 },
+        new Vector3(57, 0.38, z),
+        planter,
+      );
+    }
+
+    createCylinder(
+      scene,
+      "london-generic-post-box",
+      { height: 1.55, diameter: 0.62 },
+      new Vector3(122, 0.79, 87),
+      postBoxRed,
+    );
+    createCylinder(
+      scene,
+      "london-generic-post-box-cap",
+      { height: 0.28, diameterTop: 0.4, diameterBottom: 0.72 },
+      new Vector3(122, 1.69, 87),
+      postBoxRed,
+    );
   }
 
   private createFlatSegment(
@@ -1930,17 +2452,130 @@ class BabylonGameSession {
       const z = start.z + (end.z - start.z) * amount;
       const heading = Math.atan2(end.x - start.x, end.z - start.z);
       const node = new TransformNode(`scenario-npc-${index}`, scene);
+      const isLondonRedBus =
+        mapPack.id.toLowerCase().includes("london") && spawn?.id === "london-red-bus";
+      const isLondonBlackCab =
+        mapPack.id.toLowerCase().includes("london") && spawn?.id === "london-black-cab";
       const body = makeMaterial(
         scene,
         `scenario-npc-body-${index}`,
-        trafficColors[index % trafficColors.length],
+        isLondonRedBus
+          ? new Color3(0.68, 0.035, 0.025)
+          : isLondonBlackCab
+            ? new Color3(0.035, 0.04, 0.042)
+            : trafficColors[index % trafficColors.length],
       );
-      createBox(scene, `scenario-car-${index}`, { width: 1.72, height: 0.58, depth: 3.7 }, new Vector3(0, 0.62, 0), body, node);
-      createBox(scene, `scenario-cabin-${index}`, { width: 1.46, height: 0.62, depth: 1.6 }, new Vector3(0, 1.12, -0.16), windowMaterial, node);
-      for (const wheelX of [-0.87, 0.87]) {
-        for (const wheelZ of [-1.08, 1.12]) {
-          const wheel = createCylinder(scene, `scenario-wheel-${index}-${wheelX}-${wheelZ}`, { height: 0.2, diameter: 0.58 }, new Vector3(wheelX, 0.45, wheelZ), tireMaterial, node);
-          wheel.rotation.z = Math.PI / 2;
+
+      if (isLondonRedBus) {
+        createBox(
+          scene,
+          `scenario-london-bus-lower-${index}`,
+          { width: 2.28, height: 1.05, depth: 7.35 },
+          new Vector3(0, 0.95, 0),
+          body,
+          node,
+        );
+        createBox(
+          scene,
+          `scenario-london-bus-upper-${index}`,
+          { width: 2.18, height: 1.62, depth: 6.75 },
+          new Vector3(0, 2.22, -0.08),
+          body,
+          node,
+        );
+        for (const side of [-1, 1]) {
+          createBox(
+            scene,
+            `scenario-london-bus-windows-${index}-${side}`,
+            { width: 0.055, height: 0.62, depth: 5.3 },
+            new Vector3(side * 1.105, 2.34, -0.05),
+            windowMaterial,
+            node,
+          );
+        }
+        createBox(
+          scene,
+          `scenario-london-bus-front-window-${index}`,
+          { width: 1.78, height: 0.7, depth: 0.06 },
+          new Vector3(0, 2.3, 3.31),
+          windowMaterial,
+          node,
+        );
+        createBox(
+          scene,
+          `scenario-london-bus-rear-window-${index}`,
+          { width: 1.66, height: 0.6, depth: 0.06 },
+          new Vector3(0, 2.3, -3.47),
+          windowMaterial,
+          node,
+        );
+        for (const wheelX of [-1.11, 1.11]) {
+          for (const wheelZ of [-2.35, 2.35]) {
+            const wheel = createCylinder(
+              scene,
+              `scenario-london-bus-wheel-${index}-${wheelX}-${wheelZ}`,
+              { height: 0.22, diameter: 0.82 },
+              new Vector3(wheelX, 0.5, wheelZ),
+              tireMaterial,
+              node,
+            );
+            wheel.rotation.z = Math.PI / 2;
+          }
+        }
+      } else if (isLondonBlackCab) {
+        createBox(
+          scene,
+          `scenario-london-cab-body-${index}`,
+          { width: 1.84, height: 0.68, depth: 4.25 },
+          new Vector3(0, 0.67, 0),
+          body,
+          node,
+        );
+        createBox(
+          scene,
+          `scenario-london-cab-cabin-${index}`,
+          { width: 1.62, height: 0.92, depth: 2.05 },
+          new Vector3(0, 1.27, -0.28),
+          body,
+          node,
+        );
+        createBox(
+          scene,
+          `scenario-london-cab-windows-${index}`,
+          { width: 1.67, height: 0.54, depth: 1.55 },
+          new Vector3(0, 1.35, -0.25),
+          windowMaterial,
+          node,
+        );
+        createBox(
+          scene,
+          `scenario-london-cab-roof-${index}`,
+          { width: 1.42, height: 0.16, depth: 1.7 },
+          new Vector3(0, 1.82, -0.3),
+          body,
+          node,
+        );
+        for (const wheelX of [-0.93, 0.93]) {
+          for (const wheelZ of [-1.32, 1.28]) {
+            const wheel = createCylinder(
+              scene,
+              `scenario-london-cab-wheel-${index}-${wheelX}-${wheelZ}`,
+              { height: 0.2, diameter: 0.62 },
+              new Vector3(wheelX, 0.45, wheelZ),
+              tireMaterial,
+              node,
+            );
+            wheel.rotation.z = Math.PI / 2;
+          }
+        }
+      } else {
+        createBox(scene, `scenario-car-${index}`, { width: 1.72, height: 0.58, depth: 3.7 }, new Vector3(0, 0.62, 0), body, node);
+        createBox(scene, `scenario-cabin-${index}`, { width: 1.46, height: 0.62, depth: 1.6 }, new Vector3(0, 1.12, -0.16), windowMaterial, node);
+        for (const wheelX of [-0.87, 0.87]) {
+          for (const wheelZ of [-1.08, 1.12]) {
+            const wheel = createCylinder(scene, `scenario-wheel-${index}-${wheelX}-${wheelZ}`, { height: 0.2, diameter: 0.58 }, new Vector3(wheelX, 0.45, wheelZ), tireMaterial, node);
+            wheel.rotation.z = Math.PI / 2;
+          }
         }
       }
       const displayLimit = lane.speedLimit ?? (this.options.speedUnit === "mph" ? 30 : 50);
@@ -1955,6 +2590,7 @@ class BabylonGameSession {
         speed: Math.max(3.5, limitMps * (0.58 + random() * 0.22)),
         z,
         laneX: x,
+        laneId: lane.id,
         path,
         pathSegment: segment,
         pathDistance: initialDistance,
@@ -2239,8 +2875,15 @@ class BabylonGameSession {
     type: GameRuntimeEvent["type"],
     message: string,
     severity: GameRuntimeEvent["severity"] = "info",
+    rule?: Pick<GameRuntimeEvent, "ruleCode" | "penalty" | "evidence">,
   ) {
-    this.callbacks.onEvent?.({ type, message, severity, timestamp: eventNow() });
+    this.callbacks.onEvent?.({
+      type,
+      message,
+      severity,
+      timestamp: eventNow(),
+      ...rule,
+    });
   }
 
   private publishHud(force = false) {
@@ -2284,6 +2927,7 @@ class BabylonGameSession {
         "Reach the end of the training route",
       checkpoint: this.checkpointLabel,
       trafficSide: this.activeTrafficSide,
+      scenarioClock: this.options.lesson?.scenarioClock?.label,
     });
   }
 
@@ -2721,6 +3365,21 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <div style={{ marginBottom: 5, fontSize: 10, opacity: 0.62 }}>
                 {hud.scenarioTitle} · {hud.objective}
               </div>
+              {hud.scenarioClock && (
+                <div
+                  aria-label={`Scenario time ${hud.scenarioClock}`}
+                  style={{
+                    marginBottom: 7,
+                    color: "#f2c658",
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: ".08em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Scenario time · {hud.scenarioClock}
+                </div>
+              )}
               {hud.instruction}
               <div style={{ height: 3, marginTop: 10, overflow: "hidden", borderRadius: 99, background: "rgba(255,255,255,.12)" }}>
                 <div style={{ width: `${hud.objectiveProgress * 100}%`, height: "100%", background: "#f2c658" }} />

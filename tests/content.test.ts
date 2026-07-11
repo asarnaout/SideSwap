@@ -1,30 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   COUNTRY_PROFILES,
+  DESTINATION_PROFILES,
   FREE_DRIVES,
   LESSONS,
   MAP_PACKS,
   getCountryProfile,
+  getDestinationProfile,
   getLesson,
   getMapPack,
   getOrientationForTrafficSide,
-  isScenarioCompatibleWithCountry,
+  isScenarioCompatibleWithDestination,
   resolveSessionConfig,
   resolveSteeringSide,
 } from "../app/game/content";
 import type {
-  CountryId,
+  DestinationId,
   GameSessionConfig,
   ScenarioId,
   SteeringPreference,
 } from "../app/game/types";
 
 const sessionConfig = (
-  countryId: CountryId,
+  destinationId: DestinationId,
   scenarioId: ScenarioId,
   steeringPreference: SteeringPreference = "auto",
 ): GameSessionConfig => ({
-  countryId,
+  countryId: getDestinationProfile(destinationId).countryId,
+  destinationId,
   scenarioId,
   familiarTrafficSide: "right",
   steeringPreference,
@@ -40,15 +43,25 @@ const sessionConfig = (
 });
 
 describe("SideSwap content", () => {
-  it("ships the four destinations and complete 15-lesson curriculum", () => {
+  it("keeps four legal country profiles and five destination profiles", () => {
     expect(COUNTRY_PROFILES.map((country) => country.id)).toEqual([
       "us",
       "uk",
       "fr",
       "jp",
     ]);
-    expect(LESSONS).toHaveLength(15);
-    expect(MAP_PACKS).toHaveLength(6);
+    expect(DESTINATION_PROFILES.map((destination) => destination.id)).toEqual([
+      "uk-london",
+      "us-nyc",
+      "uk-milton-keynes",
+      "fr-calais",
+      "jp-tokyo",
+    ]);
+    expect(DESTINATION_PROFILES[0].promotion).toBe("featured");
+    expect(getDestinationProfile("uk-milton-keynes").promotion).toBe("specialist");
+    expect(LESSONS).toHaveLength(18);
+    expect(FREE_DRIVES).toHaveLength(5);
+    expect(MAP_PACKS).toHaveLength(7);
     expect(getLesson("uk-fr-side-swap").profileTransitions).toHaveLength(1);
   });
 
@@ -82,68 +95,77 @@ describe("SideSwap content", () => {
   });
 
   it("resolves shared orientations against the selected destination", () => {
-    for (const country of COUNTRY_PROFILES) {
+    for (const destination of DESTINATION_PROFILES) {
+      const country = getCountryProfile(destination.countryId);
       for (const orientationId of [
         "orientation-right",
         "orientation-left",
       ] as const) {
         const expected = orientationId.endsWith(country.trafficSide);
         expect(
-          isScenarioCompatibleWithCountry(orientationId, country.id),
+          isScenarioCompatibleWithDestination(orientationId, destination.id),
         ).toBe(expected);
 
         if (expected) {
           const resolved = resolveSessionConfig(
-            sessionConfig(country.id, orientationId),
+            sessionConfig(destination.id, orientationId),
           );
           expect(resolved.countryId).toBe(country.id);
+          expect(resolved.destinationId).toBe(destination.id);
           expect(resolved.trafficSide).toBe(country.trafficSide);
           expect(resolved.steeringSide).toBe(country.defaultSteeringSide);
           expect(resolved.speedUnit).toBe(country.speedUnit);
         } else {
           expect(() =>
-            resolveSessionConfig(sessionConfig(country.id, orientationId)),
+            resolveSessionConfig(sessionConfig(destination.id, orientationId)),
           ).toThrow(/not compatible/);
         }
       }
     }
   });
 
-  it("accepts every jurisdiction scenario only for its own destination", () => {
-    const countryScenarios = [
-      ...LESSONS.filter((lesson) => lesson.countryId),
+  it("accepts every regular scenario only for its exact destination", () => {
+    const destinationScenarios = [
+      ...LESSONS.filter((lesson) => lesson.destinationId),
       ...FREE_DRIVES,
     ];
 
-    for (const scenario of countryScenarios) {
-      for (const country of COUNTRY_PROFILES) {
+    for (const scenario of destinationScenarios) {
+      for (const destination of DESTINATION_PROFILES) {
         expect(
-          isScenarioCompatibleWithCountry(scenario.id, country.id),
-          `${scenario.id} with ${country.id}`,
-        ).toBe(scenario.countryId === country.id);
+          isScenarioCompatibleWithDestination(scenario.id, destination.id),
+          `${scenario.id} with ${destination.id}`,
+        ).toBe(scenario.destinationId === destination.id);
       }
     }
   });
 
   it("rejects traffic-side and destination mismatches", () => {
     expect(() =>
-      resolveSessionConfig(sessionConfig("us", "orientation-left")),
+      resolveSessionConfig(sessionConfig("us-nyc", "orientation-left")),
     ).toThrow(/not compatible/);
     expect(() =>
-      resolveSessionConfig(sessionConfig("uk", "us-one-way-grid")),
+      resolveSessionConfig(sessionConfig("uk-london", "us-one-way-grid")),
     ).toThrow(/not compatible/);
-    expect(() => resolveSessionConfig(sessionConfig("fr", "free-jp"))).toThrow(
+    expect(() => resolveSessionConfig(sessionConfig("fr-calais", "free-jp"))).toThrow(
       /not compatible/,
     );
+    expect(() =>
+      resolveSessionConfig({
+        ...sessionConfig("uk-london", "orientation-left"),
+        countryId: "us",
+      }),
+    ).toThrow(/destination .* not compatible with country/);
   });
 
   it("keeps wheel overrides independent in every valid country session", () => {
-    for (const country of COUNTRY_PROFILES) {
+    for (const destination of DESTINATION_PROFILES) {
+      const country = getCountryProfile(destination.countryId);
       const orientationId =
         country.trafficSide === "right" ? "orientation-right" : "orientation-left";
       for (const steeringPreference of ["left", "right"] as const) {
         const resolved = resolveSessionConfig(
-          sessionConfig(country.id, orientationId, steeringPreference),
+          sessionConfig(destination.id, orientationId, steeringPreference),
         );
         expect(resolved.steeringSide).toBe(steeringPreference);
         expect(resolved.trafficSide).toBe(country.trafficSide);
@@ -151,16 +173,20 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("starts the travel-transition capstone with the UK profile only", () => {
-    expect(isScenarioCompatibleWithCountry("uk-fr-side-swap", "uk")).toBe(true);
-    for (const countryId of ["us", "fr", "jp"] as const) {
-      expect(isScenarioCompatibleWithCountry("uk-fr-side-swap", countryId)).toBe(
-        false,
-      );
+  it("starts the travel-transition capstone from either UK destination only", () => {
+    for (const destinationId of ["uk-london", "uk-milton-keynes"] as const) {
+      expect(
+        isScenarioCompatibleWithDestination("uk-fr-side-swap", destinationId),
+      ).toBe(true);
+    }
+    for (const destinationId of ["us-nyc", "fr-calais", "jp-tokyo"] as const) {
+      expect(
+        isScenarioCompatibleWithDestination("uk-fr-side-swap", destinationId),
+      ).toBe(false);
     }
 
     const resolved = resolveSessionConfig(
-      sessionConfig("uk", "uk-fr-side-swap"),
+      sessionConfig("uk-london", "uk-fr-side-swap"),
     );
     expect(resolved.trafficSide).toBe("left");
     expect(resolved.speedUnit).toBe("mph");
@@ -175,7 +201,7 @@ describe("SideSwap content", () => {
         ).find((candidate) => candidate.id === sourceId);
         expect(source, `${lesson.id} → ${sourceId}`).toBeDefined();
         expect(source?.url.startsWith("https://")).toBe(true);
-        expect(source?.reviewedOn).toBe("2026-07-10");
+        expect(source?.reviewedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       }
     }
   });

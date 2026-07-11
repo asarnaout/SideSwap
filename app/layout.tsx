@@ -15,7 +15,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "SideSwap — Practice the other side",
     description:
-      "A low-poly 3D driving trainer for learning left- and right-side road habits before you travel.",
+      "A low-poly 3D driving trainer featuring London and four other destinations for learning left- and right-side road habits before you travel.",
     applicationName: "SideSwap",
     icons: {
       icon: "/favicon.svg",
@@ -25,27 +25,28 @@ export async function generateMetadata(): Promise<Metadata> {
       "left hand traffic",
       "right hand traffic",
       "travel training",
+      "London driving game",
       "3D web game",
     ],
     openGraph: {
       title: "SideSwap — Practice the other side",
-      description: "Build the right instincts before the road feels backwards.",
+      description: "Start in London and build the right instincts before the road feels backwards.",
       type: "website",
       siteName: "SideSwap",
       url: origin,
       images: [
         {
           url: imageUrl,
-          width: 1200,
-          height: 630,
-          alt: "SideSwap low-poly driving scene showing mirrored traffic sides",
+          width: 1568,
+          height: 1003,
+          alt: "SideSwap low-poly London driving scene in South Kensington",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
       title: "SideSwap — Practice the other side",
-      description: "Build the right instincts before the road feels backwards.",
+      description: "Start in London and build the right instincts before the road feels backwards.",
       images: [imageUrl],
     },
   };

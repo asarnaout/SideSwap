@@ -8,9 +8,17 @@ export type Gear = "drive" | "reverse";
 
 export type CountryId = "us" | "uk" | "fr" | "jp";
 
+export type DestinationId =
+  | "us-nyc"
+  | "uk-london"
+  | "uk-milton-keynes"
+  | "fr-calais"
+  | "jp-tokyo";
+
 export type MapId =
   | "orientation-yard"
   | "nyc-upper-west-side"
+  | "london-south-kensington"
   | "milton-keynes-oldbrook"
   | "calais-coquelles"
   | "tokyo-setagaya"
@@ -25,6 +33,9 @@ export type LessonId =
   | "uk-left-side-basics"
   | "uk-roundabouts"
   | "uk-dual-carriageway"
+  | "uk-london-left-side-basics"
+  | "uk-london-museum-traffic"
+  | "uk-london-exhibition-road"
   | "fr-right-side-basics"
   | "fr-priority-roundabouts"
   | "fr-speed-merging"
@@ -36,6 +47,7 @@ export type LessonId =
 export type FreeDriveId =
   | "free-us"
   | "free-uk"
+  | "free-uk-london"
   | "free-fr"
   | "free-jp";
 
@@ -52,6 +64,8 @@ export type RuleCode =
   | "unsafe_gap"
   | "following_distance"
   | "lane_misuse"
+  | "box_junction"
+  | "restricted_lane"
   | "one_way"
   | "roundabout_yield"
   | "merge"
@@ -118,8 +132,6 @@ export interface CountryProfile {
   readonly id: CountryId;
   readonly countryCode: string;
   readonly countryName: string;
-  readonly destinationName: string;
-  readonly destinationSubtitle: string;
   readonly flagEmoji: string;
   readonly trafficSide: TrafficSide;
   readonly defaultSteeringSide: SteeringSide;
@@ -127,9 +139,23 @@ export interface CountryProfile {
   readonly lanePolicy: LanePolicy;
   readonly roundaboutPolicy: RoundaboutPolicy;
   readonly priorityPolicy: string;
-  readonly visualTheme: CountryVisualTheme;
   readonly officialReferences: readonly OfficialRuleReference[];
   readonly reviewedOn: string;
+}
+
+export type DestinationPromotion = "featured" | "standard" | "specialist";
+
+export interface DestinationProfile {
+  readonly id: DestinationId;
+  readonly countryId: CountryId;
+  readonly destinationName: string;
+  readonly destinationSubtitle: string;
+  readonly mapId: MapId;
+  readonly lessonIds: readonly LessonId[];
+  readonly freeDriveId: FreeDriveId;
+  readonly promotion: DestinationPromotion;
+  readonly cityMark: string;
+  readonly visualTheme: CountryVisualTheme;
 }
 
 export type LaneRole =
@@ -165,7 +191,32 @@ export type TrafficControlType =
   | "signal"
   | "crosswalk"
   | "railway_signal"
+  | "box_junction"
+  | "restricted_lane"
   | "side_swap_gate";
+
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+export interface ScenarioClock {
+  readonly weekday: Weekday;
+  readonly minutesAfterMidnight: number;
+  readonly label: string;
+}
+
+export interface RestrictionWindow {
+  readonly weekdays: readonly Weekday[];
+  readonly startMinutes: number;
+  readonly endMinutes: number;
+}
+
+export interface LaneRestriction {
+  readonly id: string;
+  readonly laneId: string;
+  readonly ruleCode: "restricted_lane";
+  readonly activeWindows: readonly RestrictionWindow[];
+  readonly sourceReferenceId: string;
+  readonly message: string;
+}
 
 export interface TrafficControl {
   readonly id: string;
@@ -203,6 +254,7 @@ export interface LaneGraph {
   readonly conflictZones: readonly ConflictZone[];
   readonly spawnPoints: readonly MapSpawnPoint[];
   readonly checkpoints: readonly MapCheckpoint[];
+  readonly restrictions?: readonly LaneRestriction[];
 }
 
 export interface FrozenMapSource {
@@ -296,6 +348,7 @@ export interface LessonDefinition {
   readonly summary: string;
   readonly mapId: MapId;
   readonly countryId?: CountryId;
+  readonly destinationId?: DestinationId;
   readonly trafficSide: TrafficSide;
   readonly difficulty: 1 | 2 | 3 | 4;
   readonly estimatedMinutes: readonly [number, number];
@@ -314,16 +367,19 @@ export interface LessonDefinition {
   readonly prerequisites: readonly LessonId[];
   readonly unlocks: LessonUnlocks;
   readonly profileTransitions?: readonly ProfileTransition[];
+  readonly scenarioClock?: ScenarioClock;
 }
 
 export interface FreeDriveDefinition {
   readonly id: FreeDriveId;
   readonly countryId: CountryId;
+  readonly destinationId: DestinationId;
   readonly mapId: MapId;
   readonly title: string;
   readonly description: string;
   readonly unlockAfter: LessonId;
   readonly trafficSeed: number;
+  readonly scenarioClock?: ScenarioClock;
 }
 
 export interface AssistanceSettings {
@@ -336,6 +392,7 @@ export interface AssistanceSettings {
 
 export interface GameSessionConfig {
   readonly countryId: CountryId;
+  readonly destinationId: DestinationId;
   readonly scenarioId: ScenarioId;
   readonly familiarTrafficSide: TrafficSide;
   readonly steeringPreference: SteeringPreference;
@@ -396,7 +453,8 @@ export type BadgeId =
   | "vulnerable_road_guardian"
   | "rail_crossing_ready"
   | "side_swap_traveler"
-  | "first_person_mastery";
+  | "first_person_mastery"
+  | "london_city_ready";
 
 export interface AccessibilityPreferences {
   readonly subtitles: boolean;
@@ -420,6 +478,7 @@ export interface PlayerProgressV1 {
   readonly familiarTrafficSide: TrafficSide;
   readonly familiarSideConfirmed: boolean;
   readonly lastCountryId: CountryId;
+  readonly lastDestinationId: DestinationId;
   readonly preferredCamera: CameraMode;
   readonly preferredInput: InputFamily;
   readonly accessibility: AccessibilityPreferences;
@@ -428,6 +487,7 @@ export interface PlayerProgressV1 {
 
 export interface RecommendedDrive {
   readonly countryId: CountryId;
+  readonly destinationId: DestinationId;
   readonly scenarioId: ScenarioId;
   readonly kind: "orientation" | "lesson" | "capstone" | "free_drive";
   readonly ctaLabel: string;

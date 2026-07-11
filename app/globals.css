@@ -1173,6 +1173,20 @@ select {
 .stamp-ring small { align-self: start; font-size: 7px; font-weight: 850; letter-spacing: 0.12em; }
 .passport-stamp h2 { margin: 0; font-family: Georgia, serif; font-size: 20px; }
 .passport-stamp p { margin: 5px 0 0; color: var(--ink-soft); font-size: 9px; }
+.passport-destination-progress {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 10px;
+}
+.passport-destination-progress p {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+}
+.passport-destination-progress strong { color: var(--ink); font-size: 9px; }
+.passport-destination-progress span { white-space: nowrap; font-size: 8px; }
 
 .badge-section { margin-top: 45px; }
 .badge-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1240,7 +1254,7 @@ select {
 .license-card h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; }
 .license-card p:not(.eyebrow) { max-width: 750px; color: rgba(255,255,255,.66); font-size: 11px; line-height: 1.6; }
 .license-card > a { color: var(--yellow); font-size: 10px; }
-.map-downloads { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 20px 0; }
+.map-downloads { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 20px 0; }
 .map-downloads a { display: grid; gap: 4px; padding: 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 11px; color: white; text-decoration: none; }
 .map-downloads a:hover { border-color: var(--yellow); }
 .map-downloads span { font-size: 10px; font-weight: 800; }
@@ -1469,15 +1483,16 @@ select {
 
 .launcher-destinations {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 7px;
   margin-top: clamp(12px, 2.1vh, 20px);
 }
 
 .launcher-destinations button {
   display: grid;
+  align-content: start;
   min-width: 0;
-  min-height: 66px;
+  min-height: 84px;
   padding: 8px 9px;
   border: 1px solid var(--line);
   border-radius: 13px;
@@ -1501,7 +1516,28 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.launcher-destinations small { color: var(--ink-soft); font-size: 8px; }
+.launcher-destinations small {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 7px;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.destination-badge {
+  align-self: end;
+  margin-top: 6px;
+  color: var(--green);
+  font-size: 6px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: .04em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+.launcher-destinations button.specialist .destination-badge { color: #755e17; }
 
 .launcher-setup-summary {
   display: grid;
@@ -1526,6 +1562,16 @@ select {
 .launcher-setup-summary button:hover { background: rgba(255, 255, 255, 0.55); }
 .launcher-setup-summary small { color: var(--ink-soft); font-size: 7px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
 .launcher-setup-summary strong { overflow: hidden; margin-top: 2px; font-size: 9px; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
+
+.london-charge-note,
+.hub-charge-note {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  font-size: 8px;
+  line-height: 1.4;
+}
+.london-charge-note a,
+.hub-charge-note a { color: var(--green); font-weight: 800; }
 
 .launcher-actions {
   display: flex;
@@ -1594,6 +1640,63 @@ select {
   box-shadow: inset -8px 0 rgba(0, 0, 0, 0.06);
 }
 
+.launcher-london-details { position: absolute; inset: 0; pointer-events: none; }
+.launcher-museum {
+  position: absolute;
+  top: 21%;
+  left: 4%;
+  z-index: 2;
+  width: 34%;
+  min-width: 170px;
+  height: 96px;
+  border: 1px solid rgba(74, 49, 31, .35);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 16px, rgba(89, 57, 35, .22) 16px 19px),
+    #bd8f64;
+  box-shadow: inset 0 -14px rgba(73, 45, 27, .12);
+}
+.launcher-museum::before {
+  content: "";
+  position: absolute;
+  top: -19px;
+  left: -9px;
+  width: calc(100% + 18px);
+  height: 22px;
+  background: #8f633f;
+  clip-path: polygon(0 100%, 8% 30%, 50% 0, 92% 30%, 100% 100%);
+}
+.launcher-museum::after {
+  content: "";
+  position: absolute;
+  inset: 22px 12% 17px;
+  border: 5px double rgba(69, 45, 29, .35);
+  border-radius: 50% 50% 4px 4px;
+}
+.launcher-bus,
+.launcher-cab {
+  position: absolute;
+  z-index: 3;
+  border: 2px solid #263337;
+  box-shadow: 0 7px 10px rgba(0, 0, 0, .28);
+  transform: rotate(7deg);
+}
+.launcher-bus {
+  top: 47%;
+  left: calc(50% + 94px);
+  width: 27px;
+  height: 52px;
+  border-radius: 4px;
+  background: linear-gradient(#a5d0da 0 20%, #b72f34 20% 58%, #a5d0da 58% 73%, #b72f34 73%);
+}
+.launcher-cab {
+  bottom: 37%;
+  left: calc(50% - 28px);
+  width: 31px;
+  height: 45px;
+  border-radius: 12px 12px 7px 7px;
+  background: linear-gradient(#41555d 0 25%, #172328 25%);
+}
+
 .launcher-road {
   position: absolute;
   top: 39%;
@@ -1657,6 +1760,7 @@ select {
 }
 .launcher-place span { color: var(--yellow); font-size: 8px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
 .launcher-place strong { font-family: Georgia, serif; font-size: 22px; }
+.launcher-place em { color: rgba(255, 255, 255, 0.78); font-size: 9px; font-style: normal; }
 .launcher-place small { color: rgba(255, 255, 255, 0.65); font-size: 9px; }
 
 .launcher-progress {
@@ -1721,16 +1825,23 @@ select {
 /* Training Hub */
 .training-hub { width: min(1280px, calc(100% - 48px)); }
 .training-hub-heading { margin-bottom: 28px; }
-.hub-country-tabs { display: flex; gap: 7px; overflow-x: auto; padding: 2px 2px 10px; }
-.hub-country-tabs button { display: flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 15px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.45); cursor: pointer; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.hub-country-tabs { display: flex; align-items: end; gap: 12px; overflow-x: auto; padding: 2px 2px 10px; }
+.hub-destination-group { display: grid; flex: none; gap: 5px; }
+.hub-destination-group > small { color: var(--ink-soft); font-size: 7px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.hub-destination-group > div { display: flex; gap: 5px; }
+.hub-country-tabs button { display: grid; grid-template-columns: auto auto; align-items: center; gap: 0 7px; min-height: 44px; padding: 6px 15px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.45); cursor: pointer; font-size: 10px; font-weight: 800; text-align: left; white-space: nowrap; }
 .hub-country-tabs button.active { border: 2px solid var(--destination-accent); padding-inline: 14px; background: var(--paper-bright); }
-.hub-country-tabs span { font-size: 17px; }
+.hub-country-tabs span { grid-row: 1 / span 2; color: var(--ink-soft); font-size: 9px; }
+.hub-country-tabs b { font-size: 10px; }
+.hub-country-tabs em { grid-column: 2; color: var(--ink-soft); font-size: 7px; font-style: normal; font-weight: 700; }
 .hub-destination-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 25px 0 18px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
 .hub-destination-heading > div { display: flex; align-items: center; gap: 12px; }
 .hub-destination-heading > div > span { font-size: 32px; }
 .hub-destination-heading small { color: var(--ink-soft); font-size: 8px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .hub-destination-heading h2 { margin: 1px 0 0; font-family: Georgia, serif; font-size: 30px; font-weight: 500; }
+.hub-destination-heading h2 + em { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 9px; font-style: normal; }
 .hub-destination-heading p { margin: 0; color: var(--ink-soft); font-size: 10px; }
+.hub-charge-note { margin: -8px 0 17px; }
 .hub-lessons { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .hub-lessons .lesson-card { cursor: default; }
 .hub-lessons .lesson-card:hover { transform: none; box-shadow: none; }
@@ -1763,12 +1874,28 @@ select {
   .launcher-familiar .segmented { gap: 5px; padding: 4px; }
   .launcher-familiar .segmented button { min-height: 44px; padding: 6px; font-size: 9px; }
   .launcher-familiar .lane-icon { width: 29px; height: 17px; margin-right: 5px; }
-  .launcher-destinations { margin-top: 9px; gap: 5px; }
-  .launcher-destinations button { min-height: 58px; padding: 6px; border-radius: 10px; }
+  .launcher-destinations {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 9px -2px 0;
+    padding: 2px 2px 7px;
+    scroll-padding-inline: 2px;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: thin;
+  }
+  .launcher-destinations button {
+    flex: 0 0 min(42vw, 150px);
+    min-height: 70px;
+    padding: 6px;
+    border-radius: 10px;
+    scroll-snap-align: center;
+  }
   .launcher-destinations button.active { padding: 5px; }
   .launcher-destinations span { font-size: 15px; }
   .launcher-destinations strong { font-size: 8px; }
   .launcher-destinations small { font-size: 7px; }
+  .destination-badge { margin-top: 4px; }
   .launcher-setup-summary { gap: 5px; margin-top: 6px; }
   .launcher-setup-summary button { min-height: 44px; padding: 5px 8px; }
   .launcher-actions { display: grid; grid-template-columns: 1fr auto; margin-top: 9px; }
@@ -1796,7 +1923,7 @@ select {
   .launcher-page { width: calc(100% - 20px); }
   .launcher-copy h1 { font-size: clamp(31px, 9.7vw, 41px); }
   .launcher-destinations small { display: none; }
-  .launcher-destinations button { min-height: 52px; }
+  .launcher-destinations button { min-height: 60px; }
   .launcher-setup-summary strong { font-size: 8px; }
   .sheet-selects { grid-template-columns: 1fr; }
 }
@@ -1808,7 +1935,7 @@ select {
   .launcher-lead { margin-top: 6px; font-size: 10px; line-height: 1.3; }
   .launcher-familiar, .launcher-destinations { margin-top: 7px; }
   .launcher-familiar .segmented button { min-height: 42px; }
-  .launcher-destinations button { min-height: 51px; }
+  .launcher-destinations button { min-height: 59px; }
   .launcher-setup-summary button { min-height: 42px; }
   .launcher-actions { margin-top: 7px; }
   .launcher-primary { min-height: 46px; }
@@ -1819,4 +1946,5 @@ select {
   .launcher-legal { display: none; }
   .launcher-familiar legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
   .launcher-destinations { margin-top: 5px; }
+  .london-charge-note { display: none; }
 }

@@ -4,7 +4,9 @@ import {
   SCORING_CONFIG,
   getCountryIdForScenario,
   getCountryProfile,
-  getLessonsForCountry,
+  getDestinationProfile,
+  getFreeDriveForDestination,
+  getLessonsForDestination,
   getLesson,
   getOrientationForTrafficSide,
   isLessonId,
@@ -14,6 +16,7 @@ import type {
   BadgeId,
   CameraMode,
   CountryId,
+  DestinationId,
   FreeDriveId,
   InputFamily,
   LessonId,
@@ -44,9 +47,17 @@ const BADGE_IDS = new Set<BadgeId>([
   "rail_crossing_ready",
   "side_swap_traveler",
   "first_person_mastery",
+  "london_city_ready",
 ]);
 
 const COUNTRY_IDS = new Set<CountryId>(["us", "uk", "fr", "jp"]);
+const DESTINATION_IDS = new Set<DestinationId>([
+  "us-nyc",
+  "uk-london",
+  "uk-milton-keynes",
+  "fr-calais",
+  "jp-tokyo",
+]);
 
 const DEFAULT_ACCESSIBILITY: AccessibilityPreferences = {
   subtitles: true,
@@ -110,6 +121,11 @@ const parseTrafficSide = (value: unknown): TrafficSide =>
 const parseCountryId = (value: unknown): CountryId | undefined =>
   typeof value === "string" && COUNTRY_IDS.has(value as CountryId)
     ? (value as CountryId)
+    : undefined;
+
+const parseDestinationId = (value: unknown): DestinationId | undefined =>
+  typeof value === "string" && DESTINATION_IDS.has(value as DestinationId)
+    ? (value as DestinationId)
     : undefined;
 
 const parseCamera = (value: unknown): CameraMode => {
@@ -258,6 +274,19 @@ const parseLessonScores = (
 const oppositeSideStarterCountry = (familiarTrafficSide: TrafficSide): CountryId =>
   familiarTrafficSide === "right" ? "uk" : "us";
 
+const defaultDestinationForCountry = (countryId: CountryId): DestinationId => {
+  switch (countryId) {
+    case "us":
+      return "us-nyc";
+    case "uk":
+      return "uk-london";
+    case "fr":
+      return "fr-calais";
+    case "jp":
+      return "jp-tokyo";
+  }
+};
+
 const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
   if (value.version === 1) {
     return (
@@ -327,6 +356,34 @@ const inferLastCountryId = (
   return latestCountry ?? oppositeSideStarterCountry(familiarTrafficSide);
 };
 
+const inferLastDestinationId = (
+  explicitDestinationId: unknown,
+  lastCountryId: CountryId,
+  scores: Readonly<Partial<Record<LessonId, LessonScore>>>,
+): DestinationId => {
+  const parsedDestinationId = parseDestinationId(explicitDestinationId);
+  if (
+    parsedDestinationId &&
+    getDestinationProfile(parsedDestinationId).countryId === lastCountryId
+  ) {
+    return parsedDestinationId;
+  }
+
+  // Before destinations were persisted, the sole UK curriculum was Milton
+  // Keynes. A scored UK lesson therefore means the player should return there;
+  // UK saves without such evidence adopt the new featured London default.
+  if (
+    lastCountryId === "uk" &&
+    Object.values(scores).some(
+      (score) => score && getLesson(score.lessonId).destinationId === "uk-milton-keynes",
+    )
+  ) {
+    return "uk-milton-keynes";
+  }
+
+  return defaultDestinationForCountry(lastCountryId);
+};
+
 export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 {
   const updatedAt = asIsoDate(now, nowIso());
   return {
@@ -338,6 +395,7 @@ export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 
     familiarTrafficSide: "right",
     familiarSideConfirmed: false,
     lastCountryId: "uk",
+    lastDestinationId: "uk-london",
     preferredCamera: "third_person",
     preferredInput: "keyboard",
     accessibility: { ...DEFAULT_ACCESSIBILITY },
@@ -382,19 +440,31 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
   const lastCountryId =
     (recognizedProgress ? parseCountryId(value.lastCountryId) : undefined) ??
     inferLastCountryId(scores, familiarTrafficSide);
+  const lastDestinationId = inferLastDestinationId(
+    recognizedProgress ? value.lastDestinationId : undefined,
+    lastCountryId,
+    scores,
+  );
+  const completedLessonIds = unique([
+    ...parseLessonIds(completedCandidate),
+    ...completedFromScores,
+  ]);
+  const badges = parseBadges(value.badges).filter(
+    (badge) =>
+      badge !== "london_city_ready" ||
+      completedLessonIds.includes("uk-london-exhibition-road"),
+  );
 
   return {
     version: 1,
-    completedLessonIds: unique([
-      ...parseLessonIds(completedCandidate),
-      ...completedFromScores,
-    ]),
+    completedLessonIds,
     lessonScores: scores,
-    badges: parseBadges(value.badges),
+    badges,
     passportStamps: parseStamps(value.passportStamps ?? value.stamps),
     familiarTrafficSide,
     familiarSideConfirmed,
     lastCountryId,
+    lastDestinationId,
     preferredCamera: parseCamera(cameraCandidate),
     preferredInput: parseInput(inputCandidate),
     accessibility: parseAccessibility(accessibilityCandidate),
@@ -419,6 +489,14 @@ export function isPlayerProgressV1(value: unknown): value is PlayerProgressV1 {
     return false;
   }
   if (typeof value.lastCountryId !== "string" || !COUNTRY_IDS.has(value.lastCountryId as CountryId)) {
+    return false;
+  }
+  if (
+    typeof value.lastDestinationId !== "string" ||
+    !DESTINATION_IDS.has(value.lastDestinationId as DestinationId) ||
+    getDestinationProfile(value.lastDestinationId as DestinationId).countryId !==
+      value.lastCountryId
+  ) {
     return false;
   }
   if (value.preferredCamera !== "first_person" && value.preferredCamera !== "third_person") {
@@ -527,6 +605,9 @@ const badgesForCompletion = (
   }
   if (lessonId === "jp-railway-crossings") badges.push("rail_crossing_ready");
   if (lessonId === "uk-fr-side-swap") badges.push("side_swap_traveler");
+  if (lessonId === "uk-london-exhibition-road") {
+    badges.push("london_city_ready");
+  }
   if (score.mastered && cameraUsed === "first_person") {
     badges.push("first_person_mastery");
   }
@@ -579,7 +660,24 @@ export function updateLessonProgress(
   };
 }
 
+export function isCapstoneEligible(progress: PlayerProgressV1): boolean {
+  const completed = new Set(progress.completedLessonIds);
+  return (
+    completed.has("us-lane-choice") &&
+    completed.has("fr-speed-merging") &&
+    completed.has("jp-railway-crossings") &&
+    (completed.has("uk-london-exhibition-road") ||
+      completed.has("uk-dual-carriageway"))
+  );
+}
+
 export function isLessonUnlocked(progress: PlayerProgressV1, lessonId: LessonId): boolean {
+  if (lessonId === "uk-fr-side-swap") {
+    return (
+      progress.completedLessonIds.includes("uk-fr-side-swap") ||
+      isCapstoneEligible(progress)
+    );
+  }
   const lesson = getLesson(lessonId);
   return lesson.prerequisites.every((id) => progress.completedLessonIds.includes(id));
 }
@@ -608,21 +706,25 @@ export function getUnlockedFreeDriveIds(
 
 export function getRecommendedDrive(
   progress: PlayerProgressV1,
-  countryId: CountryId,
+  destinationId: DestinationId,
 ): RecommendedDrive {
-  const profile = getCountryProfile(countryId);
-  const orientation = getOrientationForTrafficSide(profile.trafficSide);
+  const destination = getDestinationProfile(destinationId);
+  const countryId = destination.countryId;
+  const orientation = getOrientationForTrafficSide(
+    getCountryProfile(countryId).trafficSide,
+  );
 
   if (!progress.completedLessonIds.includes(orientation.id)) {
     return {
       countryId,
+      destinationId,
       scenarioId: orientation.id,
       kind: "orientation",
-      ctaLabel: `Start ${profile.destinationName} orientation`,
+      ctaLabel: `Start ${destination.destinationName} orientation`,
     };
   }
 
-  const nextLesson = getLessonsForCountry(countryId).find(
+  const nextLesson = getLessonsForDestination(destinationId).find(
     (lesson) =>
       !progress.completedLessonIds.includes(lesson.id) &&
       isLessonUnlocked(progress, lesson.id),
@@ -630,34 +732,37 @@ export function getRecommendedDrive(
   if (nextLesson) {
     return {
       countryId,
+      destinationId,
       scenarioId: nextLesson.id,
       kind: "lesson",
       ctaLabel: `Continue — ${nextLesson.title}`,
     };
   }
 
-  const allCountryPathsComplete = LESSONS.filter((lesson) => lesson.countryId).every(
-    (lesson) => progress.completedLessonIds.includes(lesson.id),
-  );
   const capstone = getLesson("uk-fr-side-swap");
   if (
-    allCountryPathsComplete &&
+    isCapstoneEligible(progress) &&
     !progress.completedLessonIds.includes(capstone.id)
   ) {
+    const capstoneDestinationId =
+      destination.countryId === "uk"
+        ? destinationId
+        : getDestinationProfile(progress.lastDestinationId).countryId === "uk"
+          ? progress.lastDestinationId
+          : "uk-london";
     return {
       countryId: getCountryIdForScenario(capstone.id),
+      destinationId: capstoneDestinationId,
       scenarioId: capstone.id,
       kind: "capstone",
       ctaLabel: `Continue — ${capstone.title}`,
     };
   }
 
-  const freeDrive = FREE_DRIVES.find((scenario) => scenario.countryId === countryId);
-  if (!freeDrive) {
-    throw new Error(`Missing SideSwap free-drive scenario for country ${countryId}`);
-  }
+  const freeDrive = getFreeDriveForDestination(destinationId);
   return {
     countryId,
+    destinationId,
     scenarioId: freeDrive.id,
     kind: "free_drive",
     ctaLabel: `Continue — ${freeDrive.title}`,

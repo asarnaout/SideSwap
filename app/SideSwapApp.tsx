@@ -16,11 +16,14 @@ import type {
 } from "./game/GameCanvas";
 import {
   COUNTRY_PROFILES,
+  DESTINATION_PROFILES,
   SCORING_CONFIG,
   getCountryProfile,
+  getDestinationProfile,
   getFreeDrive,
+  getFreeDriveForDestination,
   getLesson,
-  getLessonsForCountry,
+  getLessonsForDestination,
   getMapPack,
   getOrientationForTrafficSide,
   resolveSessionConfig,
@@ -39,6 +42,7 @@ import {
 import type {
   CameraMode,
   CountryId,
+  DestinationId,
   FreeDriveId,
   GameSessionConfig,
   InputFamily,
@@ -79,11 +83,12 @@ const BADGE_LABELS: Record<string, string> = {
   rail_crossing_ready: "Rail-crossing ready",
   side_swap_traveler: "SideSwap traveler",
   first_person_mastery: "Cockpit mastery",
+  london_city_ready: "London city ready",
 };
 
 const COUNTRY_MARKS: Record<CountryId, string> = {
   us: "NYC",
-  uk: "MK",
+  uk: "UK",
   fr: "CAL",
   jp: "世田谷",
 };
@@ -111,8 +116,8 @@ const formatMinutes = (lesson: LessonDefinition) =>
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
-function initialSelectedCountry(side: TrafficSide): CountryId {
-  return side === "right" ? "uk" : "us";
+function initialSelectedDestination(side: TrafficSide): DestinationId {
+  return side === "right" ? "uk-london" : "us-nyc";
 }
 
 const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
@@ -140,8 +145,10 @@ export default function SideSwapApp() {
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("launcher");
   const [familiarSide, setFamiliarSide] = useState<TrafficSide | null>(null);
-  const [countryId, setCountryId] = useState<CountryId>("uk");
-  const [countryChosenManually, setCountryChosenManually] = useState(false);
+  const [destinationId, setDestinationId] =
+    useState<DestinationId>("uk-london");
+  const [destinationChosenManually, setDestinationChosenManually] =
+    useState(false);
   const [wheelPreference, setWheelPreference] =
     useState<SteeringPreference>("auto");
   const [camera, setCamera] = useState<CameraMode>("third_person");
@@ -152,6 +159,9 @@ export default function SideSwapApp() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const customizeTriggerRef = useRef<HTMLButtonElement>(null);
+  const destinationRefs = useRef(
+    new Map<DestinationId, HTMLButtonElement>(),
+  );
   const closeCustomize = useCallback(() => setCustomizeOpen(false), []);
   const [paused, setPaused] = useState(false);
   const [hud, setHud] = useState<GameHudSnapshot | null>(null);
@@ -168,7 +178,7 @@ export default function SideSwapApp() {
         : "keyboard";
       setProgress(loaded);
       setFamiliarSide(firstVisit ? null : loaded.familiarTrafficSide);
-      setCountryId(loaded.lastCountryId);
+      setDestinationId(loaded.lastDestinationId);
       setCamera(loaded.preferredCamera);
       setInput(firstVisit ? defaultInput : loaded.preferredInput);
       setHydrated(true);
@@ -176,20 +186,24 @@ export default function SideSwapApp() {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  const country = getCountryProfile(countryId);
-  const countryLessons = getLessonsForCountry(countryId);
+  const destination = getDestinationProfile(destinationId);
+  const country = getCountryProfile(destination.countryId);
+  const destinationLessons = getLessonsForDestination(destinationId);
   const orientation = getOrientationForTrafficSide(country.trafficSide);
-  const trainingPath = [orientation, ...countryLessons];
+  const trainingPath = [orientation, ...destinationLessons];
   const steeringSide = resolveSteeringSide(wheelPreference, country);
   const completedCount = progress.completedLessonIds.length;
   const masteryCount = Object.values(progress.lessonScores).filter(
     (score) => score?.mastered,
   ).length;
   const recommendation = useMemo(
-    () => getRecommendedDrive(progress, countryId),
-    [countryId, progress],
+    () => getRecommendedDrive(progress, destinationId),
+    [destinationId, progress],
   );
-  const driveCountry = getCountryProfile(activeSession?.countryId ?? countryId);
+  const driveDestination = getDestinationProfile(
+    activeSession?.destinationId ?? destinationId,
+  );
+  const driveCountry = getCountryProfile(driveDestination.countryId);
   const activeSteeringSide = resolveSteeringSide(
     activeSession?.steeringPreference ?? wheelPreference,
     driveCountry,
@@ -200,7 +214,7 @@ export default function SideSwapApp() {
     ? getFreeDrive(activeScenarioId)
     : null;
   const activeLesson = activeIsFreeDrive
-    ? getLessonsForCountry(driveCountry.id)[0] ??
+    ? getLessonsForDestination(driveDestination.id)[0] ??
       getOrientationForTrafficSide(driveCountry.trafficSide)
     : getLesson(activeScenarioId as LessonId);
   const runtimeMap = getMapPack(activeFreeDrive?.mapId ?? activeLesson.mapId);
@@ -231,37 +245,63 @@ export default function SideSwapApp() {
               "Free drive has no finish line. Explore the map and practise the local road habits at your own pace.",
           },
         ],
+        assessedRules: Array.from(
+          new Set(
+            getLessonsForDestination(driveDestination.id).flatMap(
+              (lesson) => lesson.assessedRules,
+            ),
+          ),
+        ),
+        scenarioClock: activeFreeDrive.scenarioClock,
       }
     : activeLesson;
 
-  const themeCountry =
-    view === "driving" || view === "results" ? driveCountry : country;
+  const themeDestination =
+    view === "driving" || view === "results" ? driveDestination : destination;
   const themeStyle = {
-    "--destination-accent": themeCountry.visualTheme.accent,
-    "--destination-sky": themeCountry.visualTheme.sky,
-    "--destination-ground": themeCountry.visualTheme.ground,
+    "--destination-accent": themeDestination.visualTheme.accent,
+    "--destination-sky": themeDestination.visualTheme.sky,
+    "--destination-ground": themeDestination.visualTheme.ground,
   } as CSSProperties;
+
+  useEffect(() => {
+    if (!hydrated || window.innerWidth > 780) return;
+    const selected = destinationRefs.current.get(destinationId);
+    if (typeof selected?.scrollIntoView === "function") {
+      selected.scrollIntoView({
+        behavior: progress.accessibility.reducedMotion ? "auto" : "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    }
+  }, [destinationId, hydrated, progress.accessibility.reducedMotion]);
 
   const chooseFamiliarSide = (side: TrafficSide) => {
     setFamiliarSide(side);
-    if (!countryChosenManually) {
-      setCountryId(initialSelectedCountry(side));
+    if (!destinationChosenManually) {
+      setDestinationId(initialSelectedDestination(side));
       setWheelPreference("auto");
     }
   };
 
-  const chooseCountry = (id: CountryId) => {
-    setCountryId(id);
-    setCountryChosenManually(true);
+  const chooseDestination = (id: DestinationId) => {
+    setDestinationId(id);
+    setDestinationChosenManually(true);
     setWheelPreference("auto");
   };
 
-  const beginDrive = (scenarioId: ScenarioId, nextCountryId = countryId) => {
+  const beginDrive = (
+    scenarioId: ScenarioId,
+    nextDestinationId = destinationId,
+  ) => {
     if (!familiarSide) return;
+    const nextDestination = getDestinationProfile(nextDestinationId);
+    const nextCountryId = nextDestination.countryId;
     const nextWheelPreference =
-      nextCountryId === countryId ? wheelPreference : "auto";
+      nextDestinationId === destinationId ? wheelPreference : "auto";
     const session: GameSessionConfig = {
       countryId: nextCountryId,
+      destinationId: nextDestinationId,
       scenarioId,
       familiarTrafficSide: familiarSide,
       steeringPreference: nextWheelPreference,
@@ -277,19 +317,20 @@ export default function SideSwapApp() {
       familiarSideConfirmed: true,
       familiarTrafficSide: familiarSide,
       lastCountryId: nextCountryId,
+      lastDestinationId: nextDestinationId,
       preferredCamera: camera,
       preferredInput: input,
       updatedAt: new Date().toISOString(),
     };
     setProgress(committedProgress);
     saveProgress(committedProgress);
-    setCountryId(nextCountryId);
-    if (nextCountryId !== countryId) setWheelPreference("auto");
+    setDestinationId(nextDestinationId);
+    if (nextDestinationId !== destinationId) setWheelPreference("auto");
     setActiveSession(session);
     setEvents([]);
     setHud(null);
     setPaused(false);
-    setStartedAt(Date.now());
+    setStartedAt(new Date().getTime());
     setView("driving");
   };
 
@@ -336,6 +377,7 @@ export default function SideSwapApp() {
         familiarSideConfirmed: true,
         familiarTrafficSide: activeSession.familiarTrafficSide,
         lastCountryId: activeSession.countryId,
+        lastDestinationId: activeSession.destinationId,
         preferredCamera: camera,
         preferredInput: input,
       };
@@ -353,10 +395,10 @@ export default function SideSwapApp() {
   const saveSettings = (next: PlayerProgressV1) => {
     setProgress(next);
     setFamiliarSide(next.familiarTrafficSide);
-    setCountryId(
-      !next.familiarSideConfirmed && !countryChosenManually
-        ? initialSelectedCountry(next.familiarTrafficSide)
-        : next.lastCountryId,
+    setDestinationId(
+      !next.familiarSideConfirmed && !destinationChosenManually
+        ? initialSelectedDestination(next.familiarTrafficSide)
+        : next.lastDestinationId,
     );
     setCamera(next.preferredCamera);
     setInput(next.preferredInput);
@@ -376,7 +418,7 @@ export default function SideSwapApp() {
     return (
       <main className="game-page" style={themeStyle}>
         <GameCanvas
-          key={`${driveCountry.id}-${runtimeLesson.id}-${activeSteeringSide}`}
+          key={`${driveDestination.id}-${runtimeLesson.id}-${activeSteeringSide}`}
           className="game-canvas"
           trafficSide={runtimeLesson.trafficSide}
           steeringSide={activeSteeringSide}
@@ -411,7 +453,7 @@ export default function SideSwapApp() {
           <div>
             <strong>{activeIsFreeDrive ? "Free drive" : activeLesson.title}</strong>
             <small>
-              {driveCountry.destinationName} · traffic keeps {runtimeLesson.trafficSide}
+              {driveDestination.destinationName} · traffic keeps {runtimeLesson.trafficSide}
             </small>
           </div>
         </div>
@@ -437,7 +479,7 @@ export default function SideSwapApp() {
   if (view === "results" && lastScore) {
     const nextDrive = getRecommendedDrive(
       progress,
-      activeSession?.countryId ?? countryId,
+      activeSession?.destinationId ?? destinationId,
     );
     return (
       <main className="results-page" style={themeStyle}>
@@ -505,7 +547,7 @@ export default function SideSwapApp() {
               onClick={() =>
                 beginDrive(
                   activeSession?.scenarioId ?? nextDrive.scenarioId,
-                  activeSession?.countryId ?? nextDrive.countryId,
+                  activeSession?.destinationId ?? nextDrive.destinationId,
                 )
               }
             >
@@ -514,7 +556,9 @@ export default function SideSwapApp() {
             <button
               className="primary-button"
               type="button"
-              onClick={() => beginDrive(nextDrive.scenarioId, nextDrive.countryId)}
+              onClick={() =>
+                beginDrive(nextDrive.scenarioId, nextDrive.destinationId)
+              }
             >
               Next — {scenarioTitle(nextDrive.scenarioId)} <span aria-hidden="true">→</span>
             </button>
@@ -607,8 +651,8 @@ export default function SideSwapApp() {
             const reset = resetProgress();
             setProgress(reset);
             setFamiliarSide(null);
-            setCountryId(reset.lastCountryId);
-            setCountryChosenManually(false);
+            setDestinationId(reset.lastDestinationId);
+            setDestinationChosenManually(false);
             setWheelPreference("auto");
             setCamera(reset.preferredCamera);
             setInput(
@@ -646,7 +690,7 @@ export default function SideSwapApp() {
             </h1>
             <p className="launcher-lead">
               {configured
-                ? `Continue in ${country.destinationName}, or choose a different training route.`
+                ? `Continue in ${destination.destinationName}, or choose a different training route.`
                 : "Tell us where you normally drive. We’ll suggest the opposite side and put you straight into orientation."}
             </p>
 
@@ -675,19 +719,40 @@ export default function SideSwapApp() {
               role="group"
               aria-label="Destination"
             >
-              {COUNTRY_PROFILES.map((item) => (
+              {DESTINATION_PROFILES.map((item) => {
+                const itemCountry = getCountryProfile(item.countryId);
+                return (
                 <button
                   key={item.id}
+                  ref={(node) => {
+                    if (node) destinationRefs.current.set(item.id, node);
+                    else destinationRefs.current.delete(item.id);
+                  }}
                   type="button"
-                  className={countryId === item.id ? "active" : ""}
-                  aria-pressed={countryId === item.id}
-                  onClick={() => chooseCountry(item.id)}
+                  className={`${destinationId === item.id ? "active" : ""} ${item.promotion}`}
+                  aria-label={`${item.destinationName}. ${item.destinationSubtitle}${
+                    item.promotion === "featured"
+                      ? ". Featured, recommended start"
+                      : item.promotion === "specialist"
+                        ? ". Specialist, Roundabout Academy"
+                        : ""
+                  }`}
+                  aria-pressed={destinationId === item.id}
+                  onClick={() => chooseDestination(item.id)}
                 >
-                  <span>{item.flagEmoji}</span>
+                  <span>{itemCountry.flagEmoji}</span>
                   <strong>{item.destinationName}</strong>
-                  <small>Keep {item.trafficSide}</small>
+                  <small>{item.destinationSubtitle}</small>
+                  {item.promotion !== "standard" && (
+                    <b className="destination-badge">
+                      {item.promotion === "featured"
+                        ? "Featured · Recommended start"
+                        : "Specialist · Roundabout Academy"}
+                    </b>
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
 
             <div className="launcher-setup-summary" aria-label="Current car setup">
@@ -702,6 +767,20 @@ export default function SideSwapApp() {
               </button>
             </div>
 
+            {destination.id === "uk-london" && (
+              <p className="london-charge-note">
+                London has driving charges that vary by journey and vehicle. Check the current{" "}
+                <a
+                  href="https://tfl.gov.uk/modes/driving/pay-to-drive-in-london"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Transport for London guidance ↗
+                </a>
+                . This note is not scored.
+              </p>
+            )}
+
             <div className="launcher-actions">
               <button
                 className="primary-button launcher-primary"
@@ -710,14 +789,14 @@ export default function SideSwapApp() {
                 onClick={() =>
                   beginDrive(
                     launcherScenarioId,
-                    configured ? recommendation.countryId : countryId,
+                    configured ? recommendation.destinationId : destinationId,
                   )
                 }
               >
                 {configured
                   ? `Continue — ${scenarioTitle(recommendation.scenarioId)}`
                   : familiarSide
-                    ? `Start ${country.destinationName} orientation`
+                    ? `Start ${destination.destinationName} orientation`
                     : "Choose your usual traffic side"}
                 <span aria-hidden="true">→</span>
               </button>
@@ -735,18 +814,26 @@ export default function SideSwapApp() {
             </div>
           </div>
 
-          <div className="launcher-road-visual" aria-label={`${country.destinationName} training preview`}>
+          <div className="launcher-road-visual" aria-label={`${destination.destinationName} training preview`}>
             <div className="launcher-sky" />
             <div className="launcher-buildings">
               {Array.from({ length: 8 }, (_, index) => (
                 <span key={index} style={{ "--i": index } as CSSProperties} />
               ))}
             </div>
+            {destination.id === "uk-london" && (
+              <div className="launcher-london-details" aria-hidden="true">
+                <span className="launcher-museum" />
+                <span className="launcher-bus" />
+                <span className="launcher-cab" />
+              </div>
+            )}
             <div className="launcher-road"><i /><i /><i /><i /></div>
             <div className={`launcher-car ${country.trafficSide}`}><b /></div>
             <div className="launcher-place">
               <span>{country.flagEmoji} {country.countryName}</span>
-              <strong>{country.destinationName}</strong>
+              <strong>{destination.destinationName}</strong>
+              <em>{destination.destinationSubtitle}</em>
               <small>Traffic keeps {country.trafficSide} · {country.speedUnit === "kmh" ? "km/h" : "mph"}</small>
             </div>
             {configured && (
@@ -771,23 +858,48 @@ export default function SideSwapApp() {
             </div>
             <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to launcher</button>
           </div>
-          <div className="hub-country-tabs" aria-label="Choose destination">
-            {COUNTRY_PROFILES.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={countryId === item.id ? "active" : ""}
-                aria-pressed={countryId === item.id}
-                onClick={() => chooseCountry(item.id)}
-              >
-                <span>{item.flagEmoji}</span>{item.destinationName}
-              </button>
-            ))}
+          <div className="hub-country-tabs" role="group" aria-label="Choose destination">
+            {(["uk", "us", "fr", "jp"] as const).map((groupCountryId) => {
+              const groupCountry = getCountryProfile(groupCountryId);
+              const groupDestinations = DESTINATION_PROFILES.filter(
+                (item) => item.countryId === groupCountryId,
+              );
+              return (
+                <div className="hub-destination-group" key={groupCountryId}>
+                  <small>{groupCountry.flagEmoji} {groupCountry.countryName}</small>
+                  <div>
+                    {groupDestinations.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={destinationId === item.id ? "active" : ""}
+                        aria-pressed={destinationId === item.id}
+                        onClick={() => chooseDestination(item.id)}
+                      >
+                        <span>{item.cityMark}</span>
+                        <b>{item.destinationName}</b>
+                        {item.promotion === "specialist" && <em>Roundabout Academy · specialist</em>}
+                        {item.promotion === "featured" && <em>Featured</em>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <div className="hub-destination-heading">
-            <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{country.destinationName}</h2></div></div>
+            <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{destination.destinationName}</h2><em>{destination.destinationSubtitle}</em></div></div>
             <p>Traffic keeps <strong>{country.trafficSide}</strong> · wheel defaults <strong>{country.defaultSteeringSide}</strong></p>
           </div>
+          {destination.id === "uk-london" && (
+            <p className="hub-charge-note">
+              Before driving in London, check current{" "}
+              <a href="https://tfl.gov.uk/modes/driving/pay-to-drive-in-london" target="_blank" rel="noreferrer">
+                Transport for London charge guidance ↗
+              </a>
+              . Charges are informational and never affect your score.
+            </p>
+          )}
           <div className="lesson-path hub-lessons">
             {trainingPath.map((lesson, index) => {
               const unlocked = isLessonUnlocked(progress, lesson.id);
@@ -805,23 +917,23 @@ export default function SideSwapApp() {
                     type="button"
                     className="lesson-start"
                     disabled={!unlocked || !familiarSide}
-                    onClick={() => beginDrive(lesson.id, countryId)}
+                    onClick={() => beginDrive(lesson.id, destinationId)}
                   >
                     {score ? `${score.total} · Drive again` : unlocked ? "Start" : "Locked"}
                   </button>
                 </article>
               );
             })}
-            <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, `free-${countryId}`) ? "" : "locked"}`}>
+            <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, destination.freeDriveId) ? "" : "locked"}`}>
               <span className="lesson-index">∞</span>
-              <span className="lesson-copy"><small>OPEN PRACTICE</small><strong>{getFreeDrive(`free-${countryId}`).title}</strong><em>Explore the map with local traffic and no fixed finish.</em></span>
+              <span className="lesson-copy"><small>OPEN PRACTICE</small><strong>{getFreeDriveForDestination(destinationId).title}</strong><em>Explore the map with local traffic and no fixed finish.</em></span>
               <button
                 type="button"
                 className="lesson-start"
-                disabled={!isFreeDriveUnlocked(progress, `free-${countryId}`) || !familiarSide}
-                onClick={() => beginDrive(`free-${countryId}`, countryId)}
+                disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId) || !familiarSide}
+                onClick={() => beginDrive(destination.freeDriveId, destinationId)}
               >
-                {isFreeDriveUnlocked(progress, `free-${countryId}`) ? "Start free drive" : "Complete lesson 1"}
+                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive" : "Complete lesson 1"}
               </button>
             </article>
           </div>
@@ -832,9 +944,14 @@ export default function SideSwapApp() {
               type="button"
               className="secondary-button light"
               disabled={!isLessonUnlocked(progress, "uk-fr-side-swap") || !familiarSide}
-              onClick={() => beginDrive("uk-fr-side-swap", "uk")}
+              onClick={() =>
+                beginDrive(
+                  "uk-fr-side-swap",
+                  country.id === "uk" ? destinationId : "uk-london",
+                )
+              }
             >
-              {isLessonUnlocked(progress, "uk-fr-side-swap") ? "Start capstone" : "Complete all four paths"}
+              {isLessonUnlocked(progress, "uk-fr-side-swap") ? "Start capstone" : "Complete NYC, France, Japan and either UK path"}
             </button>
           </article>
         </section>
@@ -850,6 +967,7 @@ export default function SideSwapApp() {
       {customizeOpen && (
         <SetupSheet
           country={country}
+          destination={destination}
           wheelPreference={wheelPreference}
           camera={camera}
           input={input}
@@ -866,6 +984,7 @@ export default function SideSwapApp() {
 
 function SetupSheet({
   country,
+  destination,
   wheelPreference,
   camera,
   input,
@@ -876,6 +995,7 @@ function SetupSheet({
   returnFocusRef,
 }: {
   country: ReturnType<typeof getCountryProfile>;
+  destination: ReturnType<typeof getDestinationProfile>;
   wheelPreference: SteeringPreference;
   camera: CameraMode;
   input: InputFamily;
@@ -954,7 +1074,7 @@ function SetupSheet({
           <button className="sheet-close" type="button" onClick={onClose} aria-label="Close car setup">×</button>
         </div>
         <p className="setup-sheet-intro">
-          {country.flagEmoji} {country.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
+          {country.flagEmoji} {destination.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
         </p>
         <fieldset className="sheet-fieldset">
           <legend>Wheel position</legend>
@@ -1004,7 +1124,66 @@ function Score({ label, value, weight }: { label: string; value: number; weight:
 }
 
 function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack: () => void }) {
-  return <section className="subpage"><div className="subpage-heading"><div><p className="eyebrow">DRIVING PASSPORT</p><h1>Your practised road habits</h1><p>Stamps celebrate completed country lessons; badges recognise specific safe-driving skills.</p></div><button className="secondary-button" type="button" onClick={onBack}>Back to training</button></div><div className="passport-grid">{COUNTRY_PROFILES.map((country) => { const earned = progress.passportStamps.includes(country.id); const completed = getLessonsForCountry(country.id).filter((lesson) => progress.completedLessonIds.includes(lesson.id)).length; return <article className={`passport-stamp ${earned ? "earned" : ""}`} key={country.id}><span className="stamp-flag">{country.flagEmoji}</span><span className="stamp-ring"><b>{COUNTRY_MARKS[country.id]}</b><small>{earned ? "PRACTISED" : "NOT YET"}</small></span><h2>{country.destinationName}</h2><p>{completed}/3 lessons complete · traffic keeps {country.trafficSide}</p></article>; })}</div><div className="badge-section"><div className="section-heading compact"><div><p className="eyebrow">SKILL BADGES</p><h2>{progress.badges.length ? "Habits you’ve earned" : "Your first badge is one clean drive away"}</h2></div></div><div className="badge-grid">{Object.entries(BADGE_LABELS).map(([id, label]) => <div key={id} className={`badge-chip ${progress.badges.includes(id as never) ? "earned" : ""}`}><span aria-hidden="true">◆</span>{label}</div>)}</div></div></section>;
+  return (
+    <section className="subpage">
+      <div className="subpage-heading">
+        <div>
+          <p className="eyebrow">DRIVING PASSPORT</p>
+          <h1>Your practised road habits</h1>
+          <p>Stamps celebrate completed country lessons; badges recognise specific safe-driving skills.</p>
+        </div>
+        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
+      </div>
+      <div className="passport-grid">
+        {COUNTRY_PROFILES.map((country) => {
+          const earned = progress.passportStamps.includes(country.id);
+          const countryDestinations = DESTINATION_PROFILES.filter(
+            (item) => item.countryId === country.id,
+          );
+          return (
+            <article className={`passport-stamp ${earned ? "earned" : ""}`} key={country.id}>
+              <span className="stamp-flag">{country.flagEmoji}</span>
+              <span className="stamp-ring">
+                <b>{COUNTRY_MARKS[country.id]}</b>
+                <small>{earned ? "PRACTISED" : "NOT YET"}</small>
+              </span>
+              <h2>{country.countryName}</h2>
+              <div className="passport-destination-progress">
+                {countryDestinations.map((item) => {
+                  const lessons = getLessonsForDestination(item.id);
+                  const completed = lessons.filter((lesson) =>
+                    progress.completedLessonIds.includes(lesson.id),
+                  ).length;
+                  return (
+                    <p key={item.id}>
+                      <strong>{item.destinationName}</strong>
+                      <span>{completed}/{lessons.length} lessons</span>
+                    </p>
+                  );
+                })}
+              </div>
+              <p>Traffic keeps {country.trafficSide}</p>
+            </article>
+          );
+        })}
+      </div>
+      <div className="badge-section">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">SKILL BADGES</p>
+            <h2>{progress.badges.length ? "Habits you’ve earned" : "Your first badge is one clean drive away"}</h2>
+          </div>
+        </div>
+        <div className="badge-grid">
+          {Object.entries(BADGE_LABELS).map(([id, label]) => (
+            <div key={id} className={`badge-chip ${progress.badges.includes(id as never) ? "earned" : ""}`}>
+              <span aria-hidden="true">◆</span>{label}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerProgressV1; onSave: (value: PlayerProgressV1) => void; onReset: () => void; onBack: () => void }) {
@@ -1021,9 +1200,10 @@ function CreditsView({ onBack }: { onBack: () => void }) {
   const references = Array.from(new Map(COUNTRY_PROFILES.flatMap((country) => country.officialReferences).map((reference) => [reference.id, reference])).values());
   const extracts = [
     ["New York", "nyc-upper-west.json"],
+    ["London — South Kensington", "uk-london-south-kensington.json"],
     ["Milton Keynes", "uk-milton-keynes.json"],
     ["Calais / Coquelles", "fr-calais-coquelles.json"],
     ["Tokyo Setagaya", "jp-setagaya.json"],
   ] as const;
-  return <section className="subpage"><div className="subpage-heading"><div><p className="eyebrow">SOURCES & CREDITS</p><h1>Rules should have receipts.</h1><p>Every assessed rule is tied to an official source and review date. OpenStreetMap supplies geography only.</p></div><button className="secondary-button" type="button" onClick={onBack}>Back to training</button></div><div className="source-list">{references.map((reference) => <a key={reference.id} href={reference.url} target="_blank" rel="noreferrer"><span>{reference.jurisdiction}</span><strong>{reference.title}</strong><small>{reference.authority} · reviewed {reference.reviewedOn}</small><b aria-hidden="true">↗</b></a>)}</div><article className="license-card"><p className="eyebrow">MAP DATA</p><h2>Frozen, credited, and separate from the law</h2><p>SideSwap includes compact snapshots for Upper West Side, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p><div className="map-downloads" aria-label="Download frozen map extracts">{extracts.map(([label, filename]) => <a key={filename} href={`/map-data/${filename}`} download><span>{label}</span><small>JSON · importer v2</small></a>)}</div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Map data © OpenStreetMap contributors · ODbL 1.0 ↗</a></article></section>;
+  return <section className="subpage"><div className="subpage-heading"><div><p className="eyebrow">SOURCES & CREDITS</p><h1>Rules should have receipts.</h1><p>Every assessed rule is tied to an official source and review date. OpenStreetMap supplies geography only.</p></div><button className="secondary-button" type="button" onClick={onBack}>Back to training</button></div><div className="source-list">{references.map((reference) => <a key={reference.id} href={reference.url} target="_blank" rel="noreferrer"><span>{reference.jurisdiction}</span><strong>{reference.title}</strong><small>{reference.authority} · reviewed {reference.reviewedOn}</small><b aria-hidden="true">↗</b></a>)}</div><article className="license-card"><p className="eyebrow">MAP DATA</p><h2>Frozen, credited, and separate from the law</h2><p>SideSwap includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p><div className="map-downloads" aria-label="Download frozen map extracts">{extracts.map(([label, filename]) => <a key={filename} href={`/map-data/${filename}`} download><span>{label}</span><small>JSON · importer v2</small></a>)}</div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Map data © OpenStreetMap contributors · ODbL 1.0 ↗</a></article></section>;
 }

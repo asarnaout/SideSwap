@@ -15,3 +15,11 @@ These extracts supply geographic context only; SideSwap's directed lane graph,
 lesson routes, and educational traffic rules are reviewed and authored
 separately from official jurisdiction sources. A map pack is not a traffic-law
 source.
+
+Frozen extracts:
+
+- `nyc-upper-west` — Upper West Side, New York City
+- `uk-london-south-kensington` — South Kensington Museum Quarter, London
+- `uk-milton-keynes` — South Grafton and Oldbrook, Milton Keynes
+- `fr-calais-coquelles` — Calais and Coquelles terminal approach
+- `jp-setagaya` — Yamashita to Miyanosaka, Setagaya

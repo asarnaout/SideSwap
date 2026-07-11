@@ -2,6 +2,9 @@ import type {
   CoachPrompt,
   CountryId,
   CountryProfile,
+  CountryVisualTheme,
+  DestinationId,
+  DestinationProfile,
   FreeDriveDefinition,
   FreeDriveId,
   FrozenMapSource,
@@ -27,8 +30,64 @@ import type {
   TrafficSide,
   WorldPoint,
 } from "./types";
+import {
+  LONDON_FREE_DRIVE,
+  LONDON_LESSONS,
+  LONDON_MAP_PACK,
+  LONDON_RULE_REFERENCES,
+} from "./londonContent";
 
 export const CONTENT_REVIEWED_ON = "2026-07-10";
+
+const NYC_THEME: CountryVisualTheme = {
+  sky: "#9ed7ef",
+  ground: "#6e8a5b",
+  road: "#323840",
+  laneMarking: "#f5d760",
+  accent: "#f36a3d",
+  architecture: "warm brick apartment blocks and broad avenues",
+  roadsideDetails: ["yellow taxis", "fire hydrants", "street trees"],
+};
+
+const LONDON_THEME: CountryVisualTheme = {
+  sky: "#b9d3dc",
+  ground: "#668a58",
+  road: "#393d43",
+  laneMarking: "#f3f0dd",
+  accent: "#d83b3f",
+  architecture: "sandstone museums, stucco terraces and broad civic avenues",
+  roadsideDetails: ["red buses", "black cabs", "Belisha beacons"],
+};
+
+const MILTON_KEYNES_THEME: CountryVisualTheme = {
+  sky: "#a9c9d3",
+  ground: "#5f8d50",
+  road: "#3a3d42",
+  laneMarking: "#f0f0e8",
+  accent: "#e5484d",
+  architecture: "low modern estates, hedges and grid-road landscaping",
+  roadsideDetails: ["mini roundabouts", "chevron boards", "red buses"],
+};
+
+const CALAIS_THEME: CountryVisualTheme = {
+  sky: "#a8d8eb",
+  ground: "#84a65d",
+  road: "#3d4145",
+  laneMarking: "#f4f1e8",
+  accent: "#2456a6",
+  architecture: "pale coastal buildings, retail roads and terminal fencing",
+  roadsideDetails: ["blue direction signs", "bollards", "channel grassland"],
+};
+
+const TOKYO_THEME: CountryVisualTheme = {
+  sky: "#acd9e9",
+  ground: "#769b69",
+  road: "#44494c",
+  laneMarking: "#f7f3df",
+  accent: "#e64f52",
+  architecture: "compact homes, utility poles and small station-front shops",
+  roadsideDetails: ["rail crossings", "bicycles", "vending machines"],
+};
 
 const point = (x: number, z: number): WorldPoint => ({ x, z });
 
@@ -254,8 +313,6 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     id: "us",
     countryCode: "US",
     countryName: "United States",
-    destinationName: "New York City",
-    destinationSubtitle: "Upper West Side · Broadway & West 72nd Street",
     flagEmoji: "🇺🇸",
     trafficSide: "right",
     defaultSteeringSide: "left",
@@ -273,15 +330,6 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     },
     priorityPolicy:
       "Obey signals and signs; yield to pedestrians and traffic already in a junction.",
-    visualTheme: {
-      sky: "#9ed7ef",
-      ground: "#6e8a5b",
-      road: "#323840",
-      laneMarking: "#f5d760",
-      accent: "#f36a3d",
-      architecture: "warm brick apartment blocks and broad avenues",
-      roadsideDetails: ["yellow taxis", "fire hydrants", "street trees"],
-    },
     officialReferences: US_RULES,
     reviewedOn: CONTENT_REVIEWED_ON,
   },
@@ -289,8 +337,6 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     id: "uk",
     countryCode: "GB",
     countryName: "United Kingdom",
-    destinationName: "Milton Keynes",
-    destinationSubtitle: "South Grafton Roundabout & Oldbrook",
     flagEmoji: "🇬🇧",
     trafficSide: "left",
     defaultSteeringSide: "right",
@@ -308,24 +354,13 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     },
     priorityPolicy:
       "Give way according to signs and markings; at roundabouts, give priority to traffic from the right unless directed otherwise.",
-    visualTheme: {
-      sky: "#a9c9d3",
-      ground: "#5f8d50",
-      road: "#3a3d42",
-      laneMarking: "#f0f0e8",
-      accent: "#e5484d",
-      architecture: "low modern estates, hedges and grid-road landscaping",
-      roadsideDetails: ["mini roundabouts", "chevron boards", "red buses"],
-    },
-    officialReferences: UK_RULES,
+    officialReferences: [...UK_RULES, ...LONDON_RULE_REFERENCES],
     reviewedOn: CONTENT_REVIEWED_ON,
   },
   {
     id: "fr",
     countryCode: "FR",
     countryName: "France",
-    destinationName: "Calais & Coquelles",
-    destinationSubtitle: "Roundabouts, priority rules & terminal roads",
     flagEmoji: "🇫🇷",
     trafficSide: "right",
     defaultSteeringSide: "left",
@@ -343,15 +378,6 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     },
     priorityPolicy:
       "Priority to the right applies at unsigned junctions; signs and road markings can replace that default.",
-    visualTheme: {
-      sky: "#a8d8eb",
-      ground: "#84a65d",
-      road: "#3d4145",
-      laneMarking: "#f4f1e8",
-      accent: "#2456a6",
-      architecture: "pale coastal buildings, retail roads and terminal fencing",
-      roadsideDetails: ["blue direction signs", "bollards", "channel grassland"],
-    },
     officialReferences: FR_RULES,
     reviewedOn: CONTENT_REVIEWED_ON,
   },
@@ -359,8 +385,6 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     id: "jp",
     countryCode: "JP",
     countryName: "Japan",
-    destinationName: "Tokyo — Setagaya",
-    destinationSubtitle: "Gotokuji, Miyanosaka & narrow neighbourhood streets",
     flagEmoji: "🇯🇵",
     trafficSide: "left",
     defaultSteeringSide: "right",
@@ -378,17 +402,75 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     },
     priorityPolicy:
       "Follow signals, stop markings and local priority signs; slow for narrow, shared neighbourhood streets.",
-    visualTheme: {
-      sky: "#acd9e9",
-      ground: "#769b69",
-      road: "#44494c",
-      laneMarking: "#f7f3df",
-      accent: "#e64f52",
-      architecture: "compact homes, utility poles and small station-front shops",
-      roadsideDetails: ["rail crossings", "bicycles", "vending machines"],
-    },
     officialReferences: JP_RULES,
     reviewedOn: CONTENT_REVIEWED_ON,
+  },
+];
+
+export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
+  {
+    id: "uk-london",
+    countryId: "uk",
+    destinationName: "London",
+    destinationSubtitle: "South Kensington Museum Quarter",
+    mapId: "london-south-kensington",
+    lessonIds: [
+      "uk-london-left-side-basics",
+      "uk-london-museum-traffic",
+      "uk-london-exhibition-road",
+    ],
+    freeDriveId: "free-uk-london",
+    promotion: "featured",
+    cityMark: "LDN",
+    visualTheme: LONDON_THEME,
+  },
+  {
+    id: "us-nyc",
+    countryId: "us",
+    destinationName: "New York City",
+    destinationSubtitle: "Upper West Side · Broadway & West 72nd Street",
+    mapId: "nyc-upper-west-side",
+    lessonIds: ["us-one-way-grid", "us-signals-crosswalks", "us-lane-choice"],
+    freeDriveId: "free-us",
+    promotion: "standard",
+    cityMark: "NYC",
+    visualTheme: NYC_THEME,
+  },
+  {
+    id: "uk-milton-keynes",
+    countryId: "uk",
+    destinationName: "Milton Keynes",
+    destinationSubtitle: "Roundabout Academy · South Grafton & Oldbrook",
+    mapId: "milton-keynes-oldbrook",
+    lessonIds: ["uk-left-side-basics", "uk-roundabouts", "uk-dual-carriageway"],
+    freeDriveId: "free-uk",
+    promotion: "specialist",
+    cityMark: "MK",
+    visualTheme: MILTON_KEYNES_THEME,
+  },
+  {
+    id: "fr-calais",
+    countryId: "fr",
+    destinationName: "Calais & Coquelles",
+    destinationSubtitle: "Roundabouts, priority rules & terminal roads",
+    mapId: "calais-coquelles",
+    lessonIds: ["fr-right-side-basics", "fr-priority-roundabouts", "fr-speed-merging"],
+    freeDriveId: "free-fr",
+    promotion: "standard",
+    cityMark: "CAL",
+    visualTheme: CALAIS_THEME,
+  },
+  {
+    id: "jp-tokyo",
+    countryId: "jp",
+    destinationName: "Tokyo — Setagaya",
+    destinationSubtitle: "Gotokuji, Miyanosaka & narrow neighbourhood streets",
+    mapId: "tokyo-setagaya",
+    lessonIds: ["jp-left-side-basics", "jp-vulnerable-road-users", "jp-railway-crossings"],
+    freeDriveId: "free-jp",
+    promotion: "standard",
+    cityMark: "TYO",
+    visualTheme: TOKYO_THEME,
   },
 ];
 
@@ -591,6 +673,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
     ),
   },
+  LONDON_MAP_PACK,
   {
     id: "nyc-upper-west-side",
     name: "NYC Upper West Side",
@@ -904,6 +987,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     prerequisites: [],
     unlocks: { lessonIds: ["uk-left-side-basics", "jp-left-side-basics"], freeDriveIds: [] },
   },
+  ...LONDON_LESSONS,
   {
     id: "us-one-way-grid",
     kind: "guided",
@@ -911,6 +995,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Enter a right-side city grid, follow one-way arrows and make deliberate turns.",
     mapId: "nyc-upper-west-side",
     countryId: "us",
+    destinationId: "us-nyc",
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [5, 7],
@@ -940,6 +1025,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Read city signals, stop before the conflict zone and yield through busy crossings.",
     mapId: "nyc-upper-west-side",
     countryId: "us",
+    destinationId: "us-nyc",
     trafficSide: "right",
     difficulty: 2,
     estimatedMinutes: [6, 8],
@@ -969,6 +1055,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Change lanes with observation and avoid holding the passing lane when a safe return is available.",
     mapId: "nyc-upper-west-side",
     countryId: "us",
+    destinationId: "us-nyc",
     trafficSide: "right",
     difficulty: 3,
     estimatedMinutes: [6, 8],
@@ -998,6 +1085,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Settle into left-side positioning on quiet Oldbrook approaches.",
     mapId: "milton-keynes-oldbrook",
     countryId: "uk",
+    destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 1,
     estimatedMinutes: [5, 7],
@@ -1027,6 +1115,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Approach in the correct lane, give way to the right and circulate clockwise.",
     mapId: "milton-keynes-oldbrook",
     countryId: "uk",
+    destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 2,
     estimatedMinutes: [6, 8],
@@ -1056,6 +1145,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Merge safely, use the right lane only to overtake and return left when clear.",
     mapId: "milton-keynes-oldbrook",
     countryId: "uk",
+    destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 3,
     estimatedMinutes: [6, 8],
@@ -1085,6 +1175,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Reset to right-side traffic, read km/h signs and make calm first turns.",
     mapId: "calais-coquelles",
     countryId: "fr",
+    destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [5, 7],
@@ -1114,6 +1205,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Recognise priority-to-the-right junctions and counterclockwise roundabouts.",
     mapId: "calais-coquelles",
     countryId: "fr",
+    destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 2,
     estimatedMinutes: [6, 8],
@@ -1143,6 +1235,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Build speed in km/h, merge with observation and keep right except to pass.",
     mapId: "calais-coquelles",
     countryId: "fr",
+    destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 3,
     estimatedMinutes: [6, 8],
@@ -1172,6 +1265,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Keep left on compact neighbourhood streets and slow early for limited visibility.",
     mapId: "tokyo-setagaya",
     countryId: "jp",
+    destinationId: "jp-tokyo",
     trafficSide: "left",
     difficulty: 1,
     estimatedMinutes: [5, 7],
@@ -1201,6 +1295,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Scan around parked vehicles and give pedestrians and cyclists patient space.",
     mapId: "tokyo-setagaya",
     countryId: "jp",
+    destinationId: "jp-tokyo",
     trafficSide: "left",
     difficulty: 2,
     estimatedMinutes: [6, 8],
@@ -1230,6 +1325,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     summary: "Approach a railway crossing slowly, stop, observe and keep the tracks clear.",
     mapId: "tokyo-setagaya",
     countryId: "jp",
+    destinationId: "jp-tokyo",
     trafficSide: "left",
     difficulty: 3,
     estimatedMinutes: [6, 8],
@@ -1292,9 +1388,11 @@ export const LESSONS: readonly LessonDefinition[] = [
 ];
 
 export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
+  LONDON_FREE_DRIVE,
   {
     id: "free-us",
     countryId: "us",
+    destinationId: "us-nyc",
     mapId: "nyc-upper-west-side",
     title: "Free Drive — New York City",
     description: "Explore the Upper West Side miniature with coaching available but no fixed route.",
@@ -1304,6 +1402,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
   {
     id: "free-uk",
     countryId: "uk",
+    destinationId: "uk-milton-keynes",
     mapId: "milton-keynes-oldbrook",
     title: "Free Drive — Milton Keynes",
     description: "Practise left-side roads and roundabout approaches at your own pace.",
@@ -1313,6 +1412,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
   {
     id: "free-fr",
     countryId: "fr",
+    destinationId: "fr-calais",
     mapId: "calais-coquelles",
     title: "Free Drive — Calais & Coquelles",
     description: "Explore right-side French roads, roundabouts and priority junctions.",
@@ -1322,6 +1422,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
   {
     id: "free-jp",
     countryId: "jp",
+    destinationId: "jp-tokyo",
     mapId: "tokyo-setagaya",
     title: "Free Drive — Tokyo Setagaya",
     description: "Navigate narrow left-side neighbourhood streets with patient local traffic.",
@@ -1359,10 +1460,15 @@ export const SCORING_CONFIG: ScoringConfig = {
     priority_to_right: 10,
     observation: 6,
     border_transition: 15,
+    box_junction: 6,
+    restricted_lane: 4,
   },
 };
 
 const countryById = new Map(COUNTRY_PROFILES.map((profile) => [profile.id, profile]));
+const destinationById = new Map(
+  DESTINATION_PROFILES.map((profile) => [profile.id, profile]),
+);
 const mapById = new Map(MAP_PACKS.map((mapPack) => [mapPack.id, mapPack]));
 const lessonById = new Map(LESSONS.map((lesson) => [lesson.id, lesson]));
 const freeDriveById = new Map(FREE_DRIVES.map((freeDrive) => [freeDrive.id, freeDrive]));
@@ -1371,6 +1477,14 @@ export function getCountryProfile(id: CountryId): CountryProfile {
   const profile = countryById.get(id);
   if (!profile) {
     throw new Error(`Unknown SideSwap country profile: ${id}`);
+  }
+  return profile;
+}
+
+export function getDestinationProfile(id: DestinationId): DestinationProfile {
+  const profile = destinationById.get(id);
+  if (!profile) {
+    throw new Error(`Unknown SideSwap destination profile: ${id}`);
   }
   return profile;
 }
@@ -1403,6 +1517,22 @@ export function getLessonsForCountry(id: CountryId): readonly LessonDefinition[]
   return LESSONS.filter((lesson) => lesson.countryId === id);
 }
 
+export function getLessonsForDestination(
+  id: DestinationId,
+): readonly LessonDefinition[] {
+  return LESSONS.filter((lesson) => lesson.destinationId === id);
+}
+
+export function getFreeDriveForDestination(
+  id: DestinationId,
+): FreeDriveDefinition {
+  const freeDrive = FREE_DRIVES.find((scenario) => scenario.destinationId === id);
+  if (!freeDrive) {
+    throw new Error(`Missing SideSwap free-drive scenario for destination ${id}`);
+  }
+  return freeDrive;
+}
+
 export function getOrientationForTrafficSide(side: TrafficSide): LessonDefinition {
   return getLesson(side === "right" ? "orientation-right" : "orientation-left");
 }
@@ -1426,6 +1556,15 @@ export function getCountryIdForScenario(scenarioId: ScenarioId): CountryId {
     return lesson.profileTransitions[0].fromCountryId;
   }
   return "uk";
+}
+
+export function getDestinationIdForScenario(
+  scenarioId: ScenarioId,
+): DestinationId | undefined {
+  if (freeDriveById.has(scenarioId as FreeDriveId)) {
+    return getFreeDrive(scenarioId as FreeDriveId).destinationId;
+  }
+  return getLesson(scenarioId as LessonId).destinationId;
 }
 
 /**
@@ -1459,6 +1598,47 @@ export function isScenarioCompatibleWithCountry(
   return false;
 }
 
+/**
+ * Validates the complete launch tuple, not only the jurisdiction. Destination
+ * scenarios must belong to the exact miniature and map selected by the player.
+ * Orientations are shared by traffic side, while the capstone can start from
+ * either UK destination.
+ */
+export function isScenarioCompatibleWithDestination(
+  scenarioId: ScenarioId,
+  destinationId: DestinationId,
+): boolean {
+  const destination = getDestinationProfile(destinationId);
+  const country = getCountryProfile(destination.countryId);
+
+  if (freeDriveById.has(scenarioId as FreeDriveId)) {
+    const freeDrive = getFreeDrive(scenarioId as FreeDriveId);
+    return (
+      freeDrive.destinationId === destinationId &&
+      freeDrive.countryId === destination.countryId &&
+      freeDrive.mapId === destination.mapId
+    );
+  }
+
+  const lesson = getLesson(scenarioId as LessonId);
+  if (lesson.kind === "orientation") {
+    return lesson.trafficSide === country.trafficSide;
+  }
+  if (lesson.id === "uk-fr-side-swap") {
+    return (
+      destination.countryId === "uk" &&
+      lesson.profileTransitions?.[0]?.fromCountryId === "uk" &&
+      lesson.trafficSide === country.trafficSide
+    );
+  }
+  return (
+    lesson.destinationId === destinationId &&
+    lesson.countryId === destination.countryId &&
+    lesson.mapId === destination.mapId &&
+    lesson.trafficSide === country.trafficSide
+  );
+}
+
 export function resolveSteeringSide(
   preference: SteeringPreference,
   profile: CountryProfile,
@@ -1468,9 +1648,15 @@ export function resolveSteeringSide(
 
 export function resolveSessionConfig(config: GameSessionConfig): ResolvedGameSessionConfig {
   const profile = getCountryProfile(config.countryId);
-  if (!isScenarioCompatibleWithCountry(config.scenarioId, config.countryId)) {
+  const destination = getDestinationProfile(config.destinationId);
+  if (destination.countryId !== config.countryId) {
     throw new Error(
-      `SideSwap scenario ${config.scenarioId} is not compatible with country ${config.countryId}`,
+      `SideSwap destination ${config.destinationId} is not compatible with country ${config.countryId}`,
+    );
+  }
+  if (!isScenarioCompatibleWithDestination(config.scenarioId, config.destinationId)) {
+    throw new Error(
+      `SideSwap scenario ${config.scenarioId} is not compatible with destination ${config.destinationId}`,
     );
   }
   return {

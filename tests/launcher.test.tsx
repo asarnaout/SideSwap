@@ -42,8 +42,11 @@ const desktopMatchMedia = (query: string): MediaQueryList =>
     dispatchEvent: vi.fn(() => true),
   }) as unknown as MediaQueryList;
 
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
 beforeEach(() => {
   window.localStorage.clear();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     callback(0);
     return 1;
@@ -55,6 +58,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: originalScrollIntoView,
+  });
 });
 
 describe("game-first launcher", () => {
@@ -72,7 +79,7 @@ describe("game-first launcher", () => {
     ).toBeDisabled();
   });
 
-  it("requires only the familiar traffic side and suggests the opposite-side destination", async () => {
+  it("requires only the familiar traffic side and features London as the opposite-side suggestion", async () => {
     render(<SideSwapApp />);
 
     expect(
@@ -85,14 +92,20 @@ describe("game-first launcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
 
     expect(
-      screen.getByRole("button", { name: /Start Milton Keynes orientation/i }),
+      screen.getByRole("button", { name: /Start London orientation/i }),
     ).toBeEnabled();
+    const destinations = within(
+      screen.getByRole("group", { name: "Destination" }),
+    ).getAllByRole("button");
+    expect(destinations[0]).toHaveAccessibleName(/London/i);
+    expect(destinations[0]).toHaveTextContent("Featured · Recommended start");
+    expect(destinations[0]).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps left" }));
     expect(
-      within(screen.getByRole("group", { name: "Destination" })).getByRole(
-        "button",
-        { name: /Milton Keynes/i },
-      ),
-    ).toHaveAttribute("aria-pressed", "true");
+      screen.getByRole("button", { name: /Start New York City orientation/i }),
+    ).toBeEnabled();
+    expect(destinations[1]).toHaveAttribute("aria-pressed", "true");
   });
 
   it("preserves a manually selected destination and restores focus after setup closes", async () => {
@@ -149,6 +162,7 @@ describe("game-first launcher", () => {
       familiarSideConfirmed: true,
       familiarTrafficSide: "right" as const,
       lastCountryId: "us" as const,
+      lastDestinationId: "us-nyc" as const,
       completedLessonIds: ["orientation-right" as const],
     };
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
@@ -176,6 +190,125 @@ describe("game-first launcher", () => {
     );
   });
 
+  it("restores an existing Milton Keynes player to Roundabout Academy", async () => {
+    const progress = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      familiarSideConfirmed: true,
+      familiarTrafficSide: "right" as const,
+      lastCountryId: "uk" as const,
+      lastDestinationId: "uk-milton-keynes" as const,
+      completedLessonIds: ["orientation-left" as const],
+    };
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+
+    render(<SideSwapApp />);
+
+    await screen.findByRole("heading", { name: /Swap your instincts/i });
+    expect(
+      within(screen.getByRole("group", { name: "Destination" })).getByRole(
+        "button",
+        { name: /Milton Keynes/i },
+      ),
+    ).toHaveAttribute("aria-pressed", "true");
+    const continueButton = screen.getByRole("button", {
+      name: /Continue — Keep Left/i,
+    });
+    fireEvent.click(continueButton);
+    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
+      "data-scenario",
+      "uk-left-side-basics",
+    );
+  });
+
+  it("launches a London lesson and its unlocked free drive directly", async () => {
+    const progress = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      familiarSideConfirmed: true,
+      familiarTrafficSide: "right" as const,
+      lastCountryId: "uk" as const,
+      lastDestinationId: "uk-london" as const,
+      completedLessonIds: [
+        "orientation-left" as const,
+        "uk-london-left-side-basics" as const,
+      ],
+    };
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+
+    render(<SideSwapApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "Training" }));
+
+    expect(screen.getByRole("link", { name: /Transport for London charge guidance/i })).toBeVisible();
+    expect(screen.getByText(/Charges are informational and never affect your score/i)).toBeVisible();
+    const londonLesson = screen.getByText("Left in London").closest("article");
+    expect(londonLesson).not.toBeNull();
+    fireEvent.click(within(londonLesson as HTMLElement).getByRole("button", { name: "Start" }));
+    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
+      "data-scenario",
+      "uk-london-left-side-basics",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
+    fireEvent.click(screen.getByRole("button", { name: "Training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start free drive" }));
+    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
+      "data-scenario",
+      "free-uk-london",
+    );
+  });
+
+  it("keeps four passport stamps and shows both UK destination paths", async () => {
+    const progress = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      familiarSideConfirmed: true,
+      lastCountryId: "uk" as const,
+      lastDestinationId: "uk-london" as const,
+      completedLessonIds: [
+        "orientation-left" as const,
+        "uk-london-left-side-basics" as const,
+        "uk-left-side-basics" as const,
+      ],
+    };
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+
+    render(<SideSwapApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /Passport 0\/4/i }));
+
+    const passport = screen.getByRole("heading", {
+      name: "Your practised road habits",
+    }).closest("section");
+    expect(passport).not.toBeNull();
+    expect(within(passport as HTMLElement).getAllByRole("article")).toHaveLength(4);
+    const ukStamp = screen.getByRole("heading", { name: "United Kingdom" }).closest("article");
+    expect(ukStamp).not.toBeNull();
+    expect(ukStamp).toHaveTextContent("UK");
+    expect(ukStamp).toHaveTextContent("London1/3 lessons");
+    expect(ukStamp).toHaveTextContent("Milton Keynes1/3 lessons");
+  });
+
+  it("auto-reveals the selected destination in the narrow launcher strip", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    render(<SideSwapApp />);
+    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    const destinations = screen.getByRole("group", { name: "Destination" });
+    fireEvent.click(within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
+
+    expect(scrollIntoView).toHaveBeenLastCalledWith({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+    expect(
+      screen.getByRole("button", { name: /Start Tokyo — Setagaya orientation/i }),
+    ).toBeVisible();
+  });
+
   it("starts unlocked free drive and the cross-border capstone directly from the hub", async () => {
     const completedCountryLessons = LESSONS.filter((lesson) => lesson.countryId).map(
       (lesson) => lesson.id,
@@ -183,7 +316,8 @@ describe("game-first launcher", () => {
     const progress = {
       ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
       familiarSideConfirmed: true,
-      lastCountryId: "jp" as const,
+      lastCountryId: "uk" as const,
+      lastDestinationId: "uk-milton-keynes" as const,
       completedLessonIds: [
         "orientation-left" as const,
         "orientation-right" as const,
@@ -205,6 +339,7 @@ describe("game-first launcher", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
     fireEvent.click(screen.getByRole("button", { name: "Training" }));
+    fireEvent.click(screen.getByRole("button", { name: /Milton Keynes/i }));
     const hub = screen.getByRole("heading", { name: "Choose your next drive." }).closest("section");
     expect(hub).not.toBeNull();
     fireEvent.click(within(hub as HTMLElement).getByRole("button", { name: "Start free drive" }));

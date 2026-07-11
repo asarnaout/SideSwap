@@ -6,8 +6,11 @@
  */
 import type {
   Gear,
+  LaneRestriction,
+  RestrictionWindow,
   RuleCode,
   RuleEvent,
+  ScenarioClock,
   SpeedUnit,
   TrafficSide,
 } from "./types";
@@ -103,6 +106,18 @@ export interface StopLineDefinition {
   readonly conflictRadius?: number;
 }
 
+/** A renderer-neutral box-junction conflict zone authored in world metres. */
+export interface SimulationBoxJunctionDefinition {
+  readonly id: string;
+  readonly polygon: readonly SimulationPoint[];
+  /** Lanes that pass through the box. */
+  readonly laneIds: readonly string[];
+  /** Lanes immediately beyond the box; defaults to `laneIds`. */
+  readonly exitLaneIds?: readonly string[];
+  /** How far beyond the polygon an occupied exit counts as blocked. */
+  readonly exitClearanceM?: number;
+}
+
 export interface SimulationCoreConfig {
   readonly trafficSide?: TrafficSide;
   readonly speedUnit?: SpeedUnit;
@@ -115,6 +130,10 @@ export interface SimulationCoreConfig {
   readonly finish?: (SimulationPoint & { readonly radius?: number }) | null;
   readonly trafficLights?: readonly TrafficLightDefinition[];
   readonly stopLines?: readonly StopLineDefinition[];
+  /** Fixed authored time used for signed, time-based restrictions. */
+  readonly scenarioClock?: ScenarioClock;
+  readonly laneRestrictions?: readonly LaneRestriction[];
+  readonly boxJunctions?: readonly SimulationBoxJunctionDefinition[];
   readonly npcCount?: number;
   readonly maxForwardSpeedMps?: number;
   readonly maxReverseSpeedMps?: number;
@@ -192,6 +211,7 @@ export interface SimulationSnapshot {
   readonly status: SimulationStatus;
   readonly trafficSide: TrafficSide;
   readonly speedUnit: SpeedUnit;
+  readonly scenarioClock: ScenarioClock | null;
   readonly speedDisplay: number;
   readonly player: PlayerSimulationSnapshot;
   readonly road: SimulationRoadSnapshot;
@@ -283,6 +303,7 @@ interface InternalConfig {
   spawn: SimulationPose;
   checkpoints: SimulationCheckpoint[];
   finish: (SimulationPoint & { readonly radius?: number }) | null;
+  scenarioClock: ScenarioClock | null;
   npcCount: number;
   maxForwardSpeedMps: number;
   maxReverseSpeedMps: number;
@@ -300,6 +321,8 @@ const RULE_COOLDOWNS: Readonly<Partial<Record<RuleCode, number>>> = {
   speeding: 8,
   following_distance: 7,
   lane_misuse: 12,
+  box_junction: 10,
+  restricted_lane: 12,
   missing_indicator: 5,
   incomplete_stop: 5,
   unsafe_gap: 5,
@@ -350,6 +373,107 @@ function distanceSquared(a: SimulationPoint, b: SimulationPoint): number {
   const dx = a.x - b.x;
   const dz = a.z - b.z;
   return dx * dx + dz * dz;
+}
+
+const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+/** Returns whether a signed restriction window is active at the fixed lesson time. */
+export function isRestrictionWindowActive(
+  clock: ScenarioClock,
+  window: RestrictionWindow,
+): boolean {
+  if (
+    !Number.isFinite(clock.minutesAfterMidnight) ||
+    clock.minutesAfterMidnight < 0 ||
+    clock.minutesAfterMidnight >= 24 * 60 ||
+    !Number.isFinite(window.startMinutes) ||
+    !Number.isFinite(window.endMinutes)
+  ) {
+    return false;
+  }
+  const start = clamp(window.startMinutes, 0, 24 * 60);
+  const end = clamp(window.endMinutes, 0, 24 * 60);
+  const todayIsSigned = window.weekdays.includes(clock.weekday);
+  if (start === end) return todayIsSigned;
+  if (start < end) {
+    return todayIsSigned && clock.minutesAfterMidnight >= start && clock.minutesAfterMidnight < end;
+  }
+
+  // Overnight restrictions start on the signed weekday and remain active after
+  // midnight on the following day.
+  const weekdayIndex = WEEKDAYS.indexOf(clock.weekday);
+  const previousWeekday = WEEKDAYS[(weekdayIndex + WEEKDAYS.length - 1) % WEEKDAYS.length];
+  return (
+    (todayIsSigned && clock.minutesAfterMidnight >= start) ||
+    (window.weekdays.includes(previousWeekday) && clock.minutesAfterMidnight < end)
+  );
+}
+
+export function isLaneRestrictionActive(
+  restriction: LaneRestriction,
+  clock: ScenarioClock | null | undefined,
+): boolean {
+  return Boolean(
+    clock &&
+      restriction.activeWindows.some((window) =>
+        isRestrictionWindowActive(clock, window),
+      ),
+  );
+}
+
+/** Boundary points count as inside so entry detection is stable at 60 Hz. */
+export function isPointInPolygon(
+  point: SimulationPoint,
+  polygon: readonly SimulationPoint[],
+): boolean {
+  if (polygon.length < 3) return false;
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const start = polygon[previous];
+    const end = polygon[index];
+    if (
+      distanceToSegmentSquared(
+        point.x,
+        point.z,
+        start.x,
+        start.z,
+        end.x,
+        end.z,
+      ) <= 1e-8
+    ) {
+      return true;
+    }
+    const crosses =
+      (end.z > point.z) !== (start.z > point.z) &&
+      point.x <
+        ((start.x - end.x) * (point.z - end.z)) / (start.z - end.z) + end.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+export function distanceToPolygon(
+  point: SimulationPoint,
+  polygon: readonly SimulationPoint[],
+): number {
+  if (isPointInPolygon(point, polygon)) return 0;
+  let bestSquared = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const start = polygon[index];
+    const end = polygon[(index + 1) % polygon.length];
+    bestSquared = Math.min(
+      bestSquared,
+      distanceToSegmentSquared(
+        point.x,
+        point.z,
+        start.x,
+        start.z,
+        end.x,
+        end.z,
+      ),
+    );
+  }
+  return Math.sqrt(bestSquared);
 }
 
 function distanceToSegmentSquared(
@@ -514,6 +638,8 @@ export class SimulationCore {
   private readonly trafficLights: NormalizedTrafficLight[];
   private readonly trafficLightsById: Map<string, NormalizedTrafficLight>;
   private readonly stopLines: StopLineDefinition[];
+  private readonly laneRestrictions: LaneRestriction[];
+  private readonly boxJunctions: SimulationBoxJunctionDefinition[];
   private readonly initialSeed: number;
 
   private random: SeededRandom;
@@ -563,6 +689,7 @@ export class SimulationCore {
   private honkSourceNpcId: string | null = null;
   private playerHornSeconds = 0;
   private stopApproachSpeeds = new Map<string, number>();
+  private restrictedLaneSeconds = new Map<string, number>();
 
   constructor(configuration: SimulationCoreConfig = {}) {
     const trafficSide = configuration.trafficSide ?? "right";
@@ -606,6 +733,9 @@ export class SimulationCore {
       spawn,
       checkpoints,
       finish: configuration.finish ?? null,
+      scenarioClock: configuration.scenarioClock
+        ? { ...configuration.scenarioClock }
+        : null,
       npcCount: Math.trunc(clamp(configuration.npcCount ?? 10, 0, 32)),
       maxForwardSpeedMps: clamp(configuration.maxForwardSpeedMps ?? 22, 5, 50),
       maxReverseSpeedMps: clamp(configuration.maxReverseSpeedMps ?? 7, 2, 15),
@@ -656,6 +786,30 @@ export class SimulationCore {
     this.stopLines = (configuration.stopLines ?? defaultStopLines)
       .filter((line) => this.lanesById.has(line.laneId))
       .map((line) => ({ ...line }));
+    this.laneRestrictions = (configuration.laneRestrictions ?? [])
+      .filter((restriction) => this.lanesById.has(restriction.laneId))
+      .map((restriction) => ({
+        ...restriction,
+        activeWindows: restriction.activeWindows.map((window) => ({
+          ...window,
+          weekdays: [...window.weekdays],
+        })),
+      }));
+    this.boxJunctions = (configuration.boxJunctions ?? [])
+      .filter(
+        (junction) =>
+          junction.polygon.length >= 3 &&
+          junction.laneIds.some((laneId) => this.lanesById.has(laneId)),
+      )
+      .map((junction) => ({
+        ...junction,
+        polygon: junction.polygon.map((point) => ({ ...point })),
+        laneIds: junction.laneIds.filter((laneId) => this.lanesById.has(laneId)),
+        exitLaneIds: (junction.exitLaneIds ?? junction.laneIds).filter((laneId) =>
+          this.lanesById.has(laneId),
+        ),
+        exitClearanceM: clamp(junction.exitClearanceM ?? 12, 3, 40),
+      }));
 
     this.random = new SeededRandom(this.initialSeed);
     this.player = { ...spawn };
@@ -750,6 +904,7 @@ export class SimulationCore {
     this.honkSourceNpcId = null;
     this.playerHornSeconds = 0;
     this.stopApproachSpeeds.clear();
+    this.restrictedLaneSeconds.clear();
     this.spawnNpcs();
     this.updateRoadState();
     return this.getSnapshot();
@@ -816,6 +971,9 @@ export class SimulationCore {
       status: this.status,
       trafficSide: this.config.trafficSide,
       speedUnit: this.config.speedUnit,
+      scenarioClock: this.config.scenarioClock
+        ? { ...this.config.scenarioClock }
+        : null,
       speedDisplay: this.toDisplaySpeed(Math.abs(this.signedSpeedMps)),
       player: {
         x: this.player.x,
@@ -886,6 +1044,7 @@ export class SimulationCore {
     this.npcs = [];
     this.ruleCooldowns.clear();
     this.stopApproachSpeeds.clear();
+    this.restrictedLaneSeconds.clear();
   }
 
   private fixedUpdate(deltaSeconds: number): void {
@@ -906,6 +1065,8 @@ export class SimulationCore {
     this.updateRoadState();
 
     if (this.status !== "running") return;
+    this.checkBoxJunctions(oldPlayer);
+    this.monitorRestrictedLanes(deltaSeconds);
     this.checkStopLines(previousProjection, this.roadState.projection);
     if (this.status !== "running") return;
     this.monitorRoadRules(deltaSeconds);
@@ -1258,6 +1419,107 @@ export class SimulationCore {
 
     this.monitorFollowingDistance(projection, deltaSeconds);
     this.monitorPassingLane(projection, deltaSeconds);
+  }
+
+  private checkBoxJunctions(previousPlayer: SimulationPoint): void {
+    const projection = this.roadState.projection;
+    if (!projection || Math.abs(this.signedSpeedMps) < 0.5) return;
+
+    for (const junction of this.boxJunctions) {
+      if (!junction.laneIds.includes(projection.lane.id)) continue;
+      const entered =
+        !isPointInPolygon(previousPlayer, junction.polygon) &&
+        isPointInPolygon(this.player, junction.polygon);
+      if (!entered) continue;
+
+      const blockingNpc = this.findBlockedBoxExit(junction, projection);
+      if (!blockingNpc) continue;
+      const clearance = junction.exitClearanceM ?? 12;
+      this.emitEvent({
+        code: "box_junction",
+        severity: "minor",
+        message: "You entered the yellow box before your exit was clear.",
+        correction:
+          "Wait before the box until there is enough room to clear it completely.",
+        penalty: 6,
+        category: "ruleUse",
+        evidence: {
+          junctionId: junction.id,
+          laneId: projection.lane.id,
+          blockingVehicleId: blockingNpc.id,
+          exitClearanceM: Math.round(clearance * 10) / 10,
+          speedMps: Math.round(Math.abs(this.signedSpeedMps) * 10) / 10,
+        },
+      });
+    }
+  }
+
+  private findBlockedBoxExit(
+    junction: SimulationBoxJunctionDefinition,
+    playerProjection: LaneProjection,
+  ): NpcInternal | null {
+    const exitLaneIds = junction.exitLaneIds?.length
+      ? junction.exitLaneIds
+      : junction.laneIds;
+    const clearance = junction.exitClearanceM ?? 12;
+    for (const npc of this.npcs) {
+      if (!exitLaneIds.includes(npc.laneId)) continue;
+      if (distanceToPolygon(npc, junction.polygon) > clearance) continue;
+      if (npc.laneId === playerProjection.lane.id) {
+        const gap = this.distanceAhead(
+          playerProjection.lane,
+          playerProjection.distanceAlong,
+          npc.distance,
+        );
+        if (gap > 0.5 && gap <= clearance + 24) return npc;
+        continue;
+      }
+      return npc;
+    }
+    return null;
+  }
+
+  private monitorRestrictedLanes(deltaSeconds: number): void {
+    const projection = this.roadState.projection;
+    const clock = this.config.scenarioClock;
+    for (const restriction of this.laneRestrictions) {
+      const usingRestrictedLane =
+        Boolean(clock) &&
+        projection?.lane.id === restriction.laneId &&
+        projection.distance <= projection.lane.width / 2 + 0.75 &&
+        Math.abs(this.signedSpeedMps) >= 0.8 &&
+        isLaneRestrictionActive(restriction, clock);
+      const sustainedSeconds = usingRestrictedLane
+        ? (this.restrictedLaneSeconds.get(restriction.id) ?? 0) + deltaSeconds
+        : 0;
+      this.restrictedLaneSeconds.set(restriction.id, sustainedSeconds);
+      if (sustainedSeconds < 2.5 || !clock) continue;
+
+      const activeWindow = restriction.activeWindows.find((window) =>
+        isRestrictionWindowActive(clock, window),
+      );
+      this.emitEvent({
+        code: "restricted_lane",
+        severity: "minor",
+        message: restriction.message,
+        correction:
+          "Read the signed operating times and move into a general-traffic lane when it is safe.",
+        penalty: 4,
+        category: "ruleUse",
+        evidence: {
+          restrictionId: restriction.id,
+          laneId: restriction.laneId,
+          weekday: clock.weekday,
+          scenarioTime: clock.label,
+          sourceReferenceId: restriction.sourceReferenceId,
+          sustainedSeconds: 2.5,
+          activeWindow: activeWindow
+            ? `${activeWindow.startMinutes}-${activeWindow.endMinutes}`
+            : "unknown",
+        },
+      });
+      this.restrictedLaneSeconds.set(restriction.id, 0);
+    }
   }
 
   private monitorFollowingDistance(
@@ -1702,6 +1964,7 @@ export class SimulationCore {
     this.followingSeconds = 0;
     this.passingLaneSeconds = 0;
     this.stopApproachSpeeds.clear();
+    this.restrictedLaneSeconds.clear();
     this.updateRoadState();
   }
 

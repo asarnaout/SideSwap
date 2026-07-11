@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SimulationCore } from "../app/game/simulation";
+import {
+  SimulationCore,
+  isRestrictionWindowActive,
+} from "../app/game/simulation";
 
 describe("deterministic simulation", () => {
   it("produces the same snapshots for the same seed and inputs", () => {
@@ -113,5 +116,200 @@ describe("deterministic simulation", () => {
     expect(restored.player.z).toBe(-20);
     expect(restored.player.speedMps).toBe(0);
     expect(restored.score.total).toBe(scoreBefore);
+  });
+
+  it("assesses a blocked box-junction exit once the player enters the conflict zone", () => {
+    const simulation = new SimulationCore({
+      lessonId: "london-box-test",
+      seed: 12,
+      npcCount: 1,
+      lanes: [
+        {
+          id: "cromwell-east",
+          points: [
+            { x: 0, z: -20 },
+            { x: 0, z: 20 },
+          ],
+          width: 6,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: -12, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -24, maxZ: 24 },
+      boxJunctions: [
+        {
+          id: "cromwell-yellow-box",
+          laneIds: ["cromwell-east"],
+          polygon: [
+            { x: -3, z: -8 },
+            { x: 3, z: -8 },
+            { x: 3, z: -2 },
+            { x: -3, z: -2 },
+          ],
+          exitClearanceM: 24,
+        },
+      ],
+    });
+
+    for (let index = 0; index < 180; index += 1) {
+      simulation.step(1 / 60, { throttle: 0.8 });
+    }
+
+    const event = simulation
+      .getEvents()
+      .find((candidate) => candidate.code === "box_junction");
+    expect(event?.severity).toBe("minor");
+    expect(event?.penalty).toBe(6);
+    expect(event?.message).toContain("exit was clear");
+    expect(event?.evidence).toMatchObject({
+      junctionId: "cromwell-yellow-box",
+      laneId: "cromwell-east",
+      blockingVehicleId: "npc-1",
+    });
+    expect(simulation.getSnapshot().score.ruleUse).toBe(94);
+  });
+
+  it("does not penalize a box-junction entry when its exit is clear", () => {
+    const simulation = new SimulationCore({
+      npcCount: 0,
+      lanes: [
+        {
+          id: "clear-exit",
+          points: [
+            { x: 0, z: -20 },
+            { x: 0, z: 20 },
+          ],
+          width: 6,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: -12, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -24, maxZ: 24 },
+      boxJunctions: [
+        {
+          id: "clear-box",
+          laneIds: ["clear-exit"],
+          polygon: [
+            { x: -3, z: -8 },
+            { x: 3, z: -8 },
+            { x: 3, z: -2 },
+            { x: -3, z: -2 },
+          ],
+        },
+      ],
+    });
+    for (let index = 0; index < 180; index += 1) {
+      simulation.step(1 / 60, { throttle: 0.8 });
+    }
+    expect(simulation.getEvents().some((event) => event.code === "box_junction")).toBe(false);
+    expect(simulation.getSnapshot().score.ruleUse).toBe(100);
+  });
+
+  it("uses the fixed scenario clock for sustained restricted-lane assessment and cooldown", () => {
+    const simulation = new SimulationCore({
+      lessonId: "london-restricted-lane-test",
+      npcCount: 0,
+      lanes: [
+        {
+          id: "signed-bus-lane",
+          points: [
+            { x: 0, z: -500 },
+            { x: 0, z: 500 },
+          ],
+          width: 6,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: -400, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -510, maxZ: 510 },
+      scenarioClock: {
+        weekday: "mon",
+        minutesAfterMidnight: 8 * 60 + 30,
+        label: "Monday 08:30",
+      },
+      laneRestrictions: [
+        {
+          id: "museum-bus-lane-hours",
+          laneId: "signed-bus-lane",
+          ruleCode: "restricted_lane",
+          activeWindows: [
+            {
+              weekdays: ["mon", "tue", "wed", "thu", "fri"],
+              startMinutes: 7 * 60,
+              endMinutes: 19 * 60,
+            },
+          ],
+          sourceReferenceId: "uk-highway-code-140",
+          message: "This signed lane is restricted at the displayed lesson time.",
+        },
+      ],
+    });
+
+    for (let index = 0; index < 360; index += 1) {
+      simulation.step(1 / 60, { throttle: 0.55 });
+    }
+    const firstEvents = simulation
+      .getEvents()
+      .filter((event) => event.code === "restricted_lane");
+    expect(firstEvents).toHaveLength(1);
+    expect(firstEvents[0].evidence).toMatchObject({
+      restrictionId: "museum-bus-lane-hours",
+      laneId: "signed-bus-lane",
+      scenarioTime: "Monday 08:30",
+      sourceReferenceId: "uk-highway-code-140",
+      sustainedSeconds: 2.5,
+    });
+    expect(simulation.getSnapshot().scenarioClock?.label).toBe("Monday 08:30");
+    expect(simulation.getSnapshot().score.ruleUse).toBe(96);
+
+    for (let index = 0; index < 300; index += 1) {
+      simulation.step(1 / 60, { throttle: 0.55 });
+    }
+    expect(
+      simulation.getEvents().filter((event) => event.code === "restricted_lane"),
+    ).toHaveLength(1);
+
+    for (let index = 0; index < 420; index += 1) {
+      simulation.step(1 / 60, { throttle: 0.55 });
+    }
+    expect(
+      simulation.getEvents().filter((event) => event.code === "restricted_lane"),
+    ).toHaveLength(2);
+  });
+
+  it("handles inactive and overnight signed restriction windows deterministically", () => {
+    expect(
+      isRestrictionWindowActive(
+        { weekday: "sat", minutesAfterMidnight: 9 * 60, label: "Saturday 09:00" },
+        {
+          weekdays: ["mon", "tue", "wed", "thu", "fri"],
+          startMinutes: 7 * 60,
+          endMinutes: 19 * 60,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      isRestrictionWindowActive(
+        { weekday: "tue", minutesAfterMidnight: 60, label: "Tuesday 01:00" },
+        {
+          weekdays: ["mon"],
+          startMinutes: 23 * 60,
+          endMinutes: 2 * 60,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      isRestrictionWindowActive(
+        { weekday: "tue", minutesAfterMidnight: 3 * 60, label: "Tuesday 03:00" },
+        {
+          weekdays: ["mon"],
+          startMinutes: 23 * 60,
+          endMinutes: 2 * 60,
+        },
+      ),
+    ).toBe(false);
   });
 });
