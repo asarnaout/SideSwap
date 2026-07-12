@@ -98,7 +98,8 @@ describe("game-first launcher", () => {
       screen.getByRole("group", { name: "Destination" }),
     ).getAllByRole("button");
     expect(destinations[0]).toHaveAccessibleName(/London/i);
-    expect(destinations[0]).toHaveTextContent("Featured · Recommended start");
+    expect(destinations[0]).not.toHaveTextContent("Featured · Recommended start");
+    expect(destinations[2]).not.toHaveTextContent("Specialist · Roundabout Academy");
     expect(destinations[0]).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "Traffic keeps left" }));

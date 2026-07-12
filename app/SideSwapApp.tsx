@@ -831,26 +831,13 @@ export default function SideSwapApp() {
                   }}
                   type="button"
                   className={`${destinationId === item.id ? "active" : ""} ${item.promotion}`}
-                  aria-label={`${item.destinationName}. ${item.destinationSubtitle}${
-                    item.promotion === "featured"
-                      ? ". Featured, recommended start"
-                      : item.promotion === "specialist"
-                        ? ". Specialist, Roundabout Academy"
-                        : ""
-                  }`}
+                  aria-label={`${item.destinationName}. ${item.destinationSubtitle}`}
                   aria-pressed={destinationId === item.id}
                   onClick={() => chooseDestination(item.id)}
                 >
                   <span>{itemCountry.flagEmoji}</span>
                   <strong>{item.destinationName}</strong>
                   <small>{item.destinationSubtitle}</small>
-                  {item.promotion !== "standard" && (
-                    <b className="destination-badge">
-                      {item.promotion === "featured"
-                        ? "Featured · Recommended start"
-                        : "Specialist · Roundabout Academy"}
-                    </b>
-                  )}
                 </button>
                 );
               })}

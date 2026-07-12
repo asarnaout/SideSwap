@@ -1490,19 +1490,6 @@ canvas:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-.destination-badge {
-  align-self: end;
-  margin-top: 6px;
-  color: var(--green);
-  font-size: 6px;
-  font-style: normal;
-  font-weight: 900;
-  letter-spacing: .04em;
-  line-height: 1.25;
-  text-transform: uppercase;
-}
-.launcher-destinations button.specialist .destination-badge { color: #755e17; }
-
 .launcher-setup-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2114,7 +2101,6 @@ canvas:focus-visible {
   .launcher-destinations span { font-size: 15px; }
   .launcher-destinations strong { font-size: 8px; }
   .launcher-destinations small { font-size: 7px; }
-  .destination-badge { margin-top: 4px; }
   .launcher-setup-summary { gap: 5px; margin-top: 6px; }
   .launcher-setup-summary button { min-height: 44px; padding: 5px 8px; }
   .launcher-actions { display: grid; grid-template-columns: 1fr auto; margin-top: 9px; }
