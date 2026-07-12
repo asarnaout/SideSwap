@@ -1800,11 +1800,62 @@ canvas:focus-visible {
 }
 
 /* London */
+.london-elizabeth-tower {
+  position: absolute;
+  right: 9%;
+  bottom: 44%;
+  width: clamp(37px, 4vw, 52px);
+  height: clamp(154px, 22vw, 220px);
+  filter: drop-shadow(0 9px 8px rgba(55, 41, 29, .17));
+}
+.london-elizabeth-tower::before {
+  content: "";
+  position: absolute;
+  right: 8%;
+  bottom: 0;
+  left: 8%;
+  height: 76%;
+  border: 1px solid rgba(69, 48, 31, .45);
+  background: repeating-linear-gradient(90deg, #b78c61 0 5px, #9d704e 5px 8px);
+  clip-path: polygon(18% 0, 82% 0, 88% 100%, 12% 100%);
+}
+.london-elizabeth-tower::after {
+  content: "";
+  position: absolute;
+  top: 8%;
+  right: 20%;
+  left: 20%;
+  height: 24%;
+  background: #815b42;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.london-elizabeth-tower i {
+  position: absolute;
+  z-index: 1;
+  top: 29%;
+  left: 50%;
+  width: 48%;
+  aspect-ratio: 1;
+  border: 2px solid #6d523d;
+  border-radius: 50%;
+  background: #f1dfaa;
+  box-shadow: inset 0 0 0 2px #be9a61;
+  transform: translateX(-50%);
+}
+.london-elizabeth-tower b {
+  position: absolute;
+  top: 0;
+  left: calc(50% - 2px);
+  width: 4px;
+  height: 15%;
+  border-radius: 99px 99px 0 0;
+  background: #76503d;
+}
 .london-museum {
   position: absolute;
-  right: 5%;
+  right: 25%;
   bottom: 44%;
-  left: 5%;
+  left: 6%;
   display: grid;
   grid-template-columns: 1fr .48fr 1fr;
   align-items: end;
@@ -1818,11 +1869,11 @@ canvas:focus-visible {
   align-items: center;
   justify-content: space-evenly;
   border: 1px solid rgba(62, 39, 28, .32);
-  background: #a8684d;
+  background: #b27a59;
   box-shadow: inset 0 -18px rgba(78, 43, 31, .13);
 }
 .museum-wing { height: 64%; }
-.museum-centre { height: 86%; background: #8d5844; }
+.museum-centre { height: 86%; background: #9d654b; }
 .museum-wing i,
 .museum-centre i {
   width: 11%;
@@ -1839,8 +1890,20 @@ canvas:focus-visible {
   bottom: 100%;
   left: -8%;
   height: 38%;
-  background: #704638;
+  background: #7e503b;
   clip-path: polygon(0 100%, 12% 55%, 35% 55%, 50% 0, 65% 55%, 88% 55%, 100% 100%);
+}
+.museum-centre::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 35%;
+  width: 30%;
+  height: 39%;
+  border: 2px solid rgba(239, 205, 166, .72);
+  border-bottom: 0;
+  border-radius: 24px 24px 0 0;
+  background: #2b3a3c;
 }
 .museum-centre b {
   position: absolute;
@@ -1870,31 +1933,55 @@ canvas:focus-visible {
   border-radius: 4px 4px 8px 8px;
   background: #f2dfa0;
 }
-.london-lamp-left { left: 8%; }
-.london-lamp-right { right: 8%; }
-.london-bus,
-.london-cab {
+.london-lamp-left { left: 6%; }
+.london-lamp-right { right: 5%; }
+.london-double-decker,
+.london-black-cab {
   position: absolute;
-  bottom: 39%;
+  bottom: 42%;
   border: 2px solid #263337;
   box-shadow: 0 8px 10px rgba(0, 0, 0, .2);
 }
-.london-bus {
-  right: 15%;
-  width: 30px;
-  height: 55px;
-  border-radius: 4px;
-  background: #b72f34;
-}
-.london-bus i { display: block; height: 11px; margin: 5px 4px; background: #9bcbd7; }
-.london-cab {
+.london-double-decker {
   left: 16%;
-  width: 34px;
-  height: 25px;
-  border-radius: 12px 12px 5px 5px;
-  background: #172328;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  width: 48px;
+  height: 74px;
+  padding: 8px 5px 9px;
+  border-radius: 7px 7px 4px 4px;
+  background: #bd3038;
 }
-.london-cab i { display: block; width: 19px; height: 8px; margin: 3px auto; border-radius: 5px 5px 0 0; background: #557078; }
+.london-double-decker::before,
+.london-double-decker::after,
+.london-black-cab::before,
+.london-black-cab::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  width: 8px;
+  height: 11px;
+  border-radius: 5px;
+  background: #1d292c;
+}
+.london-double-decker::before,
+.london-black-cab::before { left: 4px; }
+.london-double-decker::after,
+.london-black-cab::after { right: 4px; }
+.london-double-decker i { min-width: 0; height: 16px; background: #a9d1da; box-shadow: inset 0 -3px rgba(31, 61, 69, .19); }
+.london-double-decker b { position: absolute; right: 6px; bottom: 9px; width: 9px; height: 22px; border: 1px solid rgba(26, 49, 55, .7); background: #8fc1cc; }
+.london-double-decker em { position: absolute; top: 3px; left: 9px; width: 24px; height: 3px; border-radius: 3px; background: #f2d45c; }
+.london-black-cab {
+  right: 17%;
+  width: 58px;
+  height: 30px;
+  border-radius: 15px 15px 5px 5px;
+  background: #1e2b2f;
+}
+.london-black-cab i { position: absolute; top: 5px; left: 12px; width: 26px; height: 10px; border-radius: 8px 8px 2px 2px; background: #769aa1; }
+.london-black-cab b { position: absolute; top: -6px; left: 23px; width: 12px; height: 5px; border-radius: 3px 3px 0 0; background: #e9d18a; }
+.london-black-cab em { position: absolute; right: 5px; bottom: 5px; width: 5px; height: 7px; border-radius: 2px; background: #f0cf59; }
 
 /* New York */
 .nyc-skyline {
@@ -1904,16 +1991,38 @@ canvas:focus-visible {
   left: 0;
   display: flex;
   align-items: end;
-  gap: 7px;
+  gap: 5px;
   padding: 0 3%;
 }
-.nyc-skyline span { flex: 1; min-width: 0; border: 1px solid rgba(32, 42, 46, .25); background: #7b8790; box-shadow: inset -8px 0 rgba(18, 31, 35, .1); }
-.nyc-skyline span:nth-child(1) { height: 82px; background: #6f7d85; }
-.nyc-skyline span:nth-child(2) { height: 132px; background: #9d6b59; }
-.nyc-skyline span:nth-child(3) { height: 104px; background: #7f8d94; }
-.nyc-skyline span:nth-child(4) { height: 158px; background: #66767e; }
-.nyc-skyline span:nth-child(5) { height: 116px; background: #a57561; }
-.nyc-skyline span:nth-child(6) { height: 76px; background: #77858c; }
+.nyc-skyline span { flex: 1; min-width: 0; border: 1px solid rgba(32, 42, 46, .25); background: #7b8790; box-shadow: inset -8px 0 rgba(18, 31, 35, .1), inset 6px 0 rgba(255,255,255,.06); }
+.nyc-skyline span:nth-child(1) { height: 96px; background: #6f7d85; }
+.nyc-skyline span:nth-child(2) { height: 156px; background: #9d6b59; }
+.nyc-skyline span:nth-child(3) { height: 126px; background: #7f8d94; }
+.nyc-skyline span:nth-child(4) { height: 186px; background: #66767e; }
+.nyc-skyline span:nth-child(5) { height: 142px; background: #a57561; }
+.nyc-skyline span:nth-child(6) { height: 104px; background: #77858c; }
+.nyc-skyline span:nth-child(7) { height: 167px; background: #65747b; }
+.nyc-skyline span:nth-child(8) { height: 118px; background: #8b9698; }
+.nyc-empire-tower {
+  position: absolute;
+  right: 29%;
+  bottom: 44%;
+  width: clamp(38px, 4.7vw, 55px);
+  height: clamp(175px, 25vw, 248px);
+  filter: drop-shadow(0 8px 8px rgba(31, 42, 45, .18));
+}
+.nyc-empire-tower i {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 87%;
+  border: 1px solid rgba(29, 42, 46, .35);
+  background: repeating-linear-gradient(90deg, #78868c 0 5px, #64737a 5px 8px);
+  clip-path: polygon(24% 0, 76% 0, 76% 7%, 88% 7%, 88% 16%, 100% 16%, 100% 100%, 0 100%, 0 16%, 12% 16%, 12% 7%, 24% 7%);
+}
+.nyc-empire-tower i::after { content: ""; position: absolute; inset: 22% 20% 10%; background: repeating-linear-gradient(180deg, rgba(219,231,220,.57) 0 3px, transparent 3px 12px); }
+.nyc-empire-tower b { position: absolute; top: 0; left: calc(50% - 2px); width: 4px; height: 21%; border-radius: 99px 99px 0 0; background: #647277; }
 .nyc-brownstones {
   position: absolute;
   bottom: 43%;
@@ -1925,9 +2034,10 @@ canvas:focus-visible {
 }
 .nyc-brownstones > span { display: flex; flex: 1; justify-content: space-evenly; padding-top: 13px; border: 1px solid #643b31; background: #9e5d4a; }
 .nyc-brownstones i { width: 14%; height: 16px; background: #26383d; box-shadow: 0 25px #26383d; }
-.nyc-water-tower { position: absolute; right: 17%; bottom: 64%; width: 38px; height: 27px; background: #5b4b40; clip-path: polygon(8% 0, 92% 0, 78% 100%, 22% 100%); }
-.nyc-water-tower::before { content: ""; position: absolute; top: -9px; left: 3px; width: 32px; height: 11px; background: #493c34; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
-.nyc-water-tower i { position: absolute; top: 100%; left: 6px; width: 3px; height: 24px; background: #403731; box-shadow: 23px 0 #403731; }
+.nyc-water-tower { position: absolute; right: 11%; bottom: 63%; width: 44px; height: 30px; border: 2px solid #4b3d34; border-radius: 50% 50% 12px 12px; background: repeating-linear-gradient(90deg, #795642 0 5px, #624a3c 5px 8px); }
+.nyc-water-tower::before { content: ""; position: absolute; top: -11px; left: 4px; width: 32px; height: 12px; background: #4c3c33; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.nyc-water-tower i { position: absolute; top: 100%; left: 7px; width: 4px; height: 28px; background: #433a34; box-shadow: 21px 0 #433a34; }
+.nyc-water-tower::after { content: ""; position: absolute; top: calc(100% + 13px); left: 4px; width: 36px; height: 4px; background: #433a34; }
 .nyc-street-sign { position: absolute; right: 7%; bottom: 47%; padding: 4px 8px; border: 2px solid #e5e0c9; border-radius: 3px; background: #1c6f49; color: white; font: 800 8px/1 system-ui; letter-spacing: .04em; }
 .nyc-street-sign::after { content: ""; position: absolute; top: 100%; left: 50%; width: 3px; height: 32px; background: #38484a; }
 
@@ -1964,15 +2074,32 @@ canvas:focus-visible {
 .tokyo-houses > span:nth-child(3) { height: 78%; background: #bda18d; }
 .tokyo-houses > span::before { content: ""; position: absolute; right: -5px; bottom: 100%; left: -5px; height: 24px; background: #465259; clip-path: polygon(0 100%, 50% 0, 100% 100%); }
 .tokyo-houses i { display: inline-block; width: 17%; height: 20px; margin: 16px 7% 0; background: #4c7078; }
-.tokyo-torii { position: absolute; left: 8%; bottom: 44%; width: 70px; height: 68px; border: solid #bb493c; border-width: 9px 8px 0; }
-.tokyo-torii::before { content: ""; position: absolute; top: -18px; left: -14px; width: 82px; height: 8px; border-radius: 3px; background: #bb493c; }
-.tokyo-torii i { position: absolute; top: 5px; left: -10px; width: 74px; height: 6px; background: #bb493c; }
+.tokyo-shrine { position: absolute; left: 5%; bottom: 44%; width: 34%; height: 132px; filter: drop-shadow(0 9px 8px rgba(47, 38, 32, .16)); }
+.tokyo-shrine::before { content: ""; position: absolute; right: 4%; bottom: 0; width: 70%; height: 66%; border: 1px solid rgba(78, 58, 43, .34); background: #e1cbb2; box-shadow: inset -10px 0 rgba(91, 67, 50, .1); }
+.tokyo-shrine::after { content: ""; position: absolute; top: 22%; right: -2%; width: 82%; height: 42%; background: #3b4547; clip-path: polygon(0 100%, 12% 63%, 50% 0, 88% 63%, 100% 100%); }
+.tokyo-shrine > b { position: absolute; right: 28%; bottom: 0; z-index: 1; width: 21%; height: 43%; border: 3px solid #6f4d38; border-bottom: 0; background: #34484a; }
+.tokyo-shrine > i { position: absolute; right: 9%; bottom: 16%; z-index: 1; width: 7px; height: 20px; border-radius: 5px; background: #9d6b45; box-shadow: 0 -8px 0 -1px #f0d59a; }
+.tokyo-torii { position: absolute; z-index: 2; bottom: 0; left: 0; width: 62px; height: 66px; border: solid #c64c3e; border-width: 8px 7px 0; }
+.tokyo-torii::before { content: ""; position: absolute; top: -18px; left: -13px; width: 76px; height: 9px; border-radius: 5px 5px 2px 2px; background: #c64c3e; }
+.tokyo-torii i { position: absolute; top: 5px; left: -9px; width: 66px; height: 6px; background: #c64c3e; }
 .tokyo-crossing { position: absolute; right: 12%; bottom: 41%; width: 5px; height: 82px; background: #262f31; }
 .tokyo-crossing::before, .tokyo-crossing::after { content: ""; position: absolute; top: 10px; left: -20px; width: 46px; height: 6px; background: #f3e8c8; transform: rotate(35deg); box-shadow: inset 12px 0 #d6a53f, inset 24px 0 #f3e8c8, inset 36px 0 #d6a53f; }
 .tokyo-crossing::after { transform: rotate(-35deg); }
 .tokyo-crossing i { position: absolute; top: 38px; left: -9px; width: 22px; height: 11px; border-radius: 8px; background: #272f31; }
-.tokyo-train { position: absolute; right: 23%; bottom: 47%; display: flex; gap: 3px; width: 33%; height: 34px; padding: 6px; border-bottom: 6px solid #355d7c; background: #e8e5d9; }
-.tokyo-train i { flex: 1; background: #547987; }
+.tokyo-tramway { position: absolute; right: 4%; bottom: 43%; width: 45%; height: 100px; }
+.tokyo-overhead-wire { position: absolute; top: 20px; right: 0; left: 0; height: 2px; background: #4b595c; box-shadow: 0 11px 0 -1px rgba(75,89,92,.72); }
+.tokyo-overhead-wire::before,
+.tokyo-overhead-wire::after { content: ""; position: absolute; top: -10px; width: 3px; height: 64px; background: #4b595c; }
+.tokyo-overhead-wire::before { left: 9%; }
+.tokyo-overhead-wire::after { right: 9%; }
+.tokyo-tram { position: absolute; bottom: 18px; left: 13%; z-index: 2; display: flex; gap: 3px; width: 68%; height: 35px; padding: 5px; border: 2px solid #344b52; border-bottom: 7px solid #315f82; border-radius: 5px 5px 2px 2px; background: #eee9da; box-shadow: 0 5px 0 rgba(25, 39, 42, .24); }
+.tokyo-tram::before,
+.tokyo-tram::after { content: ""; position: absolute; bottom: -12px; width: 9px; height: 7px; border-radius: 5px; background: #243236; }
+.tokyo-tram::before { left: 9px; }
+.tokyo-tram::after { right: 9px; }
+.tokyo-tram i { flex: 1; min-width: 0; background: #6797a2; box-shadow: inset 0 -3px rgba(32, 68, 77, .22); }
+.tokyo-tramway > b { position: absolute; right: 0; bottom: 8px; left: 0; height: 4px; background: #3d5054; box-shadow: 0 8px #3d5054; }
+.tokyo-tramway > em { position: absolute; right: 3%; bottom: 1px; left: 3%; height: 16px; background: repeating-linear-gradient(90deg, transparent 0 9px, #8e765a 9px 13px); }
 
 .launcher-legal {
   position: absolute;

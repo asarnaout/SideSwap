@@ -126,6 +126,8 @@ describe("game-first launcher", () => {
     const londonPreview = screen.getByLabelText("London training preview");
     expect(londonPreview).toHaveClass("launcher-scene-uk-london");
     expect(londonPreview.querySelector(".london-museum")).toBeInTheDocument();
+    expect(londonPreview.querySelector(".london-elizabeth-tower")).toBeInTheDocument();
+    expect(londonPreview.querySelector(".london-black-cab")).toBeInTheDocument();
     expect(londonPreview.querySelector(".launcher-car")).toHaveClass("left");
     expect(londonPreview.querySelector(".launcher-car-body")).toBeInTheDocument();
     expect(londonPreview.querySelector(".launcher-car-cabin")).toBeInTheDocument();
@@ -140,8 +142,20 @@ describe("game-first launcher", () => {
     const newYorkPreview = screen.getByLabelText("New York City training preview");
     expect(newYorkPreview).toHaveClass("launcher-scene-us-nyc");
     expect(newYorkPreview.querySelector(".nyc-skyline")).toBeInTheDocument();
+    expect(newYorkPreview.querySelector(".nyc-empire-tower")).toBeInTheDocument();
+    expect(newYorkPreview.querySelector(".nyc-water-tower")).toBeInTheDocument();
     expect(newYorkPreview.querySelector(".launcher-car")).toHaveClass("right");
     expect(container.querySelectorAll(".launcher-road")).toHaveLength(1);
+
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Destination" })).getByRole(
+        "button",
+        { name: /Tokyo — Setagaya/i },
+      ),
+    );
+    const tokyoPreview = screen.getByLabelText("Tokyo — Setagaya training preview");
+    expect(tokyoPreview.querySelector(".tokyo-shrine")).toBeInTheDocument();
+    expect(tokyoPreview.querySelector(".tokyo-tramway")).toBeInTheDocument();
   });
 
   it("preserves a manually selected destination and restores focus after setup closes", async () => {

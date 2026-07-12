@@ -217,6 +217,7 @@ function DestinationPreviewScenery({
   if (destinationId === "uk-london") {
     return (
       <div className="launcher-cityscape london-cityscape">
+        <span className="london-elizabeth-tower"><i /><b /></span>
         <div className="london-museum">
           <span className="museum-wing museum-wing-left"><i /><i /><i /></span>
           <span className="museum-centre"><i /><b /></span>
@@ -224,8 +225,8 @@ function DestinationPreviewScenery({
         </div>
         <span className="london-lamp london-lamp-left" />
         <span className="london-lamp london-lamp-right" />
-        <span className="london-bus"><i /><i /><i /></span>
-        <span className="london-cab"><i /></span>
+        <span className="london-double-decker"><i /><i /><i /><b /><em /></span>
+        <span className="london-black-cab"><i /><b /><em /></span>
       </div>
     );
   }
@@ -234,8 +235,9 @@ function DestinationPreviewScenery({
     return (
       <div className="launcher-cityscape nyc-cityscape">
         <div className="nyc-skyline">
-          <span /><span /><span /><span /><span /><span />
+          <span /><span /><span /><span /><span /><span /><span />
         </div>
+        <span className="nyc-empire-tower"><i /><b /></span>
         <div className="nyc-brownstones">
           <span><i /><i /><i /></span>
           <span><i /><i /><i /></span>
@@ -278,9 +280,9 @@ function DestinationPreviewScenery({
         <span><i /><i /></span>
         <span><i /><i /></span>
       </div>
-      <span className="tokyo-torii"><i /></span>
+      <div className="tokyo-shrine"><span className="tokyo-torii"><i /></span><b /><i /></div>
       <span className="tokyo-crossing"><i /><b /><em /></span>
-      <span className="tokyo-train"><i /><i /><i /></span>
+      <div className="tokyo-tramway"><span className="tokyo-overhead-wire" /><span className="tokyo-tram"><i /><i /><i /></span><b /><em /></div>
     </div>
   );
 }
