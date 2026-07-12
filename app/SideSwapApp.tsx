@@ -1118,7 +1118,6 @@ function OptionPicker<T extends string>({
                 <strong>{option.label}</strong>
                 <small>{option.hint}</small>
               </span>
-              <span className="choice-control-check" aria-hidden="true">✓</span>
             </button>
           );
         })}
