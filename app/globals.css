@@ -2035,45 +2035,6 @@ canvas:focus-visible {
 }
 .nyc-brownstones > span { display: flex; flex: 1; justify-content: space-evenly; padding-top: 13px; border: 1px solid #643b31; background: #9e5d4a; }
 .nyc-brownstones i { width: 14%; height: 16px; background: #26383d; box-shadow: 0 25px #26383d; }
-.nyc-water-tower {
-  position: absolute;
-  right: 10.5%;
-  bottom: calc(44% + 142px);
-  width: 44px;
-  height: 30px;
-  border: 2px solid #4b3d34;
-  border-radius: 50% 50% 12px 12px;
-  background: repeating-linear-gradient(90deg, #795642 0 5px, #624a3c 5px 8px);
-}
-.nyc-water-tower::before {
-  content: "";
-  position: absolute;
-  top: -11px;
-  left: 4px;
-  width: 32px;
-  height: 12px;
-  background: #4c3c33;
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
-.nyc-water-tower i {
-  position: absolute;
-  top: 100%;
-  left: 7px;
-  width: 4px;
-  height: 22px;
-  background: #433a34;
-  box-shadow: 21px 0 #433a34;
-}
-.nyc-water-tower::after {
-  content: "";
-  position: absolute;
-  top: calc(100% + 19px);
-  left: -6px;
-  width: 54px;
-  height: 4px;
-  border-radius: 2px;
-  background: #433a34;
-}
 .nyc-street-sign { position: absolute; right: 7%; bottom: 47%; padding: 4px 8px; border: 2px solid #e5e0c9; border-radius: 3px; background: #1c6f49; color: white; font: 800 8px/1 system-ui; letter-spacing: .04em; }
 .nyc-street-sign::after { content: ""; position: absolute; top: 100%; left: 50%; width: 3px; height: 32px; background: #38484a; }
 

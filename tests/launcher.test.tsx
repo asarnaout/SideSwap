@@ -143,7 +143,7 @@ describe("game-first launcher", () => {
     expect(newYorkPreview).toHaveClass("launcher-scene-us-nyc");
     expect(newYorkPreview.querySelector(".nyc-skyline")).toBeInTheDocument();
     expect(newYorkPreview.querySelector(".nyc-empire-tower")).toBeInTheDocument();
-    expect(newYorkPreview.querySelector(".nyc-water-tower")).toBeInTheDocument();
+    expect(newYorkPreview.querySelector(".nyc-water-tower")).not.toBeInTheDocument();
     expect(newYorkPreview.querySelector(".launcher-car")).toHaveClass("right");
     expect(container.querySelectorAll(".launcher-road")).toHaveLength(1);
 

@@ -243,7 +243,6 @@ function DestinationPreviewScenery({
           <span><i /><i /><i /></span>
           <span><i /><i /><i /></span>
         </div>
-        <span className="nyc-water-tower"><i /></span>
         <span className="nyc-street-sign">W 72 ST</span>
       </div>
     );
