@@ -45,7 +45,6 @@ import type {
   DestinationId,
   FreeDriveId,
   GameSessionConfig,
-  InputFamily,
   LessonDefinition,
   LessonId,
   LessonScore,
@@ -93,12 +92,6 @@ const COUNTRY_MARKS: Record<CountryId, string> = {
   jp: "世田谷",
 };
 
-const inputLabels: Record<InputFamily, string> = {
-  keyboard: "Keyboard",
-  gamepad: "Gamepad",
-  touch: "Touch",
-};
-
 const cameraLabels: Record<CameraMode, string> = {
   first_person: "First person",
   third_person: "Third person",
@@ -114,12 +107,6 @@ type ChoiceOption<T extends string> = {
 const CAMERA_CHOICES: readonly ChoiceOption<CameraMode>[] = [
   { value: "first_person", symbol: "1P", label: "Driver view", hint: "First person" },
   { value: "third_person", symbol: "3P", label: "Chase view", hint: "Third person" },
-];
-
-const INPUT_CHOICES: readonly ChoiceOption<InputFamily>[] = [
-  { value: "keyboard", symbol: "KEYS", label: "Keyboard", hint: "WASD + shortcuts" },
-  { value: "gamepad", symbol: "PAD", label: "Gamepad", hint: "Controller layout" },
-  { value: "touch", symbol: "TAP", label: "Touch", hint: "On-screen layout" },
 ];
 
 const TRAFFIC_SIDE_CHOICES: readonly ChoiceOption<TrafficSide>[] = [
@@ -147,6 +134,79 @@ function defaultWheelForDestination(destinationId: DestinationId): SteeringSide 
   return getCountryProfile(
     getDestinationProfile(destinationId).countryId,
   ).defaultSteeringSide;
+}
+
+function useGamepadUiNavigation(
+  enabled: boolean,
+  onBack: () => void,
+) {
+  const previousButtonsRef = useRef<boolean[]>([]);
+  const previousDirectionsRef = useRef({ up: false, down: false });
+
+  useEffect(() => {
+    if (!enabled || !("getGamepads" in navigator)) return;
+
+    const visibleFocusable = () => {
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+      const root = dialog ?? document.querySelector<HTMLElement>("main");
+      if (!root) return [];
+      return Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter(
+        (element) =>
+          !element.closest("[hidden], [aria-hidden=\"true\"]") &&
+          element.getAttribute("aria-disabled") !== "true",
+      );
+    };
+    const preferredFocusable = (items: HTMLElement[]) =>
+      items.find((item) =>
+        item.matches(
+          ".launcher-primary:not(:disabled), .launcher-familiar button:not(:disabled), .primary-button:not(:disabled)",
+        ),
+      ) ?? items[0];
+    const moveFocus = (direction: -1 | 1) => {
+      const items = visibleFocusable();
+      if (!items.length) return;
+      const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+      const nextIndex =
+        currentIndex < 0
+          ? items.indexOf(preferredFocusable(items))
+          : (currentIndex + direction + items.length) % items.length;
+      items[Math.max(0, nextIndex)]?.focus();
+    };
+    const activateFocused = () => {
+      const items = visibleFocusable();
+      const active = document.activeElement as HTMLElement | null;
+      const target = active && items.includes(active)
+        ? active
+        : preferredFocusable(items);
+      target?.focus();
+      target?.click();
+    };
+    const poll = () => {
+      const gamepads = navigator.getGamepads?.() ?? [];
+      const pad = Array.from(gamepads).find(Boolean);
+      if (!pad) {
+        previousButtonsRef.current = [];
+        previousDirectionsRef.current = { up: false, down: false };
+        return;
+      }
+      const buttons = pad.buttons.map((button) => button.pressed);
+      const up = Boolean(buttons[12]) || (pad.axes[1] ?? 0) <= -0.65;
+      const down = Boolean(buttons[13]) || (pad.axes[1] ?? 0) >= 0.65;
+      if (up && !previousDirectionsRef.current.up) moveFocus(-1);
+      if (down && !previousDirectionsRef.current.down) moveFocus(1);
+      if (buttons[0] && !previousButtonsRef.current[0]) activateFocused();
+      if (buttons[1] && !previousButtonsRef.current[1]) onBack();
+      previousButtonsRef.current = buttons;
+      previousDirectionsRef.current = { up, down };
+    };
+    poll();
+    const interval = window.setInterval(poll, 1000 / 30);
+    return () => window.clearInterval(interval);
+  }, [enabled, onBack]);
 }
 
 function DestinationPreviewScenery({
@@ -257,7 +317,6 @@ export default function SideSwapApp() {
   const [wheelPreference, setWheelPreference] =
     useState<SteeringSide>("right");
   const [camera, setCamera] = useState<CameraMode>("third_person");
-  const [input, setInput] = useState<InputFamily>("keyboard");
   const [activeSession, setActiveSession] = useState<GameSessionConfig | null>(
     null,
   );
@@ -274,19 +333,32 @@ export default function SideSwapApp() {
   const [lastScore, setLastScore] = useState<LessonScore | null>(null);
   const [startedAt, setStartedAt] = useState(0);
 
+  const handleUiGamepadBack = useCallback(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (dialog) {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      return;
+    }
+    if (mobileMenuOpen) {
+      setMobileMenuOpen(false);
+      return;
+    }
+    if (view !== "launcher") setView("launcher");
+  }, [mobileMenuOpen, view]);
+
+  useGamepadUiNavigation(view !== "driving", handleUiGamepadBack);
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const loaded = loadProgress();
       const firstVisit = !loaded.familiarSideConfirmed;
-      const defaultInput = window.matchMedia("(pointer: coarse)").matches
-        ? "touch"
-        : "keyboard";
       setProgress(loaded);
       setFamiliarSide(firstVisit ? null : loaded.familiarTrafficSide);
       setDestinationId(loaded.lastDestinationId);
       setWheelPreference(defaultWheelForDestination(loaded.lastDestinationId));
       setCamera(loaded.preferredCamera);
-      setInput(firstVisit ? defaultInput : loaded.preferredInput);
       setHydrated(true);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -417,7 +489,6 @@ export default function SideSwapApp() {
       familiarTrafficSide: familiarSide,
       steeringPreference: nextWheelPreference,
       camera,
-      inputFamily: input,
       assistance: assistanceFromProgress(progress),
     };
     // Fail fast if a UI regression ever pairs a jurisdiction-specific
@@ -430,7 +501,6 @@ export default function SideSwapApp() {
       lastCountryId: nextCountryId,
       lastDestinationId: nextDestinationId,
       preferredCamera: camera,
-      preferredInput: input,
       updatedAt: new Date().toISOString(),
     };
     setProgress(committedProgress);
@@ -492,7 +562,6 @@ export default function SideSwapApp() {
         lastCountryId: activeSession.countryId,
         lastDestinationId: activeSession.destinationId,
         preferredCamera: camera,
-        preferredInput: input,
       };
       setProgress(withPreferences);
       saveProgress(withPreferences);
@@ -514,7 +583,6 @@ export default function SideSwapApp() {
         : next.lastDestinationId,
     );
     setCamera(next.preferredCamera);
-    setInput(next.preferredInput);
     saveProgress(next);
   };
 
@@ -538,7 +606,6 @@ export default function SideSwapApp() {
           lesson={runtimeLesson}
           mapPack={runtimeMap}
           cameraMode={toCanvasCamera(camera)}
-          inputFamily={input}
           speedUnit={driveCountry.speedUnit === "kmh" ? "km/h" : "mph"}
           paused={paused}
           reducedMotion={progress.accessibility.reducedMotion}
@@ -554,7 +621,6 @@ export default function SideSwapApp() {
           onEvent={recordEvent}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
-          onInputFamilyChange={setInput}
           onComplete={finishDrive}
         />
         <div className="game-brand" aria-hidden="true">
@@ -768,11 +834,6 @@ export default function SideSwapApp() {
             setDestinationChosenManually(false);
             setWheelPreference(defaultWheelForDestination(reset.lastDestinationId));
             setCamera(reset.preferredCamera);
-            setInput(
-              window.matchMedia("(pointer: coarse)").matches
-                ? "touch"
-                : "keyboard",
-            );
             setView("launcher");
           }}
           onBack={() => setView("launcher")}
@@ -856,14 +917,15 @@ export default function SideSwapApp() {
             </div>
 
             <div className="launcher-setup-summary" aria-label="Current car setup">
-              <button type="button" onClick={() => setCustomizeOpen(true)}>
+              <button
+                ref={customizeTriggerRef}
+                type="button"
+                onClick={() => setCustomizeOpen(true)}
+              >
                 <small>Wheel</small><strong>{steeringSide}</strong>
               </button>
               <button type="button" onClick={() => setCustomizeOpen(true)}>
                 <small>Camera</small><strong>{cameraLabels[camera]}</strong>
-              </button>
-              <button type="button" onClick={() => setCustomizeOpen(true)}>
-                <small>Controls</small><strong>{inputLabels[input]}</strong>
               </button>
             </div>
 
@@ -903,14 +965,6 @@ export default function SideSwapApp() {
               {configured && (
                 <button className="secondary-button" type="button" onClick={() => setView("training")}>Choose a drive</button>
               )}
-              <button
-                ref={customizeTriggerRef}
-                className="text-button"
-                type="button"
-                onClick={() => setCustomizeOpen(true)}
-              >
-                Change setup
-              </button>
             </div>
           </div>
 
@@ -1073,10 +1127,8 @@ export default function SideSwapApp() {
           destination={destination}
           wheelPreference={wheelPreference}
           camera={camera}
-          input={input}
           onWheelChange={setWheelPreference}
           onCameraChange={setCamera}
-          onInputChange={setInput}
           onClose={closeCustomize}
           returnFocusRef={customizeTriggerRef}
         />
@@ -1131,10 +1183,8 @@ function SetupSheet({
   destination,
   wheelPreference,
   camera,
-  input,
   onWheelChange,
   onCameraChange,
-  onInputChange,
   onClose,
   returnFocusRef,
 }: {
@@ -1142,10 +1192,8 @@ function SetupSheet({
   destination: ReturnType<typeof getDestinationProfile>;
   wheelPreference: SteeringSide;
   camera: CameraMode;
-  input: InputFamily;
   onWheelChange: (value: SteeringSide) => void;
   onCameraChange: (value: CameraMode) => void;
-  onInputChange: (value: InputFamily) => void;
   onClose: () => void;
   returnFocusRef: { readonly current: HTMLButtonElement | null };
 }) {
@@ -1237,20 +1285,7 @@ function SetupSheet({
             options={CAMERA_CHOICES}
             onChange={onCameraChange}
           />
-          <OptionPicker<InputFamily>
-            label="Control prompts"
-            value={input}
-            options={INPUT_CHOICES}
-            onChange={onInputChange}
-            hint="Every input remains active; this choice sets the prompts you see first."
-          />
         </div>
-        <details className="control-help">
-          <summary>{inputLabels[input]} controls</summary>
-          {input === "keyboard" && <p><kbd>WASD</kbd> drive · <kbd>Q/E</kbd> indicators · <kbd>C</kbd> camera · <kbd>Z/X/V</kbd> look · <kbd>G</kbd> D/R · <kbd>H</kbd> horn · <kbd>Esc</kbd> pause</p>}
-          {input === "gamepad" && <p>Left stick steers · triggers accelerate and brake · face buttons control horn, camera and indicators · Menu pauses.</p>}
-          {input === "touch" && <p>Left thumb steers · right pedals accelerate and brake · swipe the road to look · on-screen buttons manage D/R, indicators, camera, horn and pause.</p>}
-        </details>
         <button className="primary-button sheet-done" type="button" onClick={onClose}>Done</button>
       </div>
     </div>
@@ -1390,13 +1425,6 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
             value={draft.preferredCamera}
             options={CAMERA_CHOICES}
             onChange={(preferredCamera) => setDraft((current) => ({ ...current, preferredCamera }))}
-          />
-          <OptionPicker<InputFamily>
-            label="Control prompts"
-            value={draft.preferredInput}
-            options={INPUT_CHOICES}
-            onChange={(preferredInput) => setDraft((current) => ({ ...current, preferredInput }))}
-            hint="SideSwap still listens to keyboard, gamepad and touch at the same time."
           />
           <div className="settings-toggle-stack">
             <Toggle label="Camera shake" checked={draft.accessibility.cameraShake} onChange={(checked) => updateAccessibility({ cameraShake: checked })} />

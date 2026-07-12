@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LESSONS } from "../app/game/content";
 import {
@@ -43,6 +43,10 @@ const desktopMatchMedia = (query: string): MediaQueryList =>
   }) as unknown as MediaQueryList;
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+const originalGetGamepads = Object.getOwnPropertyDescriptor(navigator, "getGamepads");
+
+const createGamepadButtons = (count = 17) =>
+  Array.from({ length: count }, () => ({ pressed: false, touched: false, value: 0 }));
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -57,7 +61,13 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+  if (originalGetGamepads) {
+    Object.defineProperty(navigator, "getGamepads", originalGetGamepads);
+  } else {
+    Reflect.deleteProperty(navigator, "getGamepads");
+  }
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: originalScrollIntoView,
@@ -151,7 +161,7 @@ describe("game-first launcher", () => {
       screen.getByRole("button", { name: /Start Tokyo — Setagaya orientation/i }),
     ).toBeEnabled();
 
-    const setupTrigger = screen.getByRole("button", { name: "Change setup" });
+    const setupTrigger = screen.getByRole("button", { name: /^Wheel/i });
     setupTrigger.focus();
     fireEvent.click(setupTrigger);
     expect(screen.getByRole("dialog", { name: "Ready your drive" })).toBeVisible();
@@ -166,7 +176,7 @@ describe("game-first launcher", () => {
     await screen.findByRole("heading", { name: /Which side feels normal to you/i });
     fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
     fireEvent.click(screen.getByRole("button", { name: /^LeftWheel on the left$/i }));
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
@@ -186,7 +196,7 @@ describe("game-first launcher", () => {
     render(<SideSwapApp />);
     await screen.findByRole("heading", { name: /Which side feels normal to you/i });
 
-    fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
     const wheelGroup = within(screen.getByRole("dialog", { name: "Ready your drive" }))
       .getByRole("group", { name: "Wheel position" });
     expect(within(wheelGroup).getAllByRole("button")).toHaveLength(2);
@@ -195,11 +205,16 @@ describe("game-first launcher", () => {
     expect(within(wheelGroup).queryByText(/Local default/i)).not.toBeInTheDocument();
   });
 
-  it("uses modern option cards for camera and control prompts", async () => {
+  it("uses modern option cards for wheel and camera without a control preference", async () => {
     render(<SideSwapApp />);
     await screen.findByRole("heading", { name: /Which side feels normal to you/i });
 
-    fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
+    const setupSummary = screen.getByLabelText("Current car setup");
+    expect(within(setupSummary).getAllByRole("button")).toHaveLength(2);
+    expect(within(setupSummary).queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change setup" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Camera/i }));
     const dialog = screen.getByRole("dialog", { name: "Ready your drive" });
     expect(dialog.querySelector("select")).not.toBeInTheDocument();
 
@@ -210,19 +225,15 @@ describe("game-first launcher", () => {
     fireEvent.click(driverView);
     expect(driverView).toHaveAttribute("aria-pressed", "true");
     expect(chaseView).toHaveAttribute("aria-pressed", "false");
-
-    const promptGroup = within(dialog).getByRole("group", { name: "Control prompts" });
-    const touch = within(promptGroup).getByRole("button", { name: /Touch/i });
-    fireEvent.click(touch);
-    expect(touch).toHaveAttribute("aria-pressed", "true");
-    expect(within(dialog).getByText("Touch controls")).toBeVisible();
+    expect(within(dialog).queryByRole("group", { name: "Control prompts" })).not.toBeInTheDocument();
+    expect(dialog.querySelector(".control-help")).not.toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
     expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
-    expect(screen.getByRole("button", { name: /^Controls/i })).toHaveTextContent("Touch");
+    expect(screen.queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
   });
 
-  it("uses the same modern controls on Settings and saves the chosen defaults", async () => {
+  it("keeps camera preferences in Settings without persisting a control preference", async () => {
     const { container } = render(<SideSwapApp />);
     await screen.findByRole("heading", { name: /Which side feels normal to you/i });
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -232,15 +243,14 @@ describe("game-first launcher", () => {
 
     const cameraGroup = screen.getByRole("group", { name: "Default camera" });
     fireEvent.click(within(cameraGroup).getByRole("button", { name: /Driver view/i }));
-    const promptGroup = screen.getByRole("group", { name: "Control prompts" });
-    fireEvent.click(within(promptGroup).getByRole("button", { name: /Gamepad/i }));
+    expect(screen.queryByRole("group", { name: "Control prompts" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
-    expect(screen.getByRole("button", { name: /^Controls/i })).toHaveTextContent("Gamepad");
+    expect(screen.queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
     const saved = JSON.parse(window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}");
     expect(saved.preferredCamera).toBe("first_person");
-    expect(saved.preferredInput).toBe("gamepad");
+    expect(saved).not.toHaveProperty("preferredInput");
   });
 
   it("gives returning players one-click Continue and advances from results", async () => {
@@ -274,6 +284,43 @@ describe("game-first launcher", () => {
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
       "data-scenario",
       "us-signals-crosswalks",
+    );
+  });
+
+  it("lets a controller player launch a returning drive without choosing an input type", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const buttons = createGamepadButtons();
+    const gamepad = { buttons, axes: [0, 0] } as unknown as Gamepad;
+    Object.defineProperty(navigator, "getGamepads", {
+      configurable: true,
+      value: () => [gamepad],
+    });
+    const progress = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      familiarSideConfirmed: true,
+      familiarTrafficSide: "right" as const,
+      lastCountryId: "us" as const,
+      lastDestinationId: "us-nyc" as const,
+      completedLessonIds: ["orientation-right" as const],
+    };
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+
+    render(<SideSwapApp />);
+    act(() => vi.advanceTimersByTime(1));
+    expect(
+      screen.getByRole("button", { name: /Continue — The Manhattan Grid/i }),
+    ).toBeEnabled();
+
+    buttons[0].pressed = true;
+    act(() => vi.advanceTimersByTime(34));
+
+    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
+      "data-scenario",
+      "us-one-way-grid",
     );
   });
 

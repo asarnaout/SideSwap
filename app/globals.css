@@ -504,7 +504,6 @@ canvas:focus-visible {
 }
 
 .choice-control-options.columns-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.choice-control-options.columns-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .choice-control-option {
   position: relative;
@@ -1199,14 +1198,6 @@ canvas:focus-visible {
 .range-control input[type="range"]::-moz-range-progress { height: 5px; border-radius: 999px; background: var(--green); }
 .range-control input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: 3px solid white; border-radius: 50%; background: var(--green); box-shadow: 0 2px 8px rgba(19, 33, 38, .25); }
 
-.control-help { margin-top: 18px; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: rgba(255, 255, 255, .54); }
-.control-help summary { display: flex; align-items: center; justify-content: space-between; min-height: 46px; padding: 0 13px; list-style: none; cursor: pointer; color: var(--green); font-size: 9px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
-.control-help summary::-webkit-details-marker { display: none; }
-.control-help summary::after { content: "+"; display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; background: #e8e4d9; color: var(--ink); font-size: 15px; }
-.control-help[open] summary::after { content: "−"; }
-.control-help p { margin: 0; padding: 13px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 9px; line-height: 1.7; }
-.control-help kbd { padding: 3px 6px; border: 1px solid #cbc6bb; border-bottom-width: 2px; border-radius: 6px; background: var(--paper-bright); color: var(--ink); font: 800 8px/1 ui-monospace, monospace; }
-
 .incident-explanation { display: grid; gap: 7px; margin: 9px 0 0; }
 .incident-explanation div { display: grid; grid-template-columns: 86px 1fr; gap: 10px; }
 .incident-explanation dt { color: var(--ink-soft); font-size: 8px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
@@ -1492,7 +1483,7 @@ canvas:focus-visible {
 }
 .launcher-setup-summary {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 7px;
   margin-top: 9px;
 }
@@ -2025,7 +2016,6 @@ canvas:focus-visible {
 .setup-sheet .choice-control { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .setup-sheet .choice-control-option { min-height: 62px; padding: 8px; }
 .setup-sheet .choice-control-symbol { width: 32px; height: 32px; }
-.setup-sheet .control-help { margin-top: 14px; }
 .sheet-done { width: 100%; margin-top: 14px; box-shadow: 0 12px 26px rgba(19, 33, 38, .16); }
 
 /* Training Hub */
@@ -2106,7 +2096,6 @@ canvas:focus-visible {
   .launcher-actions { display: grid; grid-template-columns: 1fr auto; margin-top: 9px; }
   .launcher-primary { grid-column: 1 / -1; min-height: 49px; width: 100%; }
   .launcher-actions .secondary-button { min-height: 44px; }
-  .launcher-actions .text-button { justify-self: end; }
   .launcher-road-visual { display: none; }
   .launcher-legal { bottom: 5px; max-width: 100%; font-size: 6px; }
   .setup-sheet-backdrop { align-items: flex-end; }
@@ -2131,13 +2120,7 @@ canvas:focus-visible {
   .launcher-destinations button { min-height: 60px; }
   .launcher-setup-summary strong { font-size: 8px; }
   .setup-sheet-heading h2 { font-size: 28px; letter-spacing: -.035em; }
-  .setup-sheet .choice-control-options.columns-3 { gap: 5px; }
-  .setup-sheet .choice-control-options.columns-3 .choice-control-option { grid-template-columns: 1fr; align-content: start; gap: 6px; min-height: 76px; padding: 8px; }
-  .setup-sheet .choice-control-options.columns-3 .choice-control-symbol { width: 30px; height: 30px; }
-  .setup-sheet .choice-control-options.columns-3 .choice-control-copy strong { font-size: 8px; }
-  .setup-sheet .choice-control-options.columns-3 .choice-control-copy small { display: none; }
   .settings-card { padding: 20px; }
-  .settings-card .choice-control-options.columns-3 { grid-template-columns: 1fr; }
 }
 
 @media (max-height: 680px) {

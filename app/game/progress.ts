@@ -18,7 +18,6 @@ import type {
   CountryId,
   DestinationId,
   FreeDriveId,
-  InputFamily,
   LessonId,
   LessonProgressUpdate,
   LessonScore,
@@ -133,16 +132,6 @@ const parseCamera = (value: unknown): CameraMode => {
     return "first_person";
   }
   return "third_person";
-};
-
-const parseInput = (value: unknown): InputFamily => {
-  if (value === "gamepad" || value === "controller") {
-    return "gamepad";
-  }
-  if (value === "touch" || value === "mobile") {
-    return "touch";
-  }
-  return "keyboard";
 };
 
 const parseAccessibility = (value: unknown): AccessibilityPreferences => {
@@ -297,9 +286,6 @@ const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
       (value.familiarTrafficSide === "left" || value.familiarTrafficSide === "right") &&
       (value.preferredCamera === "first_person" ||
         value.preferredCamera === "third_person") &&
-      (value.preferredInput === "keyboard" ||
-        value.preferredInput === "gamepad" ||
-        value.preferredInput === "touch") &&
       isRecord(value.accessibility) &&
       typeof value.updatedAt === "string"
     );
@@ -315,8 +301,6 @@ const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
     value.familiarTrafficSide ?? settings.familiarTrafficSide ?? preferences.familiarTrafficSide;
   const camera =
     value.preferredCamera ?? settings.camera ?? preferences.camera ?? preferences.preferredCamera;
-  const input =
-    value.preferredInput ?? settings.input ?? preferences.input ?? preferences.preferredInput;
 
   return (
     Array.isArray(value.completedLessonIds) ||
@@ -328,10 +312,7 @@ const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
     camera === "first_person" ||
     camera === "third_person" ||
     camera === "first" ||
-    camera === "third" ||
-    input === "keyboard" ||
-    input === "gamepad" ||
-    input === "touch"
+    camera === "third"
   );
 };
 
@@ -397,7 +378,6 @@ export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 
     lastCountryId: "uk",
     lastDestinationId: "uk-london",
     preferredCamera: "third_person",
-    preferredInput: "keyboard",
     accessibility: { ...DEFAULT_ACCESSIBILITY },
     updatedAt,
   };
@@ -425,8 +405,6 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
     value.familiarTrafficSide ?? settings.familiarTrafficSide ?? preferences.familiarTrafficSide;
   const cameraCandidate =
     value.preferredCamera ?? settings.camera ?? preferences.camera ?? preferences.preferredCamera;
-  const inputCandidate =
-    value.preferredInput ?? settings.input ?? preferences.input ?? preferences.preferredInput;
   const accessibilityCandidate =
     value.accessibility ?? settings.accessibility ?? preferences.accessibility;
 
@@ -466,7 +444,6 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
     lastCountryId,
     lastDestinationId,
     preferredCamera: parseCamera(cameraCandidate),
-    preferredInput: parseInput(inputCandidate),
     accessibility: parseAccessibility(accessibilityCandidate),
     updatedAt,
   };
@@ -500,13 +477,6 @@ export function isPlayerProgressV1(value: unknown): value is PlayerProgressV1 {
     return false;
   }
   if (value.preferredCamera !== "first_person" && value.preferredCamera !== "third_person") {
-    return false;
-  }
-  if (
-    value.preferredInput !== "keyboard" &&
-    value.preferredInput !== "gamepad" &&
-    value.preferredInput !== "touch"
-  ) {
     return false;
   }
   return isRecord(value.accessibility) && typeof value.updatedAt === "string";
@@ -545,10 +515,13 @@ export function loadProgress(
 
   try {
     const progress = migrateProgress(JSON.parse(raw), fallback.updatedAt);
-    if (sourceKey !== PROGRESS_STORAGE_KEY) {
+    const serializedProgress = JSON.stringify(progress);
+    if (sourceKey !== PROGRESS_STORAGE_KEY || raw !== serializedProgress) {
       try {
-        storage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-        storage.removeItem?.(sourceKey);
+        storage.setItem(PROGRESS_STORAGE_KEY, serializedProgress);
+        if (sourceKey !== PROGRESS_STORAGE_KEY) {
+          storage.removeItem?.(sourceKey);
+        }
       } catch {
         // Reading remains useful when storage is full or write access is denied.
       }

@@ -3,7 +3,6 @@ export type SteeringSide = TrafficSide;
 export type SteeringPreference = "auto" | SteeringSide;
 export type SpeedUnit = "mph" | "kmh";
 export type CameraMode = "first_person" | "third_person";
-export type InputFamily = "keyboard" | "gamepad" | "touch";
 export type Gear = "drive" | "reverse";
 
 export type CountryId = "us" | "uk" | "fr" | "jp";
@@ -397,7 +396,6 @@ export interface GameSessionConfig {
   readonly familiarTrafficSide: TrafficSide;
   readonly steeringPreference: SteeringPreference;
   readonly camera: CameraMode;
-  readonly inputFamily: InputFamily;
   readonly assistance: AssistanceSettings;
 }
 
@@ -480,7 +478,6 @@ export interface PlayerProgressV1 {
   readonly lastCountryId: CountryId;
   readonly lastDestinationId: DestinationId;
   readonly preferredCamera: CameraMode;
-  readonly preferredInput: InputFamily;
   readonly accessibility: AccessibilityPreferences;
   readonly updatedAt: string;
 }

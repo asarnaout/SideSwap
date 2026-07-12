@@ -32,7 +32,6 @@ const sessionConfig = (
   familiarTrafficSide: "right",
   steeringPreference,
   camera: "third_person",
-  inputFamily: "keyboard",
   assistance: {
     coachPrompts: true,
     subtitles: true,

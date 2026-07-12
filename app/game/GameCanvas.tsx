@@ -35,7 +35,7 @@ import {
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
 export type CameraMode = "first" | "third";
-export type InputFamily = "keyboard" | "gamepad" | "touch";
+type InputFamily = "keyboard" | "gamepad" | "touch";
 export type DriveGear = "D" | "R";
 export type TurnIndicator = "left" | "right" | "off";
 export type SpeedUnit = "mph" | "km/h";
@@ -226,7 +226,6 @@ export interface GameCanvasProps {
   /** Selected authored map. Pass the domain MapPack directly. */
   mapPack?: GameCanvasMapPack;
   cameraMode?: CameraMode;
-  inputFamily?: InputFamily;
   speedUnit?: SpeedUnit;
   paused?: boolean;
   reducedMotion?: boolean;
@@ -245,7 +244,6 @@ export interface GameCanvasProps {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
-  onInputFamilyChange?: (family: InputFamily) => void;
   onComplete?: (score: number) => void;
 }
 
@@ -264,7 +262,7 @@ interface SessionCallbacks {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
-  onInputFamilyChange?: (family: InputFamily) => void;
+  onInputPresentationChange?: (presentation: AdaptiveInputPresentation) => void;
   onComplete?: (score: number) => void;
   onReady?: () => void;
   onContextLost?: () => void;
@@ -275,7 +273,7 @@ interface SessionOptions {
   trafficSide: TrafficSide;
   steeringSide: SteeringSide;
   cameraMode: CameraMode;
-  inputFamily: InputFamily;
+  inputCapabilities: InputCapabilities;
   speedUnit: SpeedUnit;
   paused: boolean;
   reducedMotion: boolean;
@@ -361,11 +359,256 @@ const LANE_CENTER = 2.75;
 const MAX_FORWARD_SPEED = 18;
 const MAX_REVERSE_SPEED = 6;
 
+export const INPUT_PROMPT_SWITCH_COOLDOWN_MS = 750;
+export const TOUCH_CONTROL_DIM_DELAY_MS = 1_500;
+
+export interface InputCapabilities {
+  readonly touchFirst: boolean;
+  readonly hybridTouch: boolean;
+}
+
+export interface AdaptiveInputPresentation {
+  readonly activeFamily: InputFamily;
+  readonly touchFirst: boolean;
+  readonly touchRevealed: boolean;
+  readonly touchControlsDimmed: boolean;
+}
+
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
 const eventNow = () =>
   typeof performance === "undefined" ? Date.now() : performance.now();
+
+export function readInputCapabilities(): InputCapabilities {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return { touchFirst: false, hybridTouch: false };
+  }
+  const touchFirst = window.matchMedia("(pointer: coarse)").matches;
+  const anyCoarsePointer = window.matchMedia("(any-pointer: coarse)").matches;
+  return {
+    touchFirst,
+    hybridTouch: !touchFirst && anyCoarsePointer,
+  };
+}
+
+export function createInitialInputPresentation(
+  capabilities: InputCapabilities,
+): AdaptiveInputPresentation {
+  return {
+    activeFamily: capabilities.touchFirst ? "touch" : "keyboard",
+    touchFirst: capabilities.touchFirst,
+    touchRevealed: capabilities.touchFirst,
+    touchControlsDimmed: false,
+  };
+}
+
+/**
+ * Owns adaptive input presentation for one live drive. It never disables an
+ * input method: the active family only controls the prompts and touch-overlay
+ * presentation.
+ */
+export class AdaptiveInputRouter {
+  private capabilities: InputCapabilities;
+  private presentation: AdaptiveInputPresentation;
+  private reducedMotion: boolean;
+  private lastPromptSwitchAt = Number.NEGATIVE_INFINITY;
+  private pendingFamily: InputFamily | null = null;
+  private promptTimer: ReturnType<typeof setTimeout> | null = null;
+  private dimTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
+
+  constructor(
+    capabilities: InputCapabilities,
+    reducedMotion: boolean,
+    private readonly onPresentationChange: (
+      presentation: AdaptiveInputPresentation,
+    ) => void,
+    private readonly now: () => number = eventNow,
+  ) {
+    this.capabilities = capabilities;
+    this.presentation = createInitialInputPresentation(capabilities);
+    this.reducedMotion = reducedMotion;
+  }
+
+  getPresentation(): AdaptiveInputPresentation {
+    return this.presentation;
+  }
+
+  setCapabilities(capabilities: InputCapabilities) {
+    const changed =
+      capabilities.touchFirst !== this.capabilities.touchFirst ||
+      capabilities.hybridTouch !== this.capabilities.hybridTouch;
+    if (!changed) return;
+    this.capabilities = capabilities;
+
+    let next: AdaptiveInputPresentation = {
+      ...this.presentation,
+      touchFirst: capabilities.touchFirst,
+    };
+    if (capabilities.touchFirst && !next.touchRevealed) {
+      next = { ...next, touchRevealed: true };
+    }
+    if (!capabilities.touchFirst && next.touchControlsDimmed) {
+      this.clearDimTimer();
+      next = { ...next, touchControlsDimmed: false };
+    }
+    if (next !== this.presentation) {
+      this.presentation = next;
+      this.emitPresentation();
+    }
+    if (capabilities.touchFirst && this.presentation.activeFamily !== "touch") {
+      this.scheduleTouchDimming();
+    }
+  }
+
+  setReducedMotion(reducedMotion: boolean) {
+    if (this.reducedMotion === reducedMotion) return;
+    this.reducedMotion = reducedMotion;
+    if (reducedMotion && this.pendingFamily) {
+      this.applyActiveFamily(this.pendingFamily, this.now());
+    }
+    if (
+      reducedMotion &&
+      this.capabilities.touchFirst &&
+      this.presentation.activeFamily !== "touch" &&
+      !this.presentation.touchControlsDimmed
+    ) {
+      this.clearDimTimer();
+      this.presentation = { ...this.presentation, touchControlsDimmed: true };
+      this.emitPresentation();
+    }
+  }
+
+  registerMeaningfulInput(family: InputFamily) {
+    if (this.disposed) return;
+    if (family === "touch") this.revealTouchControls();
+
+    if (family === this.presentation.activeFamily) {
+      if (family === "touch") {
+        this.restoreTouchControls();
+      } else {
+        this.scheduleTouchDimming();
+      }
+      return;
+    }
+
+    const now = this.now();
+    const elapsed = now - this.lastPromptSwitchAt;
+    if (this.reducedMotion || elapsed >= INPUT_PROMPT_SWITCH_COOLDOWN_MS) {
+      this.applyActiveFamily(family, now);
+      return;
+    }
+
+    this.pendingFamily = family;
+    this.clearPromptTimer();
+    this.promptTimer = setTimeout(() => {
+      this.promptTimer = null;
+      const pending = this.pendingFamily;
+      this.pendingFamily = null;
+      if (pending && !this.disposed) this.applyActiveFamily(pending, this.now());
+    }, Math.max(0, INPUT_PROMPT_SWITCH_COOLDOWN_MS - elapsed));
+  }
+
+  handleGamepadDisconnect(): InputFamily {
+    this.pendingFamily = null;
+    this.clearPromptTimer();
+    const fallback: InputFamily = this.capabilities.touchFirst ? "touch" : "keyboard";
+    this.applyActiveFamily(fallback, this.now(), true);
+    return fallback;
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.clearPromptTimer();
+    this.clearDimTimer();
+  }
+
+  private applyActiveFamily(family: InputFamily, now: number, force = false) {
+    this.pendingFamily = null;
+    this.clearPromptTimer();
+    if (!force && family === this.presentation.activeFamily) return;
+
+    this.lastPromptSwitchAt = now;
+    this.presentation = {
+      ...this.presentation,
+      activeFamily: family,
+      touchRevealed:
+        this.presentation.touchRevealed || family === "touch" || this.capabilities.touchFirst,
+    };
+    if (family === "touch") {
+      this.clearDimTimer();
+      this.presentation = { ...this.presentation, touchControlsDimmed: false };
+    } else {
+      this.scheduleTouchDimming();
+    }
+    this.emitPresentation();
+  }
+
+  private revealTouchControls() {
+    const shouldReveal = !this.presentation.touchRevealed;
+    const shouldRestore = this.presentation.touchControlsDimmed || this.dimTimer !== null;
+    if (!shouldReveal && !shouldRestore) return;
+    this.clearDimTimer();
+    this.presentation = {
+      ...this.presentation,
+      touchRevealed: true,
+      touchControlsDimmed: false,
+    };
+    this.emitPresentation();
+  }
+
+  private restoreTouchControls() {
+    if (!this.presentation.touchControlsDimmed && this.dimTimer === null) return;
+    this.clearDimTimer();
+    this.presentation = { ...this.presentation, touchControlsDimmed: false };
+    this.emitPresentation();
+  }
+
+  private scheduleTouchDimming() {
+    if (
+      !this.capabilities.touchFirst ||
+      this.presentation.activeFamily === "touch" ||
+      this.presentation.touchControlsDimmed ||
+      this.dimTimer !== null
+    ) {
+      return;
+    }
+    if (this.reducedMotion) {
+      this.presentation = { ...this.presentation, touchControlsDimmed: true };
+      this.emitPresentation();
+      return;
+    }
+    this.dimTimer = setTimeout(() => {
+      this.dimTimer = null;
+      if (
+        this.disposed ||
+        !this.capabilities.touchFirst ||
+        this.presentation.activeFamily === "touch"
+      ) {
+        return;
+      }
+      this.presentation = { ...this.presentation, touchControlsDimmed: true };
+      this.emitPresentation();
+    }, TOUCH_CONTROL_DIM_DELAY_MS);
+  }
+
+  private clearPromptTimer() {
+    if (this.promptTimer === null) return;
+    clearTimeout(this.promptTimer);
+    this.promptTimer = null;
+  }
+
+  private clearDimTimer() {
+    if (this.dimTimer === null) return;
+    clearTimeout(this.dimTimer);
+    this.dimTimer = null;
+  }
+
+  private emitPresentation() {
+    if (!this.disposed) this.onPresentationChange(this.presentation);
+  }
+}
 
 const degreesToRadians = (degrees: number) => (degrees * Math.PI) / 180;
 
@@ -577,7 +820,8 @@ class BabylonGameSession {
   private touch: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private gamepad: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private gamepadButtons: boolean[] = [];
-  private lastInputFamily: InputFamily;
+  private gamepadConnected = false;
+  private readonly inputRouter: AdaptiveInputRouter;
   private indicatorBlinkSeconds = 0;
   private trafficLightSeconds = 0;
   private trafficLightIsRed = false;
@@ -598,7 +842,11 @@ class BabylonGameSession {
     this.options = options;
     this.callbacks = callbacks;
     this.cameraMode = options.cameraMode;
-    this.lastInputFamily = options.inputFamily;
+    this.inputRouter = new AdaptiveInputRouter(
+      options.inputCapabilities,
+      options.reducedMotion,
+      (presentation) => this.callbacks.onInputPresentationChange?.(presentation),
+    );
     this.paused = options.paused;
     this.activeTrafficSide = options.lesson?.trafficSide ?? options.trafficSide;
     this.routePoints = scenarioRoutePoints(options.lesson, options.mapPack);
@@ -652,8 +900,7 @@ class BabylonGameSession {
       throw new Error("SideSwap requires WebGL 2.");
     }
 
-    const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
-    const scale = coarsePointer
+    const scale = options.inputCapabilities.touchFirst
       ? Math.max(1, Math.min(1.65, window.devicePixelRatio / 1.2))
       : Math.max(1, Math.min(1.4, window.devicePixelRatio / 1.6));
     this.engine.setHardwareScalingLevel(scale);
@@ -709,6 +956,7 @@ class BabylonGameSession {
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
     this.updatePlayerVisuals(1);
+    this.callbacks.onInputPresentationChange?.(this.inputRouter.getPresentation());
 
     this.lastFrameTime = performance.now();
     this.engine.runRenderLoop(this.renderFrame);
@@ -726,7 +974,9 @@ class BabylonGameSession {
 
   updateOptions(options: Partial<SessionOptions>) {
     this.options = { ...this.options, ...options };
-    if (options.inputFamily) this.lastInputFamily = options.inputFamily;
+    if (typeof options.reducedMotion === "boolean") {
+      this.inputRouter.setReducedMotion(options.reducedMotion);
+    }
     this.thirdCamera.fov = this.options.fieldOfView;
     this.firstCamera.fov = this.options.fieldOfView;
     if (options.cameraMode) this.setCameraMode(options.cameraMode, false);
@@ -735,16 +985,20 @@ class BabylonGameSession {
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
     this.touch[control] = clamp(value, -1, 1);
+    if (value !== 0) this.inputRouter.registerMeaningfulInput("touch");
   }
 
   clearTouch() {
     this.touch = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   }
 
-  registerInputFamily(family: InputFamily) {
-    if (this.lastInputFamily === family) return;
-    this.lastInputFamily = family;
-    this.callbacks.onInputFamilyChange?.(family);
+  registerTouchInput() {
+    this.inputRouter.registerMeaningfulInput("touch");
+  }
+
+  setInputCapabilities(capabilities: InputCapabilities) {
+    this.options = { ...this.options, inputCapabilities: capabilities };
+    this.inputRouter.setCapabilities(capabilities);
   }
 
   setPaused(paused: boolean, notify = true) {
@@ -849,6 +1103,7 @@ class BabylonGameSession {
     if (this.disposed) return;
     this.disposed = true;
     this.engine.stopRenderLoop(this.renderFrame);
+    this.inputRouter.dispose();
     this.clearHeldInputs();
     for (const dispose of this.disposers.splice(0)) dispose();
     if (this.audioContext) {
@@ -2660,7 +2915,7 @@ class BabylonGameSession {
         "KeyH", "KeyP", "KeyR", "KeyG", "KeyZ", "KeyX", "KeyV", "Escape",
       ].includes(event.code);
       if (drivingKey) event.preventDefault();
-      if (drivingKey) this.registerInputFamily("keyboard");
+      if (drivingKey) this.inputRouter.registerMeaningfulInput("keyboard");
       switch (event.code) {
         case "ArrowUp":
         case "KeyW":
@@ -2746,9 +3001,7 @@ class BabylonGameSession {
     const onResize = () => this.engine.resize();
     const onOrientationChange = () => {
       this.engine.resize();
-      const portraitGateManagedByReact =
-        this.options.inputFamily === "touch" ||
-        window.matchMedia("(pointer: coarse)").matches;
+      const portraitGateManagedByReact = this.options.inputCapabilities.touchFirst;
       if (!portraitGateManagedByReact) this.setPaused(true);
       this.clearHeldInputs();
     };
@@ -2767,7 +3020,7 @@ class BabylonGameSession {
     };
     const onPointerDown = (event: PointerEvent) => {
       if (event.pointerType !== "touch" || this.swipePointer !== null) return;
-      this.registerInputFamily("touch");
+      this.registerTouchInput();
       this.swipePointer = event.pointerId;
       this.swipeStartX = event.clientX;
     };
@@ -2781,8 +3034,10 @@ class BabylonGameSession {
       this.touch.quickLook = 0;
     };
     const onGamepadDisconnected = () => {
-      this.gamepad = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-      this.gamepadButtons = [];
+      const remaining = "getGamepads" in navigator
+        ? Array.from(navigator.getGamepads()).find(Boolean)
+        : null;
+      if (!remaining) this.handleGamepadDisconnected();
     };
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
@@ -2823,10 +3078,10 @@ class BabylonGameSession {
     if (!("getGamepads" in navigator)) return;
     const pad = Array.from(navigator.getGamepads()).find(Boolean);
     if (!pad) {
-      this.gamepad = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-      this.gamepadButtons = [];
+      if (this.gamepadConnected) this.handleGamepadDisconnected();
       return;
     }
+    this.gamepadConnected = true;
     const deadzone = (value: number) =>
       Math.abs(value) < 0.14 ? 0 : Math.sign(value) * ((Math.abs(value) - 0.14) / 0.86);
     const nextGamepad: AnalogInput = {
@@ -2847,7 +3102,12 @@ class BabylonGameSession {
         Math.abs(nextGamepad[control] - this.gamepad[control]) >= 0.04,
     );
     this.gamepad = nextGamepad;
-    if (buttonUsed || analogUsed) this.registerInputFamily("gamepad");
+    if (buttonUsed || analogUsed) this.inputRouter.registerMeaningfulInput("gamepad");
+    if (this.paused) {
+      if (edge(0) || edge(1) || edge(9)) this.setPaused(false);
+      this.gamepadButtons = pressed;
+      return;
+    }
     if (edge(0)) this.horn();
     if (edge(1)) this.toggleCamera();
     if (edge(2)) this.setIndicator("left");
@@ -2856,6 +3116,23 @@ class BabylonGameSession {
     if (edge(9)) this.togglePause();
     if (edge(8)) this.reset();
     this.gamepadButtons = pressed;
+  }
+
+  private handleGamepadDisconnected() {
+    const wasActive = this.inputRouter.getPresentation().activeFamily === "gamepad";
+    this.gamepadConnected = false;
+    this.clearHeldInputs();
+    this.gamepadButtons = [];
+    if (!wasActive) return;
+
+    const fallback = this.inputRouter.handleGamepadDisconnect();
+    this.instruction =
+      fallback === "touch"
+        ? "Controller disconnected. Drive paused — use the touch controls to continue."
+        : "Controller disconnected. Drive paused — use the keyboard to continue.";
+    this.emit("coaching", this.instruction, "warning");
+    this.setPaused(true);
+    this.publishHud(true);
   }
 
   private clearHeldInputs() {
@@ -3041,6 +3318,30 @@ const actionButtonStyle: CSSProperties = {
   userSelect: "none",
 };
 
+const INPUT_GUIDANCE: Record<
+  InputFamily,
+  { readonly label: string; readonly orientationHint: string; readonly details: string }
+> = {
+  keyboard: {
+    label: "Keyboard",
+    orientationHint: "W / ↑ drives · S / ↓ brakes · A / D steers",
+    details:
+      "W or ↑ drives, S, ↓, or Space brakes, and A/D or ←/→ steers. Q/E signal, C changes camera, G changes gear, H sounds the horn, and P or Escape pauses.",
+  },
+  gamepad: {
+    label: "Controller",
+    orientationHint: "Left stick steers · right trigger drives · left trigger brakes",
+    details:
+      "Use the left stick to steer, right trigger to drive, and left trigger to brake. A sounds the horn, B changes camera, X/Y signal, LB changes gear, and Start pauses.",
+  },
+  touch: {
+    label: "Touch",
+    orientationHint: "Use the left steering pad and right Drive / Brake pedals",
+    details:
+      "Use the left thumb pad to steer and the right Drive and Brake pedals for speed. The upper-right controls handle indicators, camera, horn, gear, and pause. Swipe the road view to look around.",
+  },
+};
+
 export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
   function GameCanvas(
     {
@@ -3049,7 +3350,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       lesson,
       mapPack,
       cameraMode = "third",
-      inputFamily = "keyboard",
       speedUnit = "mph",
       paused = false,
       reducedMotion = false,
@@ -3068,7 +3368,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       onEvent,
       onPauseChange,
       onCameraChange,
-      onInputFamilyChange,
       onComplete,
     },
     ref,
@@ -3078,12 +3377,17 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
     const callbackRef = useRef<SessionCallbacks>({});
     const viewportReadyRef = useRef(false);
     const touchPortraitGateRef = useRef(false);
-    const activeInputFamilyRef = useRef<InputFamily>(inputFamily);
+    const inputCapabilitiesRef = useRef<InputCapabilities>(
+      readInputCapabilities(),
+    );
     const [runtimeState, setRuntimeState] = useState<
       "loading" | "ready" | "unsupported" | "context-lost" | "error"
     >("loading");
-    const [isCoarsePointer, setIsCoarsePointer] = useState(false);
     const [isPortrait, setIsPortrait] = useState(false);
+    const [inputPresentation, setInputPresentation] =
+      useState<AdaptiveInputPresentation>(() =>
+        createInitialInputPresentation(inputCapabilitiesRef.current),
+      );
     const [sessionActivation, setSessionActivation] = useState(0);
     const [hud, setHud] = useState<GameHudSnapshot>({
       speed: 0,
@@ -3106,7 +3410,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       trafficSide: lesson?.trafficSide ?? trafficSide,
     });
 
-    activeInputFamilyRef.current = inputFamily;
     callbackRef.current = {
       onHudUpdate: (snapshot) => {
         setHud(snapshot);
@@ -3115,11 +3418,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       onEvent,
       onPauseChange,
       onCameraChange,
-      onInputFamilyChange: (family) => {
-        if (activeInputFamilyRef.current === family) return;
-        activeInputFamilyRef.current = family;
-        onInputFamilyChange?.(family);
-      },
       onComplete,
       onReady: () => setRuntimeState("ready"),
       onContextLost: () => setRuntimeState("context-lost"),
@@ -3128,14 +3426,18 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
 
     useEffect(() => {
       const updateViewportFlags = () => {
-        const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+        const capabilities = readInputCapabilities();
         const portrait = window.matchMedia("(orientation: portrait)").matches;
-        const portraitGate = portrait && (inputFamily === "touch" || coarsePointer);
+        const portraitGate = portrait && capabilities.touchFirst;
         const wasReady = viewportReadyRef.current;
         const wasPortraitGate = touchPortraitGateRef.current;
         viewportReadyRef.current = true;
         touchPortraitGateRef.current = portraitGate;
-        setIsCoarsePointer(coarsePointer);
+        inputCapabilitiesRef.current = capabilities;
+        if (!wasReady) {
+          setInputPresentation(createInitialInputPresentation(capabilities));
+        }
+        sessionRef.current?.setInputCapabilities(capabilities);
         setIsPortrait(portrait);
 
         if (portraitGate) {
@@ -3156,7 +3458,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         window.removeEventListener("resize", updateViewportFlags);
         window.removeEventListener("orientationchange", updateViewportFlags);
       };
-    }, [inputFamily, paused]);
+    }, [paused]);
 
     useEffect(() => {
       const canvas = canvasRef.current;
@@ -3183,7 +3485,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             lesson,
             mapPack,
             cameraMode,
-            inputFamily,
+            inputCapabilities: inputCapabilitiesRef.current,
             speedUnit,
             paused: paused || touchPortraitGateRef.current,
             reducedMotion,
@@ -3200,8 +3502,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             onEvent: (event) => callbackRef.current.onEvent?.(event),
             onPauseChange: (value) => callbackRef.current.onPauseChange?.(value),
             onCameraChange: (value) => callbackRef.current.onCameraChange?.(value),
-            onInputFamilyChange: (value) =>
-              callbackRef.current.onInputFamilyChange?.(value),
+            onInputPresentationChange: (value) => setInputPresentation(value),
             onComplete: (score) => callbackRef.current.onComplete?.(score),
             onReady: () => callbackRef.current.onReady?.(),
             onContextLost: () => callbackRef.current.onContextLost?.(),
@@ -3230,7 +3531,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
     useEffect(() => {
       sessionRef.current?.updateOptions({
         cameraMode,
-        inputFamily,
         speedUnit,
         paused: paused || touchPortraitGateRef.current,
         reducedMotion,
@@ -3242,7 +3542,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         cameraShake,
         headBob,
       });
-    }, [cameraMode, inputFamily, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob]);
 
     useImperativeHandle(
       ref,
@@ -3260,7 +3560,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
 
     const registerTouchPointer = useCallback((pointerType: string) => {
       if (pointerType === "touch" || pointerType === "pen") {
-        sessionRef.current?.registerInputFamily("touch");
+        sessionRef.current?.registerTouchInput();
       }
     }, []);
 
@@ -3280,9 +3580,16 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       sessionRef.current?.setTouchAnalog("steer", 0);
     }, []);
 
-    const touchVisible = inputFamily === "touch" || isCoarsePointer;
-    const touchPortraitGate = touchVisible && isPortrait;
+    const touchVisible =
+      inputPresentation.touchFirst || inputPresentation.touchRevealed;
+    const touchPortraitGate = inputPresentation.touchFirst && isPortrait;
     const criticalOverlay = runtimeState !== "ready";
+    const activeInputGuide = INPUT_GUIDANCE[inputPresentation.activeFamily];
+    const showOrientationControlsHint =
+      runtimeState === "ready" &&
+      !hud.paused &&
+      (lesson?.kind ?? "orientation") === "orientation" &&
+      hud.objectiveProgress < 0.08;
 
     return (
       <div className={className} style={{ ...shellStyle, ...style }}>
@@ -3386,6 +3693,32 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               </div>
             </div>
 
+            {showOrientationControlsHint && (
+              <div
+                role="status"
+                aria-label={`${activeInputGuide.label} control hint`}
+                style={{
+                  ...glassPanelStyle,
+                  position: "absolute",
+                  left: 16,
+                  bottom: touchVisible ? 122 : 20,
+                  maxWidth: "min(390px, calc(100% - 32px))",
+                  padding: "9px 12px",
+                  borderRadius: 13,
+                  pointerEvents: "none",
+                  font: "650 12px/1.35 system-ui, sans-serif",
+                  transition: reducedMotion ? "none" : "opacity 160ms ease",
+                }}
+              >
+                <span style={{ color: "#f2c658", fontSize: 9, fontWeight: 850, letterSpacing: ".09em" }}>
+                  {activeInputGuide.label.toUpperCase()} CONTROLS
+                </span>
+                <span style={{ display: "block", marginTop: 3, opacity: 0.9 }}>
+                  {activeInputGuide.orientationHint}
+                </span>
+              </div>
+            )}
+
             {hud.honking && visualHonkIndicator && (
               <div
                 role="status"
@@ -3410,8 +3743,18 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
 
         {touchVisible && runtimeState === "ready" && !isPortrait && (
           <div
-            aria-label="Touch driving controls"
+            role="group"
+            aria-label={
+              inputPresentation.touchControlsDimmed
+                ? "Touch driving controls, dimmed while another input is active"
+                : "Touch driving controls"
+            }
             onPointerDownCapture={(event) => registerTouchPointer(event.pointerType)}
+            style={{
+              opacity: inputPresentation.touchControlsDimmed ? 0.18 : 1,
+              pointerEvents: "auto",
+              transition: reducedMotion ? "none" : "opacity 180ms ease",
+            }}
           >
             <div
               role="slider"
@@ -3518,6 +3861,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
           <div
             role="dialog"
             aria-label="Game paused"
+            aria-modal="true"
+            onPointerDownCapture={(event) => registerTouchPointer(event.pointerType)}
             style={{
               position: "absolute",
               inset: 0,
@@ -3531,7 +3876,15 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <strong style={{ display: "block", marginBottom: 6, fontSize: 24 }}>Paused</strong>
               <span style={{ display: "block", marginBottom: 8, opacity: 0.9, fontSize: 13 }}>{hud.instruction}</span>
               <span style={{ display: "block", marginBottom: 18, opacity: 0.62, fontSize: 11 }}>Inputs have been cleared for safety.</span>
-              <button type="button" style={{ ...actionButtonStyle, width: "auto", paddingInline: 20 }} onClick={() => sessionRef.current?.setPaused(false)}>
+              <details style={{ width: "min(330px, 100%)", margin: "0 auto 18px", textAlign: "left", fontSize: 12, lineHeight: 1.45 }}>
+                <summary style={{ cursor: "pointer", color: "#f2c658", fontWeight: 800 }}>
+                  How to drive · {activeInputGuide.label}
+                </summary>
+                <span style={{ display: "block", marginTop: 8, opacity: 0.82 }}>
+                  {activeInputGuide.details}
+                </span>
+              </details>
+              <button autoFocus type="button" style={{ ...actionButtonStyle, width: "auto", paddingInline: 20 }} onClick={() => sessionRef.current?.setPaused(false)}>
                 RESUME
               </button>
             </div>

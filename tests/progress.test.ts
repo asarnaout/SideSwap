@@ -66,6 +66,24 @@ describe("local progress", () => {
     );
   });
 
+  it("loads legacy input preferences but removes them from the rewritten save", () => {
+    const legacySave = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      preferredInput: "gamepad",
+    };
+    const storage = memoryStorage(JSON.stringify(legacySave));
+
+    const restored = loadProgress(storage);
+    const rewritten = JSON.parse(storage.getItem("sideswap:v1") ?? "{}") as Record<
+      string,
+      unknown
+    >;
+
+    expect(isPlayerProgressV1(restored)).toBe(true);
+    expect(restored).not.toHaveProperty("preferredInput");
+    expect(rewritten).not.toHaveProperty("preferredInput");
+  });
+
   it("requires a coherent country and destination in normalized v1 progress", () => {
     const progress = createDefaultProgress();
     expect(isPlayerProgressV1(progress)).toBe(true);
