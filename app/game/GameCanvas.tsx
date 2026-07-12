@@ -392,6 +392,24 @@ export interface CockpitCameraPoses {
   }>;
 }
 
+export function isCameraStackActive(
+  mode: CameraMode,
+  activeCameraName: string | null,
+  activeCameraNames: readonly string[],
+): boolean {
+  const mainCameraName =
+    mode === "first" ? "first-person-camera" : "third-person-camera";
+  const expectedCameraNames =
+    mode === "first"
+      ? [mainCameraName, "rear-view-camera"]
+      : [mainCameraName];
+  return (
+    activeCameraName === mainCameraName &&
+    activeCameraNames.length === expectedCameraNames.length &&
+    expectedCameraNames.every((name) => activeCameraNames.includes(name))
+  );
+}
+
 /**
  * Resolves cockpit cameras in world space so their movement never depends on
  * Babylon parent-transform propagation or multi-camera render ordering.
@@ -1068,7 +1086,18 @@ class BabylonGameSession {
   }
 
   setCameraMode(mode: CameraMode, notify = true) {
-    if (this.cameraMode === mode && this.scene.activeCamera) return;
+    const activeCameraNames =
+      this.scene.activeCameras?.map((camera) => camera.name) ?? [];
+    if (
+      this.cameraMode === mode &&
+      isCameraStackActive(
+        mode,
+        this.scene.activeCamera?.name ?? null,
+        activeCameraNames,
+      )
+    ) {
+      return;
+    }
     this.cameraMode = mode;
     const firstPerson = mode === "first";
     this.playerExterior.setEnabled(!firstPerson);

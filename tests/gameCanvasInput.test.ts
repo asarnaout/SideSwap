@@ -3,11 +3,29 @@ import {
   AdaptiveInputRouter,
   INPUT_PROMPT_SWITCH_COOLDOWN_MS,
   TOUCH_CONTROL_DIM_DELAY_MS,
+  isCameraStackActive,
   resolveCockpitCameraPoses,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
 
 describe("cockpit camera tracking", () => {
+  it("does not mistake Babylon's initially active chase camera for cockpit mode", () => {
+    expect(
+      isCameraStackActive("first", "third-person-camera", []),
+    ).toBe(false);
+    expect(
+      isCameraStackActive("first", "first-person-camera", [
+        "first-person-camera",
+        "rear-view-camera",
+      ]),
+    ).toBe(true);
+    expect(
+      isCameraStackActive("third", "third-person-camera", [
+        "third-person-camera",
+      ]),
+    ).toBe(true);
+  });
+
   it("moves both first-person cameras with the vehicle in world space", () => {
     const start = resolveCockpitCameraPoses({
       x: -2,
