@@ -108,6 +108,29 @@ describe("game-first launcher", () => {
     expect(destinations[1]).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("renders a straight, destination-specific preview with the car on the local traffic side", async () => {
+    const { container } = render(<SideSwapApp />);
+    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+
+    const londonPreview = screen.getByLabelText("London training preview");
+    expect(londonPreview).toHaveClass("launcher-scene-uk-london");
+    expect(londonPreview.querySelector(".london-museum")).toBeInTheDocument();
+    expect(londonPreview.querySelector(".launcher-car")).toHaveClass("left");
+
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Destination" })).getByRole(
+        "button",
+        { name: /New York City/i },
+      ),
+    );
+
+    const newYorkPreview = screen.getByLabelText("New York City training preview");
+    expect(newYorkPreview).toHaveClass("launcher-scene-us-nyc");
+    expect(newYorkPreview.querySelector(".nyc-skyline")).toBeInTheDocument();
+    expect(newYorkPreview.querySelector(".launcher-car")).toHaveClass("right");
+    expect(container.querySelectorAll(".launcher-road")).toHaveLength(1);
+  });
+
   it("preserves a manually selected destination and restores focus after setup closes", async () => {
     render(<SideSwapApp />);
     await screen.findByRole("heading", { name: /Which side feels normal to you/i });

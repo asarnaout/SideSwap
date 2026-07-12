@@ -120,6 +120,82 @@ function initialSelectedDestination(side: TrafficSide): DestinationId {
   return side === "right" ? "uk-london" : "us-nyc";
 }
 
+function DestinationPreviewScenery({
+  destinationId,
+}: {
+  destinationId: DestinationId;
+}) {
+  if (destinationId === "uk-london") {
+    return (
+      <div className="launcher-cityscape london-cityscape">
+        <div className="london-museum">
+          <span className="museum-wing museum-wing-left"><i /><i /><i /></span>
+          <span className="museum-centre"><i /><b /></span>
+          <span className="museum-wing museum-wing-right"><i /><i /><i /></span>
+        </div>
+        <span className="london-lamp london-lamp-left" />
+        <span className="london-lamp london-lamp-right" />
+        <span className="london-bus"><i /><i /><i /></span>
+        <span className="london-cab"><i /></span>
+      </div>
+    );
+  }
+
+  if (destinationId === "us-nyc") {
+    return (
+      <div className="launcher-cityscape nyc-cityscape">
+        <div className="nyc-skyline">
+          <span /><span /><span /><span /><span /><span />
+        </div>
+        <div className="nyc-brownstones">
+          <span><i /><i /><i /></span>
+          <span><i /><i /><i /></span>
+          <span><i /><i /><i /></span>
+        </div>
+        <span className="nyc-water-tower"><i /></span>
+        <span className="nyc-street-sign">W 72 ST</span>
+      </div>
+    );
+  }
+
+  if (destinationId === "uk-milton-keynes") {
+    return (
+      <div className="launcher-cityscape mk-cityscape">
+        <div className="mk-tree-line">
+          <span /><span /><span /><span /><span /><span /><span />
+        </div>
+        <span className="mk-building"><i /><i /><i /></span>
+        <span className="mk-roundabout"><i /><i /><i /></span>
+        <span className="mk-direction-sign"><b>Central MK</b><i>A5</i></span>
+      </div>
+    );
+  }
+
+  if (destinationId === "fr-calais") {
+    return (
+      <div className="launcher-cityscape calais-cityscape">
+        <span className="calais-ferry"><i /><i /><i /><i /></span>
+        <span className="calais-lighthouse"><i /></span>
+        <span className="calais-terminal"><i /><i /><i /></span>
+        <span className="calais-sign"><b>CALAIS</b><i>COQUELLES</i></span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="launcher-cityscape tokyo-cityscape">
+      <div className="tokyo-houses">
+        <span><i /><i /></span>
+        <span><i /><i /></span>
+        <span><i /><i /></span>
+      </div>
+      <span className="tokyo-torii"><i /></span>
+      <span className="tokyo-crossing"><i /><b /><em /></span>
+      <span className="tokyo-train"><i /><i /><i /></span>
+    </div>
+  );
+}
+
 const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
   scenarioId.startsWith("free-");
 
@@ -262,6 +338,8 @@ export default function SideSwapApp() {
     "--destination-accent": themeDestination.visualTheme.accent,
     "--destination-sky": themeDestination.visualTheme.sky,
     "--destination-ground": themeDestination.visualTheme.ground,
+    "--destination-road": themeDestination.visualTheme.road,
+    "--destination-lane": themeDestination.visualTheme.laneMarking,
   } as CSSProperties;
 
   useEffect(() => {
@@ -814,20 +892,19 @@ export default function SideSwapApp() {
             </div>
           </div>
 
-          <div className="launcher-road-visual" aria-label={`${destination.destinationName} training preview`}>
-            <div className="launcher-sky" />
-            <div className="launcher-buildings">
-              {Array.from({ length: 8 }, (_, index) => (
-                <span key={index} style={{ "--i": index } as CSSProperties} />
-              ))}
+          <div
+            className={`launcher-road-visual launcher-scene-${destination.id}`}
+            aria-label={`${destination.destinationName} training preview`}
+          >
+            <div className="launcher-sky" aria-hidden="true">
+              <span className="launcher-sun" />
+              <span className="launcher-cloud launcher-cloud-one" />
+              <span className="launcher-cloud launcher-cloud-two" />
             </div>
-            {destination.id === "uk-london" && (
-              <div className="launcher-london-details" aria-hidden="true">
-                <span className="launcher-museum" />
-                <span className="launcher-bus" />
-                <span className="launcher-cab" />
-              </div>
-            )}
+            <div className="launcher-ground" aria-hidden="true" />
+            <div aria-hidden="true">
+              <DestinationPreviewScenery destinationId={destination.id} />
+            </div>
             <div className="launcher-road"><i /><i /><i /><i /></div>
             <div className={`launcher-car ${country.trafficSide}`}><b /></div>
             <div className="launcher-place">
