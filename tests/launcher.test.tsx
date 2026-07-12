@@ -167,7 +167,7 @@ describe("game-first launcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
-    fireEvent.click(screen.getByRole("button", { name: /Left wheel/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^LeftWheel on the left$/i }));
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
       /^Wheelleft$/,
@@ -178,8 +178,21 @@ describe("game-first launcher", () => {
       within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
     );
     expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
-      "right · local",
+      /^Wheelright$/,
     );
+  });
+
+  it("offers only left and right wheel positions, defaulting to the selected destination", async () => {
+    render(<SideSwapApp />);
+    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
+    const wheelGroup = within(screen.getByRole("dialog", { name: "Ready your drive" }))
+      .getByRole("group", { name: "Wheel position" });
+    expect(within(wheelGroup).getAllByRole("button")).toHaveLength(2);
+    expect(within(wheelGroup).getByRole("button", { name: /^RightWheel on the right$/i }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(within(wheelGroup).queryByText(/Local default/i)).not.toBeInTheDocument();
   });
 
   it("uses modern option cards for camera and control prompts", async () => {

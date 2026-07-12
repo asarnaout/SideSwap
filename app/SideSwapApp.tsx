@@ -51,7 +51,7 @@ import type {
   LessonScore,
   PlayerProgressV1,
   ScenarioId,
-  SteeringPreference,
+  SteeringSide,
   TrafficSide,
 } from "./game/types";
 
@@ -141,6 +141,12 @@ const clamp = (value: number, minimum: number, maximum: number) =>
 
 function initialSelectedDestination(side: TrafficSide): DestinationId {
   return side === "right" ? "uk-london" : "us-nyc";
+}
+
+function defaultWheelForDestination(destinationId: DestinationId): SteeringSide {
+  return getCountryProfile(
+    getDestinationProfile(destinationId).countryId,
+  ).defaultSteeringSide;
 }
 
 function DestinationPreviewScenery({
@@ -249,7 +255,7 @@ export default function SideSwapApp() {
   const [destinationChosenManually, setDestinationChosenManually] =
     useState(false);
   const [wheelPreference, setWheelPreference] =
-    useState<SteeringPreference>("auto");
+    useState<SteeringSide>("right");
   const [camera, setCamera] = useState<CameraMode>("third_person");
   const [input, setInput] = useState<InputFamily>("keyboard");
   const [activeSession, setActiveSession] = useState<GameSessionConfig | null>(
@@ -278,6 +284,7 @@ export default function SideSwapApp() {
       setProgress(loaded);
       setFamiliarSide(firstVisit ? null : loaded.familiarTrafficSide);
       setDestinationId(loaded.lastDestinationId);
+      setWheelPreference(defaultWheelForDestination(loaded.lastDestinationId));
       setCamera(loaded.preferredCamera);
       setInput(firstVisit ? defaultInput : loaded.preferredInput);
       setHydrated(true);
@@ -380,15 +387,16 @@ export default function SideSwapApp() {
   const chooseFamiliarSide = (side: TrafficSide) => {
     setFamiliarSide(side);
     if (!destinationChosenManually) {
-      setDestinationId(initialSelectedDestination(side));
-      setWheelPreference("auto");
+      const suggestedDestination = initialSelectedDestination(side);
+      setDestinationId(suggestedDestination);
+      setWheelPreference(defaultWheelForDestination(suggestedDestination));
     }
   };
 
   const chooseDestination = (id: DestinationId) => {
     setDestinationId(id);
     setDestinationChosenManually(true);
-    setWheelPreference("auto");
+    setWheelPreference(defaultWheelForDestination(id));
   };
 
   const beginDrive = (
@@ -399,7 +407,9 @@ export default function SideSwapApp() {
     const nextDestination = getDestinationProfile(nextDestinationId);
     const nextCountryId = nextDestination.countryId;
     const nextWheelPreference =
-      nextDestinationId === destinationId ? wheelPreference : "auto";
+      nextDestinationId === destinationId
+        ? wheelPreference
+        : defaultWheelForDestination(nextDestinationId);
     const session: GameSessionConfig = {
       countryId: nextCountryId,
       destinationId: nextDestinationId,
@@ -426,7 +436,9 @@ export default function SideSwapApp() {
     setProgress(committedProgress);
     saveProgress(committedProgress);
     setDestinationId(nextDestinationId);
-    if (nextDestinationId !== destinationId) setWheelPreference("auto");
+    if (nextDestinationId !== destinationId) {
+      setWheelPreference(nextWheelPreference);
+    }
     setActiveSession(session);
     setEvents([]);
     setHud(null);
@@ -754,7 +766,7 @@ export default function SideSwapApp() {
             setFamiliarSide(null);
             setDestinationId(reset.lastDestinationId);
             setDestinationChosenManually(false);
-            setWheelPreference("auto");
+            setWheelPreference(defaultWheelForDestination(reset.lastDestinationId));
             setCamera(reset.preferredCamera);
             setInput(
               window.matchMedia("(pointer: coarse)").matches
@@ -845,7 +857,7 @@ export default function SideSwapApp() {
 
             <div className="launcher-setup-summary" aria-label="Current car setup">
               <button type="button" onClick={() => setCustomizeOpen(true)}>
-                <small>Wheel</small><strong>{steeringSide} {wheelPreference === "auto" && "· local"}</strong>
+                <small>Wheel</small><strong>{steeringSide}</strong>
               </button>
               <button type="button" onClick={() => setCustomizeOpen(true)}>
                 <small>Camera</small><strong>{cameraLabels[camera]}</strong>
@@ -1128,10 +1140,10 @@ function SetupSheet({
 }: {
   country: ReturnType<typeof getCountryProfile>;
   destination: ReturnType<typeof getDestinationProfile>;
-  wheelPreference: SteeringPreference;
+  wheelPreference: SteeringSide;
   camera: CameraMode;
   input: InputFamily;
-  onWheelChange: (value: SteeringPreference) => void;
+  onWheelChange: (value: SteeringSide) => void;
   onCameraChange: (value: CameraMode) => void;
   onInputChange: (value: InputFamily) => void;
   onClose: () => void;
@@ -1209,21 +1221,15 @@ function SetupSheet({
           {country.flagEmoji} {destination.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
         </p>
         <div className="setup-choice-stack">
-          <OptionPicker<SteeringPreference>
+          <OptionPicker<SteeringSide>
             label="Wheel position"
             value={wheelPreference}
             options={[
-              {
-                value: "auto",
-                symbol: "AUTO",
-                label: "Local default",
-                hint: `${country.defaultSteeringSide === "left" ? "Left" : "Right"} wheel`,
-              },
-              { value: "left", symbol: "L", label: "Left wheel", hint: "Manual cockpit" },
-              { value: "right", symbol: "R", label: "Right wheel", hint: "Manual cockpit" },
+              { value: "left", symbol: "L", label: "Left", hint: "Wheel on the left" },
+              { value: "right", symbol: "R", label: "Right", hint: "Wheel on the right" },
             ]}
             onChange={onWheelChange}
-            hint={`Selected cockpit: wheel on the ${resolvedWheel}.`}
+            hint={`Selected cockpit: wheel on the ${resolvedWheel}. Destination defaults are applied when you switch cities.`}
           />
           <OptionPicker<CameraMode>
             label="Starting camera"
