@@ -3,8 +3,55 @@ import {
   AdaptiveInputRouter,
   INPUT_PROMPT_SWITCH_COOLDOWN_MS,
   TOUCH_CONTROL_DIM_DELAY_MS,
+  resolveCockpitCameraPoses,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
+
+describe("cockpit camera tracking", () => {
+  it("moves both first-person cameras with the vehicle in world space", () => {
+    const start = resolveCockpitCameraPoses({
+      x: -2,
+      z: 10,
+      vehicleHeading: 0,
+      cameraHeading: 0,
+      seatSide: -0.46,
+      headBob: 0,
+      quickLookAngle: 0,
+    });
+    const moved = resolveCockpitCameraPoses({
+      x: 4,
+      z: 28,
+      vehicleHeading: 0,
+      cameraHeading: 0,
+      seatSide: -0.46,
+      headBob: 0,
+      quickLookAngle: 0,
+    });
+
+    expect(moved.first.x - start.first.x).toBeCloseTo(6);
+    expect(moved.first.z - start.first.z).toBeCloseTo(18);
+    expect(moved.rear.x - start.rear.x).toBeCloseTo(6);
+    expect(moved.rear.z - start.rear.z).toBeCloseTo(18);
+  });
+
+  it("keeps the cockpit seat attached to the turning vehicle while looking with the road", () => {
+    const pose = resolveCockpitCameraPoses({
+      x: 12,
+      z: -5,
+      vehicleHeading: Math.PI / 2,
+      cameraHeading: Math.PI / 2 + 0.1,
+      seatSide: 0.46,
+      headBob: 0.03,
+      quickLookAngle: -0.25,
+    });
+
+    expect(pose.first.x).toBeCloseTo(12.12);
+    expect(pose.first.z).toBeCloseTo(-5.46);
+    expect(pose.first.y).toBeCloseTo(1.73);
+    expect(pose.first.rotationY).toBeCloseTo(Math.PI / 2 - 0.15);
+    expect(pose.rear.rotationY).toBeCloseTo(Math.PI / 2 + 0.1 + Math.PI);
+  });
+});
 
 describe("adaptive GameCanvas input presentation", () => {
   afterEach(() => {

@@ -377,6 +377,62 @@ export interface AdaptiveInputPresentation {
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
+export interface CockpitCameraPoses {
+  readonly first: Readonly<{
+    x: number;
+    y: number;
+    z: number;
+    rotationY: number;
+  }>;
+  readonly rear: Readonly<{
+    x: number;
+    y: number;
+    z: number;
+    rotationY: number;
+  }>;
+}
+
+/**
+ * Resolves cockpit cameras in world space so their movement never depends on
+ * Babylon parent-transform propagation or multi-camera render ordering.
+ */
+export function resolveCockpitCameraPoses({
+  x,
+  z,
+  vehicleHeading,
+  cameraHeading,
+  seatSide,
+  headBob,
+  quickLookAngle,
+}: {
+  readonly x: number;
+  readonly z: number;
+  readonly vehicleHeading: number;
+  readonly cameraHeading: number;
+  readonly seatSide: number;
+  readonly headBob: number;
+  readonly quickLookAngle: number;
+}): CockpitCameraPoses {
+  const forwardX = Math.sin(vehicleHeading);
+  const forwardZ = Math.cos(vehicleHeading);
+  const rightX = forwardZ;
+  const rightZ = -forwardX;
+  return {
+    first: {
+      x: x + rightX * seatSide + forwardX * 0.12,
+      y: 1.7 + headBob,
+      z: z + rightZ * seatSide + forwardZ * 0.12,
+      rotationY: cameraHeading + quickLookAngle,
+    },
+    rear: {
+      x: x - forwardX * 0.08,
+      y: 1.88,
+      z: z - forwardZ * 0.08,
+      rotationY: cameraHeading + Math.PI,
+    },
+  };
+}
+
 const eventNow = () =>
   typeof performance === "undefined" ? Date.now() : performance.now();
 
@@ -940,7 +996,6 @@ class BabylonGameSession {
     this.firstCamera.inputs.clear();
     this.firstCamera.minZ = 0.04;
     this.firstCamera.fov = options.fieldOfView;
-    this.firstCamera.parent = this.player;
 
     this.rearCamera = new UniversalCamera(
       "rear-view-camera",
@@ -951,7 +1006,6 @@ class BabylonGameSession {
     this.rearCamera.minZ = 0.08;
     this.rearCamera.fov = 0.72;
     this.rearCamera.viewport = new Viewport(0.35, 0.79, 0.3, 0.17);
-    this.rearCamera.parent = this.player;
 
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
@@ -1813,18 +1867,27 @@ class BabylonGameSession {
           ? Math.sin(this.cameraMotionSeconds * 1.9) *
             Math.min(0.045, this.playerState.speedMps * 0.0035)
           : 0;
-      const headingCorrection = this.angleDifference(
+      const poses = resolveCockpitCameraPoses({
+        x: this.displayedX,
+        z: this.displayedZ,
+        vehicleHeading: this.displayedHeading,
         cameraHeading,
-        this.displayedHeading,
+        seatSide,
+        headBob,
+        quickLookAngle,
+      });
+      this.firstCamera.position.set(
+        poses.first.x,
+        poses.first.y,
+        poses.first.z,
       );
-      this.firstCamera.position.set(seatSide, 1.58 + headBob, 0.12);
-      this.firstCamera.rotation.set(
-        0,
-        headingCorrection + quickLookAngle,
-        0,
+      this.firstCamera.rotation.set(0, poses.first.rotationY, 0);
+      this.rearCamera.position.set(
+        poses.rear.x,
+        poses.rear.y,
+        poses.rear.z,
       );
-      this.rearCamera.position.set(0, 1.76, -0.08);
-      this.rearCamera.rotation.set(0, headingCorrection + Math.PI, 0);
+      this.rearCamera.rotation.set(0, poses.rear.rotationY, 0);
     } else {
       const target = base.add(forward.scale(3.5)).add(new Vector3(0, 1.05, 0));
       const cameraShake =
