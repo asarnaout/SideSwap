@@ -104,6 +104,29 @@ const cameraLabels: Record<CameraMode, string> = {
   third_person: "Third person",
 };
 
+type ChoiceOption<T extends string> = {
+  readonly value: T;
+  readonly symbol: string;
+  readonly label: string;
+  readonly hint: string;
+};
+
+const CAMERA_CHOICES: readonly ChoiceOption<CameraMode>[] = [
+  { value: "first_person", symbol: "1P", label: "Driver view", hint: "First person" },
+  { value: "third_person", symbol: "3P", label: "Chase view", hint: "Third person" },
+];
+
+const INPUT_CHOICES: readonly ChoiceOption<InputFamily>[] = [
+  { value: "keyboard", symbol: "KEYS", label: "Keyboard", hint: "WASD + shortcuts" },
+  { value: "gamepad", symbol: "PAD", label: "Gamepad", hint: "Controller layout" },
+  { value: "touch", symbol: "TAP", label: "Touch", hint: "On-screen layout" },
+];
+
+const TRAFFIC_SIDE_CHOICES: readonly ChoiceOption<TrafficSide>[] = [
+  { value: "right", symbol: "R", label: "Traffic keeps right", hint: "US, France & more" },
+  { value: "left", symbol: "L", label: "Traffic keeps left", hint: "UK, Japan & more" },
+];
+
 const toCanvasCamera = (camera: CameraMode): "first" | "third" =>
   camera === "first_person" ? "first" : "third";
 
@@ -1063,6 +1086,48 @@ export default function SideSwapApp() {
   );
 }
 
+function OptionPicker<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: T;
+  options: readonly ChoiceOption<T>[];
+  onChange: (value: T) => void;
+  hint?: string;
+}) {
+  return (
+    <fieldset className="choice-control">
+      <legend>{label}</legend>
+      <div className={`choice-control-options columns-${options.length}`}>
+        {options.map((option) => {
+          const selected = value === option.value;
+          return (
+            <button
+              key={option.value}
+              className="choice-control-option"
+              type="button"
+              aria-pressed={selected}
+              onClick={() => onChange(option.value)}
+            >
+              <span className="choice-control-symbol" aria-hidden="true">{option.symbol}</span>
+              <span className="choice-control-copy">
+                <strong>{option.label}</strong>
+                <small>{option.hint}</small>
+              </span>
+              <span className="choice-control-check" aria-hidden="true">✓</span>
+            </button>
+          );
+        })}
+      </div>
+      {hint && <p className="choice-control-hint">{hint}</p>}
+    </fieldset>
+  );
+}
+
 function SetupSheet({
   country,
   destination,
@@ -1099,7 +1164,7 @@ function SetupSheet({
     const focusable = () =>
       Array.from(
         panel?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), select:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+          'button:not(:disabled), input:not(:disabled), summary, [href], [tabindex]:not([tabindex="-1"])',
         ) ?? [],
       );
     focusable()[0]?.focus();
@@ -1157,36 +1222,36 @@ function SetupSheet({
         <p className="setup-sheet-intro">
           {country.flagEmoji} {destination.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
         </p>
-        <fieldset className="sheet-fieldset">
-          <legend>Wheel position</legend>
-          <div className="segmented three compact">
-            {(["auto", "left", "right"] as const).map((side) => (
-              <button
-                key={side}
-                type="button"
-                className={wheelPreference === side ? "active" : ""}
-                aria-pressed={wheelPreference === side}
-                onClick={() => onWheelChange(side)}
-              >
-                {side === "auto" ? `Local · ${country.defaultSteeringSide}` : `${side} wheel`}
-              </button>
-            ))}
-          </div>
-          <small>Selected cockpit: wheel on the {resolvedWheel}.</small>
-        </fieldset>
-        <div className="sheet-selects">
-          <label>
-            <span>Starting camera</span>
-            <select value={camera} onChange={(event) => onCameraChange(event.target.value as CameraMode)}>
-              {Object.entries(cameraLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Control prompts</span>
-            <select value={input} onChange={(event) => onInputChange(event.target.value as InputFamily)}>
-              {Object.entries(inputLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </label>
+        <div className="setup-choice-stack">
+          <OptionPicker<SteeringPreference>
+            label="Wheel position"
+            value={wheelPreference}
+            options={[
+              {
+                value: "auto",
+                symbol: "AUTO",
+                label: "Local default",
+                hint: `${country.defaultSteeringSide === "left" ? "Left" : "Right"} wheel`,
+              },
+              { value: "left", symbol: "L", label: "Left wheel", hint: "Manual cockpit" },
+              { value: "right", symbol: "R", label: "Right wheel", hint: "Manual cockpit" },
+            ]}
+            onChange={onWheelChange}
+            hint={`Selected cockpit: wheel on the ${resolvedWheel}.`}
+          />
+          <OptionPicker<CameraMode>
+            label="Starting camera"
+            value={camera}
+            options={CAMERA_CHOICES}
+            onChange={onCameraChange}
+          />
+          <OptionPicker<InputFamily>
+            label="Control prompts"
+            value={input}
+            options={INPUT_CHOICES}
+            onChange={onInputChange}
+            hint="Every input remains active; this choice sets the prompts you see first."
+          />
         </div>
         <details className="control-help">
           <summary>{inputLabels[input]} controls</summary>
@@ -1267,14 +1332,111 @@ function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack
   );
 }
 
+function RangeControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  formatValue,
+  ariaValueText,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  formatValue: (value: number) => string;
+  ariaValueText: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  const progress = clamp(((value - min) / (max - min)) * 100, 0, 100);
+  return (
+    <label className="range-control">
+      <span><strong>{label}</strong><output>{formatValue(value)}</output></span>
+      <input
+        aria-label={label}
+        aria-valuetext={ariaValueText(value)}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        style={{ "--range-progress": `${progress}%` } as CSSProperties}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
 function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerProgressV1; onSave: (value: PlayerProgressV1) => void; onReset: () => void; onBack: () => void }) {
   const [draft, setDraft] = useState(progress);
   const updateAccessibility = (patch: Partial<PlayerProgressV1["accessibility"]>) => setDraft((current) => ({ ...current, accessibility: { ...current.accessibility, ...patch } }));
-  return <section className="subpage settings-page"><div className="subpage-heading"><div><p className="eyebrow">SETTINGS</p><h1>Make the road comfortable to read</h1><p>Visual and audio coaching remain independent of the score.</p></div><button className="secondary-button" type="button" onClick={onBack}>Back to training</button></div><div className="settings-grid"><fieldset className="settings-card"><legend>Driving preferences</legend><label><span>Familiar traffic side</span><select value={draft.familiarTrafficSide} onChange={(event) => setDraft({ ...draft, familiarTrafficSide: event.target.value as TrafficSide })}><option value="right">Traffic keeps right</option><option value="left">Traffic keeps left</option></select></label><label><span>Default camera</span><select value={draft.preferredCamera} onChange={(event) => setDraft({ ...draft, preferredCamera: event.target.value as CameraMode })}><option value="third_person">Third person</option><option value="first_person">First person</option></select></label><label><span>Default controls</span><select value={draft.preferredInput} onChange={(event) => setDraft({ ...draft, preferredInput: event.target.value as InputFamily })}><option value="keyboard">Keyboard</option><option value="gamepad">Gamepad</option><option value="touch">Touch</option></select></label><Toggle label="Camera shake" checked={draft.accessibility.cameraShake} onChange={(checked) => updateAccessibility({ cameraShake: checked })} /><Toggle label="First-person head bob" checked={draft.accessibility.headBob} onChange={(checked) => updateAccessibility({ headBob: checked })} /></fieldset><fieldset className="settings-card"><legend>Accessibility & audio</legend><Toggle label="Subtitles" checked={draft.accessibility.subtitles} onChange={(checked) => updateAccessibility({ subtitles: checked })} /><Toggle label="Visual honk cue" checked={draft.accessibility.visualHonkIndicator} onChange={(checked) => updateAccessibility({ visualHonkIndicator: checked })} /><Toggle label="Reduced motion" checked={draft.accessibility.reducedMotion} onChange={(checked) => updateAccessibility({ reducedMotion: checked })} /><label><span>Steering sensitivity <b>{draft.accessibility.steeringSensitivity.toFixed(1)}×</b></span><input aria-label="Steering sensitivity" type="range" min="0.5" max="2" step="0.1" value={draft.accessibility.steeringSensitivity} onChange={(event) => updateAccessibility({ steeringSensitivity: Number(event.target.value) })} /></label><label><span>Field of view <b>{draft.accessibility.fieldOfView}°</b></span><input aria-label="Field of view" type="range" min="55" max="100" step="1" value={draft.accessibility.fieldOfView} onChange={(event) => updateAccessibility({ fieldOfView: Number(event.target.value) })} /></label><label><span>Master volume <b>{Math.round(draft.accessibility.masterVolume * 100)}%</b></span><input aria-label="Master volume" type="range" min="0" max="1" step="0.05" value={draft.accessibility.masterVolume} onChange={(event) => updateAccessibility({ masterVolume: Number(event.target.value) })} /></label><label><span>Effects volume <b>{Math.round(draft.accessibility.effectsVolume * 100)}%</b></span><input aria-label="Effects volume" type="range" min="0" max="1" step="0.05" value={draft.accessibility.effectsVolume} onChange={(event) => updateAccessibility({ effectsVolume: Number(event.target.value) })} /></label><label><span>Coach volume <b>{Math.round(draft.accessibility.coachVolume * 100)}%</b></span><input aria-label="Coach volume" type="range" min="0" max="1" step="0.05" value={draft.accessibility.coachVolume} onChange={(event) => updateAccessibility({ coachVolume: Number(event.target.value) })} /></label></fieldset></div><div className="settings-actions"><button type="button" className="danger-button" onClick={onReset}>Reset local progress</button><button type="button" className="primary-button" onClick={() => { onSave({ ...draft, updatedAt: new Date().toISOString() }); onBack(); }}>Save settings</button></div></section>;
+  return (
+    <section className="subpage settings-page">
+      <div className="subpage-heading">
+        <div>
+          <p className="eyebrow">SETTINGS</p>
+          <h1>Make the road comfortable to read</h1>
+          <p>Visual and audio coaching remain independent of the score.</p>
+        </div>
+        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
+      </div>
+      <div className="settings-grid">
+        <section className="settings-card" aria-labelledby="driving-preferences-title">
+          <h2 id="driving-preferences-title">Driving preferences</h2>
+          <OptionPicker<TrafficSide>
+            label="Familiar traffic side"
+            value={draft.familiarTrafficSide}
+            options={TRAFFIC_SIDE_CHOICES}
+            onChange={(familiarTrafficSide) => setDraft((current) => ({ ...current, familiarTrafficSide }))}
+            hint="This changes recommendations only; each destination keeps its local road rules."
+          />
+          <OptionPicker<CameraMode>
+            label="Default camera"
+            value={draft.preferredCamera}
+            options={CAMERA_CHOICES}
+            onChange={(preferredCamera) => setDraft((current) => ({ ...current, preferredCamera }))}
+          />
+          <OptionPicker<InputFamily>
+            label="Control prompts"
+            value={draft.preferredInput}
+            options={INPUT_CHOICES}
+            onChange={(preferredInput) => setDraft((current) => ({ ...current, preferredInput }))}
+            hint="SideSwap still listens to keyboard, gamepad and touch at the same time."
+          />
+          <div className="settings-toggle-stack">
+            <Toggle label="Camera shake" checked={draft.accessibility.cameraShake} onChange={(checked) => updateAccessibility({ cameraShake: checked })} />
+            <Toggle label="First-person head bob" checked={draft.accessibility.headBob} onChange={(checked) => updateAccessibility({ headBob: checked })} />
+          </div>
+        </section>
+        <section className="settings-card" aria-labelledby="accessibility-audio-title">
+          <h2 id="accessibility-audio-title">Accessibility & audio</h2>
+          <div className="settings-toggle-stack">
+            <Toggle label="Subtitles" checked={draft.accessibility.subtitles} onChange={(checked) => updateAccessibility({ subtitles: checked })} />
+            <Toggle label="Visual honk cue" checked={draft.accessibility.visualHonkIndicator} onChange={(checked) => updateAccessibility({ visualHonkIndicator: checked })} />
+            <Toggle label="Reduced motion" checked={draft.accessibility.reducedMotion} onChange={(checked) => updateAccessibility({ reducedMotion: checked })} />
+          </div>
+          <div className="settings-range-stack">
+            <RangeControl label="Steering sensitivity" value={draft.accessibility.steeringSensitivity} min={0.5} max={2} step={0.1} formatValue={(value) => `${value.toFixed(1)}×`} ariaValueText={(value) => `${value.toFixed(1)} times`} onChange={(steeringSensitivity) => updateAccessibility({ steeringSensitivity })} />
+            <RangeControl label="Field of view" value={draft.accessibility.fieldOfView} min={55} max={100} step={1} formatValue={(value) => `${value}°`} ariaValueText={(value) => `${value} degrees`} onChange={(fieldOfView) => updateAccessibility({ fieldOfView })} />
+            <RangeControl label="Master volume" value={draft.accessibility.masterVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(masterVolume) => updateAccessibility({ masterVolume })} />
+            <RangeControl label="Effects volume" value={draft.accessibility.effectsVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(effectsVolume) => updateAccessibility({ effectsVolume })} />
+            <RangeControl label="Coach volume" value={draft.accessibility.coachVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(coachVolume) => updateAccessibility({ coachVolume })} />
+          </div>
+        </section>
+      </div>
+      <div className="settings-actions">
+        <button type="button" className="danger-button" onClick={onReset}>Reset local progress</button>
+        <button type="button" className="primary-button" onClick={() => { onSave({ ...draft, updatedAt: new Date().toISOString() }); onBack(); }}>Save settings</button>
+      </div>
+    </section>
+  );
 }
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return <label className="toggle-row"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>;
+  return <label className="toggle-row"><strong>{label}</strong><input className="sr-only" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>;
 }
 
 function CreditsView({ onBack }: { onBack: () => void }) {

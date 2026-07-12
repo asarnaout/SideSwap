@@ -166,7 +166,7 @@ describe("game-first launcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
-    fireEvent.click(screen.getByRole("button", { name: "left wheel" }));
+    fireEvent.click(screen.getByRole("button", { name: /Left wheel/i }));
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
       /^Wheelleft$/,
@@ -179,6 +179,54 @@ describe("game-first launcher", () => {
     expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
       "right · local",
     );
+  });
+
+  it("uses modern option cards for camera and control prompts", async () => {
+    render(<SideSwapApp />);
+    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change setup" }));
+    const dialog = screen.getByRole("dialog", { name: "Ready your drive" });
+    expect(dialog.querySelector("select")).not.toBeInTheDocument();
+
+    const cameraGroup = within(dialog).getByRole("group", { name: "Starting camera" });
+    const driverView = within(cameraGroup).getByRole("button", { name: /Driver view/i });
+    const chaseView = within(cameraGroup).getByRole("button", { name: /Chase view/i });
+    expect(chaseView).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(driverView);
+    expect(driverView).toHaveAttribute("aria-pressed", "true");
+    expect(chaseView).toHaveAttribute("aria-pressed", "false");
+
+    const promptGroup = within(dialog).getByRole("group", { name: "Control prompts" });
+    const touch = within(promptGroup).getByRole("button", { name: /Touch/i });
+    fireEvent.click(touch);
+    expect(touch).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByText("Touch controls")).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
+    expect(screen.getByRole("button", { name: /^Controls/i })).toHaveTextContent("Touch");
+  });
+
+  it("uses the same modern controls on Settings and saves the chosen defaults", async () => {
+    const { container } = render(<SideSwapApp />);
+    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.getByRole("heading", { name: "Make the road comfortable to read" })).toBeVisible();
+    expect(container.querySelector("select")).not.toBeInTheDocument();
+
+    const cameraGroup = screen.getByRole("group", { name: "Default camera" });
+    fireEvent.click(within(cameraGroup).getByRole("button", { name: /Driver view/i }));
+    const promptGroup = screen.getByRole("group", { name: "Control prompts" });
+    fireEvent.click(within(promptGroup).getByRole("button", { name: /Gamepad/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
+    expect(screen.getByRole("button", { name: /^Controls/i })).toHaveTextContent("Gamepad");
+    const saved = JSON.parse(window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}");
+    expect(saved.preferredCamera).toBe("first_person");
+    expect(saved.preferredInput).toBe("gamepad");
   });
 
   it("gives returning players one-click Continue and advances from results", async () => {
