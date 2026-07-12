@@ -719,7 +719,7 @@ export default function SideSwapApp() {
               type="button"
               onClick={() => setView("training")}
             >
-              Training Hub
+              All drives
             </button>
             <button
               className="secondary-button"
@@ -750,6 +750,11 @@ export default function SideSwapApp() {
 
   const configured = progress.familiarSideConfirmed;
   const launcherScenarioId = configured ? recommendation.scenarioId : orientation.id;
+  const launcherDriveTitle = configured
+    ? scenarioTitle(recommendation.scenarioId)
+    : familiarSide
+      ? `${destination.destinationName} orientation`
+      : null;
 
   return (
     <main
@@ -775,7 +780,7 @@ export default function SideSwapApp() {
             type="button"
             onClick={() => setView("training")}
           >
-            Training
+            Drives
           </button>
           <button
             className={view === "passport" ? "active" : ""}
@@ -811,7 +816,7 @@ export default function SideSwapApp() {
           </button>
           {mobileMenuOpen && (
             <nav id="mobile-menu-panel" aria-label="Mobile navigation">
-              <button type="button" onClick={() => { setView("training"); setMobileMenuOpen(false); }}>Training Hub</button>
+              <button type="button" onClick={() => { setView("training"); setMobileMenuOpen(false); }}>All drives</button>
               <button type="button" onClick={() => { setView("passport"); setMobileMenuOpen(false); }}>Passport <span>{progress.passportStamps.length}/4</span></button>
               <button type="button" onClick={() => { setView("settings"); setMobileMenuOpen(false); }}>Settings & accessibility</button>
               <button type="button" onClick={() => { setView("credits"); setMobileMenuOpen(false); }}>Sources & credits</button>
@@ -944,11 +949,23 @@ export default function SideSwapApp() {
               </p>
             )}
 
+            {launcherDriveTitle && (
+              <p className="launcher-next-drive">
+                <span>Next drive</span>
+                <strong>{launcherDriveTitle}</strong>
+              </p>
+            )}
+
             <div className="launcher-actions">
               <button
                 className="primary-button launcher-primary"
                 type="button"
                 disabled={!familiarSide}
+                aria-label={
+                  launcherDriveTitle
+                    ? `Start ${launcherDriveTitle}`
+                    : "Choose your usual traffic side"
+                }
                 onClick={() =>
                   beginDrive(
                     launcherScenarioId,
@@ -956,15 +973,18 @@ export default function SideSwapApp() {
                   )
                 }
               >
-                {configured
-                  ? `Continue — ${scenarioTitle(recommendation.scenarioId)}`
-                  : familiarSide
-                    ? `Start ${destination.destinationName} orientation`
-                    : "Choose your usual traffic side"}
+                {launcherDriveTitle ? "Start" : "Choose your usual traffic side"}
                 <span aria-hidden="true">→</span>
               </button>
               {configured && (
-                <button className="secondary-button" type="button" onClick={() => setView("training")}>Choose a drive</button>
+                <button
+                  className="secondary-button launcher-browse"
+                  type="button"
+                  aria-label="Browse all drives, lessons, and free practice"
+                  onClick={() => setView("training")}
+                >
+                  Browse all drives
+                </button>
               )}
             </div>
           </div>
@@ -1010,11 +1030,11 @@ export default function SideSwapApp() {
         <section className="training-hub subpage" aria-labelledby="training-title">
           <div className="subpage-heading training-hub-heading">
             <div>
-              <p className="eyebrow">TRAINING HUB</p>
-              <h1 id="training-title">Choose your next drive.</h1>
-              <p>Start directly from any unlocked lesson. Progress is based on safety and rule use, never speed.</p>
+              <p className="eyebrow">ALL DRIVES</p>
+              <h1 id="training-title">All drives and lessons.</h1>
+              <p>Pick a destination, then start a guided lesson or free drive. Progress is based on safety and rule use, never speed.</p>
             </div>
-            <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to launcher</button>
+            <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to home</button>
           </div>
           <div className="hub-country-tabs" role="group" aria-label="Choose destination">
             {(["uk", "us", "fr", "jp"] as const).map((groupCountryId) => {

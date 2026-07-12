@@ -693,7 +693,7 @@ export function getRecommendedDrive(
       destinationId,
       scenarioId: orientation.id,
       kind: "orientation",
-      ctaLabel: `Start ${destination.destinationName} orientation`,
+      ctaLabel: "Start",
     };
   }
 
@@ -708,7 +708,7 @@ export function getRecommendedDrive(
       destinationId,
       scenarioId: nextLesson.id,
       kind: "lesson",
-      ctaLabel: `Continue — ${nextLesson.title}`,
+      ctaLabel: "Start",
     };
   }
 
@@ -728,7 +728,7 @@ export function getRecommendedDrive(
       destinationId: capstoneDestinationId,
       scenarioId: capstone.id,
       kind: "capstone",
-      ctaLabel: `Continue — ${capstone.title}`,
+      ctaLabel: "Start",
     };
   }
 
@@ -738,7 +738,7 @@ export function getRecommendedDrive(
     destinationId,
     scenarioId: freeDrive.id,
     kind: "free_drive",
-    ctaLabel: `Continue — ${freeDrive.title}`,
+    ctaLabel: "Start",
   };
 }
 

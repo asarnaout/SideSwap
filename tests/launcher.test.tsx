@@ -267,7 +267,7 @@ describe("game-first launcher", () => {
     expect(saved).not.toHaveProperty("preferredInput");
   });
 
-  it("gives returning players one-click Continue and advances from results", async () => {
+  it("gives returning players a compact Start action and advances from results", async () => {
     const progress = {
       ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
       familiarSideConfirmed: true,
@@ -280,11 +280,14 @@ describe("game-first launcher", () => {
 
     render(<SideSwapApp />);
 
-    const continueButton = await screen.findByRole("button", {
-      name: /Continue — The Manhattan Grid/i,
+    const startButton = await screen.findByRole("button", {
+      name: /Start The Manhattan Grid/i,
     });
     expect(screen.queryByText(/Continue in New York City, or choose a different training route/i)).not.toBeInTheDocument();
-    fireEvent.click(continueButton);
+    expect(screen.getByText("Next drive")).toBeVisible();
+    expect(screen.getByText("The Manhattan Grid")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Browse all drives, lessons, and free practice/i })).toBeVisible();
+    fireEvent.click(startButton);
 
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
       "data-scenario",
@@ -327,7 +330,7 @@ describe("game-first launcher", () => {
     render(<SideSwapApp />);
     act(() => vi.advanceTimersByTime(1));
     expect(
-      screen.getByRole("button", { name: /Continue — The Manhattan Grid/i }),
+      screen.getByRole("button", { name: /Start The Manhattan Grid/i }),
     ).toBeEnabled();
 
     buttons[0].pressed = true;
@@ -359,10 +362,10 @@ describe("game-first launcher", () => {
         { name: /Milton Keynes/i },
       ),
     ).toHaveAttribute("aria-pressed", "true");
-    const continueButton = screen.getByRole("button", {
-      name: /Continue — Keep Left/i,
+    const startButton = screen.getByRole("button", {
+      name: /Start Keep Left/i,
     });
-    fireEvent.click(continueButton);
+    fireEvent.click(startButton);
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
       "data-scenario",
       "uk-left-side-basics",
@@ -384,7 +387,7 @@ describe("game-first launcher", () => {
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
 
     render(<SideSwapApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "Training" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Drives" }));
 
     expect(screen.getByRole("link", { name: /Transport for London charge guidance/i })).toBeVisible();
     expect(screen.getByText(/Charges are informational and never affect your score/i)).toBeVisible();
@@ -397,7 +400,7 @@ describe("game-first launcher", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
-    fireEvent.click(screen.getByRole("button", { name: "Training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Drives" }));
     fireEvent.click(screen.getByRole("button", { name: "Start free drive" }));
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
       "data-scenario",
@@ -476,7 +479,7 @@ describe("game-first launcher", () => {
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
 
     render(<SideSwapApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "Training" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Drives" }));
 
     const capstone = screen.getByRole("button", { name: "Start capstone" });
     expect(capstone).toBeEnabled();
@@ -487,9 +490,9 @@ describe("game-first launcher", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
-    fireEvent.click(screen.getByRole("button", { name: "Training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Drives" }));
     fireEvent.click(screen.getByRole("button", { name: /Milton Keynes/i }));
-    const hub = screen.getByRole("heading", { name: "Choose your next drive." }).closest("section");
+    const hub = screen.getByRole("heading", { name: "All drives and lessons." }).closest("section");
     expect(hub).not.toBeNull();
     fireEvent.click(within(hub as HTMLElement).getByRole("button", { name: "Start free drive" }));
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
