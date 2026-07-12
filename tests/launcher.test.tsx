@@ -269,6 +269,7 @@ describe("game-first launcher", () => {
     const continueButton = await screen.findByRole("button", {
       name: /Continue — The Manhattan Grid/i,
     });
+    expect(screen.queryByText(/Continue in New York City, or choose a different training route/i)).not.toBeInTheDocument();
     fireEvent.click(continueButton);
 
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(

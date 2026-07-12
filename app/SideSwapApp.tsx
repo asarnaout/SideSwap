@@ -862,11 +862,11 @@ export default function SideSwapApp() {
                 <>Which side feels<br /><em>normal to you?</em></>
               )}
             </h1>
-            <p className="launcher-lead">
-              {configured
-                ? `Continue in ${destination.destinationName}, or choose a different training route.`
-                : "Tell us where you normally drive. We’ll suggest the opposite side and put you straight into orientation."}
-            </p>
+            {!configured && (
+              <p className="launcher-lead">
+                Tell us where you normally drive. We’ll suggest the opposite side and put you straight into orientation.
+              </p>
+            )}
 
             {!configured && (
               <fieldset className="launcher-familiar">
