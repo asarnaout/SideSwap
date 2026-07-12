@@ -116,6 +116,8 @@ describe("game-first launcher", () => {
     expect(londonPreview).toHaveClass("launcher-scene-uk-london");
     expect(londonPreview.querySelector(".london-museum")).toBeInTheDocument();
     expect(londonPreview.querySelector(".launcher-car")).toHaveClass("left");
+    expect(londonPreview.querySelector(".launcher-car-body")).toBeInTheDocument();
+    expect(londonPreview.querySelector(".launcher-car-cabin")).toBeInTheDocument();
 
     fireEvent.click(
       within(screen.getByRole("group", { name: "Destination" })).getByRole(

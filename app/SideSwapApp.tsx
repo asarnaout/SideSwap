@@ -906,7 +906,11 @@ export default function SideSwapApp() {
               <DestinationPreviewScenery destinationId={destination.id} />
             </div>
             <div className="launcher-road"><i /><i /><i /><i /></div>
-            <div className={`launcher-car ${country.trafficSide}`}><b /></div>
+            <div className={`launcher-car ${country.trafficSide}`} aria-hidden="true">
+              <span className="launcher-car-body">
+                <b className="launcher-car-cabin" />
+              </span>
+            </div>
             <div className="launcher-place">
               <span>{country.flagEmoji} {country.countryName}</span>
               <strong>{destination.destinationName}</strong>
