@@ -14,10 +14,10 @@ import type {
   GameHudSnapshot,
   GameRuntimeEvent,
 } from "./game/GameCanvas";
+import type { SimulationScoreSnapshot } from "./game/simulation";
 import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
-  SCORING_CONFIG,
   getCountryProfile,
   getDestinationProfile,
   getFreeDrive,
@@ -393,6 +393,7 @@ export default function SideSwapApp() {
         title: activeFreeDrive.title,
         kind: "free_drive",
         trafficSide: driveCountry.trafficSide,
+        startSpawnId: activeFreeDrive.startSpawnId,
         route: activeLesson.route,
         objectives: [
           {
@@ -496,35 +497,16 @@ export default function SideSwapApp() {
     setView("driving");
   };
 
-  const finishDrive = (total: number) => {
-    const criticalErrors = events.filter(
-      (event) => event.severity === "critical",
-    ).length;
-    const controlResets = events.filter(
-      (event) => event.type === "reset" || event.type === "incident",
-    ).length;
-    const safety = clamp(100 - criticalErrors * 25, 0, 100);
-    const ruleUse = clamp(Math.round(total), 0, 100);
-    const vehicleControl = clamp(
-      100 - controlResets * 6 - criticalErrors * 4,
-      0,
-      100,
-    );
-    const weightedTotal = Math.round(
-      safety * SCORING_CONFIG.weights.safety +
-        ruleUse * SCORING_CONFIG.weights.ruleUse +
-        vehicleControl * SCORING_CONFIG.weights.vehicleControl,
-    );
+  const finishDrive = (simulationScore: SimulationScoreSnapshot) => {
     const completedAt = new Date();
     const score: LessonScore = {
       lessonId: activeLesson.id,
-      total: weightedTotal,
-      safety,
-      ruleUse,
-      vehicleControl,
-      criticalErrors,
-      mastered:
-        weightedTotal >= SCORING_CONFIG.masteryThreshold && criticalErrors === 0,
+      total: simulationScore.total,
+      safety: simulationScore.safety,
+      ruleUse: simulationScore.ruleUse,
+      vehicleControl: simulationScore.vehicleControl,
+      criticalErrors: simulationScore.criticalErrors,
+      mastered: simulationScore.mastered,
       completedAt: completedAt.toISOString(),
       durationMs: Math.max(0, completedAt.getTime() - startedAt),
     };

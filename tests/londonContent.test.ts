@@ -41,12 +41,16 @@ describe("London flagship content", () => {
     const graph = LONDON_MAP_PACK.laneGraph;
     const lanes = new Map(graph.lanes.map((lane) => [lane.id, lane]));
     const conflicts = new Set(graph.conflictZones.map((zone) => zone.id));
+    const roadSurfaces = new Map(
+      LONDON_MAP_PACK.geometry.roadSurfaces.map((surface) => [surface.id, surface]),
+    );
     const references = new Set(
       LONDON_RULE_REFERENCES.map((reference) => reference.id),
     );
 
     for (const lane of graph.lanes) {
       expect(lane.trafficSide, lane.id).toBe("left");
+      expect(roadSurfaces.get(lane.roadId)?.laneIds).toContain(lane.id);
       for (const successorId of lane.successors) {
         const successor = lanes.get(successorId);
         expect(successor, `${lane.id} → ${successorId}`).toBeDefined();
@@ -71,17 +75,25 @@ describe("London flagship content", () => {
           true,
         );
       }
+      expect(control.installations.length, control.id).toBeGreaterThan(0);
+      for (const controlApproach of control.approaches) {
+        expect(lanes.has(controlApproach.stopLine.laneId)).toBe(true);
+      }
     }
 
     for (const checkpoint of graph.checkpoints) {
       expect(
-        lanes.has(checkpoint.laneId),
-        `${checkpoint.id} → ${checkpoint.laneId}`,
+        lanes.has(checkpoint.anchor.laneId),
+        `${checkpoint.id} → ${checkpoint.anchor.laneId}`,
       ).toBe(true);
     }
 
     for (const spawn of graph.spawnPoints) {
-      if (spawn.laneId) {
+      if (spawn.kind === "player" || spawn.kind === "vehicle") {
+        expect(lanes.has(spawn.anchor.laneId), `${spawn.id} → ${spawn.anchor.laneId}`).toBe(
+          true,
+        );
+      } else if ("pose" in spawn && spawn.laneId) {
         expect(lanes.has(spawn.laneId), `${spawn.id} → ${spawn.laneId}`).toBe(
           true,
         );
@@ -116,6 +128,13 @@ describe("London flagship content", () => {
       expect(lesson.countryId).toBe("uk");
       expect(lesson.mapId).toBe(LONDON_MAP_PACK.id);
       expect(lesson.scenarioClock).toEqual(LONDON_SCENARIO_CLOCK);
+      const start = LONDON_MAP_PACK.laneGraph.spawnPoints.find(
+        (spawn) => spawn.id === lesson.startSpawnId,
+      );
+      expect(start?.kind).toBe("player");
+      if (start?.kind === "player") {
+        expect(start.anchor.laneId).toBe(lesson.route[0]);
+      }
 
       for (let index = 0; index < lesson.route.length; index += 1) {
         const lane = lanes.get(lesson.route[index]);
@@ -167,7 +186,31 @@ describe("London flagship content", () => {
       destinationId: "uk-london",
       mapId: "london-south-kensington",
       unlockAfter: "uk-london-left-side-basics",
+      startSpawnId: "london-player",
       scenarioClock: LONDON_SCENARIO_CLOCK,
     });
+  });
+
+  it("uses the requested safe London start anchors", () => {
+    const quietStart = LONDON_MAP_PACK.laneGraph.spawnPoints.find(
+      (spawn) => spawn.id === "london-player",
+    );
+    const queenGateStart = LONDON_MAP_PACK.laneGraph.spawnPoints.find(
+      (spawn) => spawn.id === "london-player-queen-gate",
+    );
+    expect(quietStart?.kind).toBe("player");
+    expect(queenGateStart?.kind).toBe("player");
+    if (quietStart?.kind === "player") {
+      expect(quietStart.anchor).toEqual({
+        laneId: "london-local-west",
+        distanceAlongM: 14,
+      });
+    }
+    if (queenGateStart?.kind === "player") {
+      expect(queenGateStart.anchor).toEqual({
+        laneId: "london-queen-gate-north-1",
+        distanceAlongM: 12,
+      });
+    }
   });
 });

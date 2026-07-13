@@ -4,11 +4,21 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LESSONS } from "../app/game/content";
+import type { SimulationScoreSnapshot } from "../app/game/simulation";
 import {
   PROGRESS_STORAGE_KEY,
   createDefaultProgress,
 } from "../app/game/progress";
 import SideSwapApp from "../app/SideSwapApp";
+
+const MOCK_CORE_SCORE: SimulationScoreSnapshot = {
+  safety: 73.5,
+  ruleUse: 42.25,
+  vehicleControl: 91.75,
+  total: 63.4,
+  criticalErrors: 2,
+  mastered: false,
+};
 
 vi.mock("next/dynamic", () => ({
   default: () =>
@@ -17,12 +27,12 @@ vi.mock("next/dynamic", () => ({
       onComplete,
     }: {
       lesson?: { readonly id: string; readonly title: string };
-      onComplete?: (score: number) => void;
+      onComplete?: (score: SimulationScoreSnapshot) => void;
     }) {
       return (
         <section aria-label="Mock driving scene" data-scenario={lesson?.id}>
           <span>{lesson?.title}</span>
-          <button type="button" onClick={() => onComplete?.(94)}>
+          <button type="button" onClick={() => onComplete?.(MOCK_CORE_SCORE)}>
             Finish mock drive
           </button>
         </section>
@@ -306,6 +316,37 @@ describe("game-first launcher", () => {
       "data-scenario",
       "us-signals-crosswalks",
     );
+  });
+
+  it("persists the authoritative simulation score without reconstructing or weighting it again", async () => {
+    const progress = {
+      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
+      familiarSideConfirmed: true,
+      familiarTrafficSide: "right" as const,
+      lastCountryId: "us" as const,
+      lastDestinationId: "us-nyc" as const,
+      completedLessonIds: ["orientation-right" as const],
+    };
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+
+    render(<SideSwapApp />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Start The Manhattan Grid/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Finish mock drive" }));
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.lessonScores["us-one-way-grid"]).toMatchObject({
+      lessonId: "us-one-way-grid",
+      total: MOCK_CORE_SCORE.total,
+      safety: MOCK_CORE_SCORE.safety,
+      ruleUse: MOCK_CORE_SCORE.ruleUse,
+      vehicleControl: MOCK_CORE_SCORE.vehicleControl,
+      criticalErrors: MOCK_CORE_SCORE.criticalErrors,
+      mastered: MOCK_CORE_SCORE.mastered,
+    });
   });
 
   it("lets a controller player launch a returning drive without choosing an input type", () => {

@@ -172,14 +172,41 @@ export interface LaneNode {
   readonly position: WorldPoint;
 }
 
+/** A stable location measured along a directed legal lane. */
+export interface LaneAnchor {
+  readonly laneId: string;
+  readonly distanceAlongM: number;
+}
+
+export type RoadSurfaceMarking =
+  | "none"
+  | "center_line"
+  | "lane_divider"
+  | "roundabout"
+  | "shared_space"
+  | "terminal";
+
+/** Visual carriageway geometry kept separate from legal lane centrelines. */
+export interface RoadSurface {
+  readonly id: string;
+  readonly centerline: readonly WorldPoint[];
+  readonly widthM: number;
+  readonly laneIds: readonly string[];
+  readonly marking: RoadSurfaceMarking;
+}
+
 export interface LaneSegment {
   readonly id: string;
+  readonly roadId: string;
+  readonly widthM: number;
   readonly from: string;
   readonly to: string;
   readonly centerline: readonly WorldPoint[];
   readonly role: LaneRole;
   readonly trafficSide: TrafficSide;
   readonly speedLimit: number;
+  /** Unit used by this lane's authored speed limit when it differs from the launch profile. */
+  readonly localSpeedUnit?: SpeedUnit;
   readonly successors: readonly string[];
   readonly adjacentLaneIds?: readonly string[];
 }
@@ -224,6 +251,49 @@ export interface TrafficControl {
   readonly headingDeg: number;
   readonly laneIds: readonly string[];
   readonly conflictZoneIds?: readonly string[];
+  readonly approaches: readonly TrafficControlApproach[];
+  readonly installations: readonly TrafficControlInstallation[];
+}
+
+export interface TrafficControlApproach {
+  readonly id: string;
+  readonly laneIds: readonly string[];
+  readonly stopLine: LaneAnchor;
+  readonly conflictZoneIds?: readonly string[];
+  readonly phaseGroup: string;
+}
+
+export type TrafficControlMounting =
+  | "roadside_pole"
+  | "mast_arm"
+  | "secondary_pole"
+  | "railway_crossing"
+  | "road_marking"
+  | "terminal_portal";
+
+export type TrafficControlVisualStyle =
+  | "nyc_signal"
+  | "uk_signal"
+  | "stop_sign"
+  | "yield_sign"
+  | "restricted_lane"
+  | "crosswalk"
+  | "box_junction"
+  | "japan_railway"
+  | "side_swap_gate";
+
+export interface TrafficControlInstallation {
+  readonly id: string;
+  readonly position: WorldPoint;
+  /** Direction of travel for the approach this head faces. */
+  readonly headingDeg: number;
+  /** Direction from a curbside support toward an over-road mast head. */
+  readonly armHeadingDeg?: number;
+  readonly mounting: TrafficControlMounting;
+  readonly style: TrafficControlVisualStyle;
+  readonly role: "primary" | "secondary" | "companion" | "warning" | "marking";
+  /** Signal approaches whose phase this physical head displays. */
+  readonly approachIds?: readonly string[];
 }
 
 export interface ConflictZone {
@@ -232,18 +302,25 @@ export interface ConflictZone {
   readonly polygon: readonly WorldPoint[];
 }
 
-export interface MapSpawnPoint {
+export interface AnchoredMapSpawnPoint {
   readonly id: string;
-  readonly kind: "player" | "vehicle" | "pedestrian" | "cyclist";
+  readonly kind: "player" | "vehicle";
+  readonly anchor: LaneAnchor;
+}
+
+export interface FreeMapSpawnPoint {
+  readonly id: string;
+  readonly kind: "pedestrian" | "cyclist";
   readonly pose: WorldPose;
   readonly laneId?: string;
 }
 
+export type MapSpawnPoint = AnchoredMapSpawnPoint | FreeMapSpawnPoint;
+
 export interface MapCheckpoint {
   readonly id: string;
   readonly label: string;
-  readonly pose: WorldPose;
-  readonly laneId: string;
+  readonly anchor: LaneAnchor;
 }
 
 export interface LaneGraph {
@@ -295,6 +372,7 @@ export interface ProceduralMapGeometry {
   readonly worldSize: WorldPoint;
   readonly roadWidth: number;
   readonly shoulderWidth: number;
+  readonly roadSurfaces: readonly RoadSurface[];
   readonly blocks: readonly ProceduralBlock[];
   readonly landmarks: readonly ProceduralLandmark[];
 }
@@ -351,6 +429,7 @@ export interface LessonDefinition {
   readonly trafficSide: TrafficSide;
   readonly difficulty: 1 | 2 | 3 | 4;
   readonly estimatedMinutes: readonly [number, number];
+  readonly startSpawnId: string;
   readonly route: readonly string[];
   readonly objectives: readonly LessonObjective[];
   readonly trafficSeed: number;
@@ -377,6 +456,7 @@ export interface FreeDriveDefinition {
   readonly title: string;
   readonly description: string;
   readonly unlockAfter: LessonId;
+  readonly startSpawnId: string;
   readonly trafficSeed: number;
   readonly scenarioClock?: ScenarioClock;
 }

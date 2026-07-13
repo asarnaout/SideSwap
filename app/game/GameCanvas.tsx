@@ -32,7 +32,19 @@ import {
   distanceToPolygon,
   isPointInPolygon,
   isRestrictionWindowActive,
+  SimulationCore,
+  type SimulationInput,
+  type SimulationRuleEvent,
+  type SimulationScoreSnapshot,
+  type SimulationSnapshot,
 } from "./simulation";
+import { buildSimulationCoreConfig } from "./simulationAdapter";
+import {
+  authoredSignalAspectAt,
+  authoredSignalRequiresStop,
+  type AuthoredSignalAspect,
+  type AuthoredSignalStyle,
+} from "./trafficSignals";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -121,7 +133,7 @@ export interface GameRuntimeEvent {
   message: string;
   severity?: "info" | "warning" | "critical";
   timestamp: number;
-  ruleCode?: "box_junction" | "restricted_lane";
+  ruleCode?: string;
   penalty?: number;
   evidence?: Readonly<Record<string, string | number | boolean>>;
 }
@@ -132,6 +144,7 @@ export interface GameCanvasLesson {
   readonly title: string;
   readonly kind: "orientation" | "guided" | "transition" | "free_drive";
   readonly trafficSide: TrafficSide;
+  readonly startSpawnId?: string;
   readonly route: readonly string[];
   readonly objectives: readonly {
     readonly id: string;
@@ -175,11 +188,15 @@ export interface GameCanvasPoint {
 
 export interface GameCanvasLane {
   readonly id: string;
+  readonly roadId?: string;
+  readonly widthM?: number;
   readonly centerline: readonly GameCanvasPoint[];
   readonly role?: string;
   readonly trafficSide?: TrafficSide;
   readonly speedLimit?: number;
+  readonly localSpeedUnit?: "mph" | "kmh" | "km/h";
   readonly successors?: readonly string[];
+  readonly adjacentLaneIds?: readonly string[];
 }
 
 /** Structural map contract; existing MapPack objects can be passed directly. */
@@ -191,6 +208,19 @@ export interface GameCanvasMapPack {
     worldSize: GameCanvasPoint;
     roadWidth: number;
     shoulderWidth?: number;
+    roadSurfaces?: readonly {
+      readonly id: string;
+      readonly centerline: readonly GameCanvasPoint[];
+      readonly widthM: number;
+      readonly laneIds: readonly string[];
+      readonly marking:
+        | "none"
+        | "center_line"
+        | "lane_divider"
+        | "roundabout"
+        | "shared_space"
+        | "terminal";
+    }[];
     blocks: readonly {
       readonly id: string;
       readonly center: GameCanvasPoint;
@@ -216,6 +246,41 @@ export interface GameCanvasMapPack {
       readonly headingDeg: number;
       readonly laneIds: readonly string[];
       readonly conflictZoneIds?: readonly string[];
+      readonly approaches?: readonly {
+        readonly id: string;
+        readonly laneIds: readonly string[];
+        readonly stopLine: {
+          readonly laneId: string;
+          readonly distanceAlongM: number;
+        };
+        readonly conflictZoneIds?: readonly string[];
+        readonly phaseGroup: string;
+      }[];
+      readonly installations?: readonly {
+        readonly id: string;
+        readonly position: GameCanvasPoint;
+        readonly headingDeg: number;
+        readonly armHeadingDeg?: number;
+        readonly mounting:
+          | "roadside_pole"
+          | "mast_arm"
+          | "secondary_pole"
+          | "railway_crossing"
+          | "road_marking"
+          | "terminal_portal";
+        readonly style:
+          | "nyc_signal"
+          | "uk_signal"
+          | "stop_sign"
+          | "yield_sign"
+          | "restricted_lane"
+          | "crosswalk"
+          | "box_junction"
+          | "japan_railway"
+          | "side_swap_gate";
+        readonly role: "primary" | "secondary" | "companion" | "warning" | "marking";
+        readonly approachIds?: readonly string[];
+      }[];
     }[];
     conflictZones: readonly {
       readonly id: string;
@@ -242,26 +307,62 @@ export interface GameCanvasMapPack {
       readonly sourceReferenceId: string;
       readonly message: string;
     }[];
-    spawnPoints: readonly {
+    spawnPoints: readonly (
+      | {
+          readonly id: string;
+          readonly kind: "player" | "vehicle";
+          readonly anchor: {
+            readonly laneId: string;
+            readonly distanceAlongM: number;
+          };
+          /** Legacy map compatibility during the v1 map migration. */
+          readonly pose?: {
+            readonly position: GameCanvasPoint;
+            readonly headingDeg: number;
+          };
+          readonly laneId?: string;
+        }
+      | {
+          readonly id: string;
+          readonly kind: "pedestrian" | "cyclist";
+          readonly pose: {
+            readonly position: GameCanvasPoint;
+            readonly headingDeg: number;
+          };
+          readonly laneId?: string;
+          readonly anchor?: never;
+        }
+      | {
+          readonly id: string;
+          readonly kind: "player" | "vehicle";
+          readonly pose: {
+            readonly position: GameCanvasPoint;
+            readonly headingDeg: number;
+          };
+          readonly laneId?: string;
+          readonly anchor?: never;
+        }
+    )[];
+    checkpoints: readonly {
       readonly id: string;
-      readonly kind: "player" | "vehicle" | "pedestrian" | "cyclist";
-      readonly pose: {
+      readonly label: string;
+      readonly anchor?: {
+        readonly laneId: string;
+        readonly distanceAlongM: number;
+      };
+      readonly pose?: {
         readonly position: GameCanvasPoint;
         readonly headingDeg: number;
       };
       readonly laneId?: string;
     }[];
-    checkpoints: readonly {
-      readonly id: string;
-      readonly label: string;
-      readonly pose: {
-        readonly position: GameCanvasPoint;
-        readonly headingDeg: number;
-      };
-      readonly laneId: string;
-    }[];
   }>;
 }
+
+type GameCanvasTrafficControl = GameCanvasMapPack["laneGraph"]["controls"][number];
+type GameCanvasTrafficControlApproach = NonNullable<
+  GameCanvasTrafficControl["approaches"]
+>[number];
 
 export interface GameCanvasProps {
   trafficSide: TrafficSide;
@@ -289,7 +390,7 @@ export interface GameCanvasProps {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
-  onComplete?: (score: number) => void;
+  onComplete?: (score: SimulationScoreSnapshot) => void;
 }
 
 export interface GameCanvasHandle {
@@ -308,7 +409,7 @@ interface SessionCallbacks {
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
   onInputPresentationChange?: (presentation: AdaptiveInputPresentation) => void;
-  onComplete?: (score: number) => void;
+  onComplete?: (score: SimulationScoreSnapshot) => void;
   onReady?: () => void;
   onContextLost?: () => void;
   onContextRestored?: () => void;
@@ -351,8 +452,23 @@ interface PlayerState {
   indicator: TurnIndicator;
 }
 
+interface NpcPathSegment {
+  readonly laneId: string;
+  readonly start: GameCanvasPoint;
+  readonly end: GameCanvasPoint;
+  readonly length: number;
+}
+
+interface NpcRenderSnapshot {
+  readonly x: number;
+  readonly z: number;
+  readonly heading: number;
+  readonly active: boolean;
+}
+
 interface NpcVehicle {
   node: TransformNode;
+  simulationId?: string;
   direction: 1 | -1;
   speed: number;
   z: number;
@@ -361,6 +477,14 @@ interface NpcVehicle {
   path?: readonly GameCanvasPoint[];
   pathSegment?: number;
   pathDistance?: number;
+  pathSegments?: readonly NpcPathSegment[];
+  active?: boolean;
+  loop?: boolean;
+  currentSpeed?: number;
+  respawnAfterSeconds?: number;
+  spawnIndex?: number;
+  spawnPathSegment?: number;
+  spawnPathDistance?: number;
 }
 
 interface Pedestrian {
@@ -382,6 +506,35 @@ interface AuthoredCheckpoint {
   readonly heading: number;
 }
 
+interface TrafficControlMaterials {
+  readonly dark: StandardMaterial;
+  readonly pale: StandardMaterial;
+  readonly redLamp: StandardMaterial;
+  readonly amberLamp: StandardMaterial;
+  readonly greenLamp: StandardMaterial;
+  readonly stopRed: StandardMaterial;
+  readonly yieldGold: StandardMaterial;
+  readonly warningYellow: StandardMaterial;
+  readonly restrictedBlue: StandardMaterial;
+}
+
+interface AuthoredSignalHeadVisual {
+  readonly controlId: string;
+  readonly trafficLightIds: readonly string[];
+  readonly phaseGroup: string;
+  readonly phaseGroups: readonly string[];
+  readonly style: AuthoredSignalStyle;
+  readonly redMaterial: StandardMaterial;
+  readonly amberMaterial: StandardMaterial;
+  readonly greenMaterial: StandardMaterial;
+}
+
+interface RailwayCrossingVisual {
+  readonly trafficLightIds: readonly string[];
+  readonly lampMaterials: readonly StandardMaterial[];
+  readonly barrierPivot: TransformNode;
+}
+
 interface RouteProjection {
   readonly segmentIndex: number;
   readonly x: number;
@@ -397,12 +550,9 @@ interface ScenarioLaneProjection extends RouteProjection {
 }
 
 const FIXED_STEP = 1 / 60;
-const TRAFFIC_STEP = 1 / 10;
 const START_Z = -52;
 const FINISH_Z = 72;
 const LANE_CENTER = 2.75;
-const MAX_FORWARD_SPEED = 18;
-const MAX_REVERSE_SPEED = 6;
 
 export const INPUT_PROMPT_SWITCH_COOLDOWN_MS = 750;
 export const TOUCH_CONTROL_DIM_DELAY_MS = 1_500;
@@ -775,40 +925,38 @@ function scenarioRoutePoints(
   return points;
 }
 
-function scenarioStartPose(
-  lesson: GameCanvasLesson | undefined,
-  mapPack: GameCanvasMapPack | undefined,
-  trafficSide: TrafficSide,
-): { x: number; z: number; heading: number } {
-  if (lesson && mapPack) {
-    const firstLaneId = lesson.route[0];
-    const spawn =
-      mapPack.laneGraph.spawnPoints.find(
-        (point) => point.kind === "player" && point.laneId === firstLaneId,
-      ) ?? mapPack.laneGraph.spawnPoints.find((point) => point.kind === "player");
-    if (spawn) {
+interface ResolvedLaneAnchor extends GameCanvasPoint {
+  readonly heading: number;
+  readonly segmentIndex: number;
+  readonly distanceOnSegment: number;
+}
+
+function resolveLaneAnchor(
+  lanes: readonly GameCanvasLane[],
+  anchor: { readonly laneId: string; readonly distanceAlongM: number },
+): ResolvedLaneAnchor | null {
+  const lane = lanes.find((candidate) => candidate.id === anchor.laneId);
+  if (!lane || lane.centerline.length < 2) return null;
+  let remaining = Math.max(0, anchor.distanceAlongM);
+  for (let index = 0; index < lane.centerline.length - 1; index += 1) {
+    const start = lane.centerline[index];
+    const end = lane.centerline[index + 1];
+    const length = Math.hypot(end.x - start.x, end.z - start.z);
+    if (length < 0.001) continue;
+    if (remaining <= length || index === lane.centerline.length - 2) {
+      const distanceOnSegment = Math.min(remaining, length);
+      const amount = distanceOnSegment / length;
       return {
-        x: spawn.pose.position.x,
-        z: spawn.pose.position.z,
-        heading: degreesToRadians(spawn.pose.headingDeg),
+        x: start.x + (end.x - start.x) * amount,
+        z: start.z + (end.z - start.z) * amount,
+        heading: Math.atan2(end.x - start.x, end.z - start.z),
+        segmentIndex: index,
+        distanceOnSegment,
       };
     }
-    const lane = mapPack.laneGraph.lanes.find((candidate) => candidate.id === firstLaneId);
-    if (lane?.centerline.length) {
-      const first = lane.centerline[0];
-      const next = lane.centerline[1] ?? { x: first.x, z: first.z + 1 };
-      return {
-        x: first.x,
-        z: first.z,
-        heading: Math.atan2(next.x - first.x, next.z - first.z),
-      };
-    }
+    remaining -= length;
   }
-  return {
-    x: trafficSide === "right" ? LANE_CENTER : -LANE_CENTER,
-    z: START_Z,
-    heading: 0,
-  };
+  return null;
 }
 
 function scenarioCheckpoints(
@@ -821,7 +969,20 @@ function scenarioCheckpoints(
   );
   return lesson.checkpoints.flatMap((id) => {
     const checkpoint = byId.get(id);
-    return checkpoint
+    if (!checkpoint) return [];
+    const anchored = checkpoint.anchor
+      ? resolveLaneAnchor(mapPack.laneGraph.lanes, checkpoint.anchor)
+      : null;
+    if (anchored) {
+      return [{
+        id: checkpoint.id,
+        label: checkpoint.label,
+        x: anchored.x,
+        z: anchored.z,
+        heading: anchored.heading,
+      }];
+    }
+    return checkpoint.pose
       ? [{
           id: checkpoint.id,
           label: checkpoint.label,
@@ -949,12 +1110,17 @@ class BabylonGameSession {
   private readonly thirdCamera: ArcRotateCamera;
   private readonly firstCamera: UniversalCamera;
   private readonly rearCamera: UniversalCamera;
+  private readonly simulation: SimulationCore;
+  private simulationSnapshot: SimulationSnapshot;
   private readonly leftIndicatorMeshes: Mesh[] = [];
   private readonly rightIndicatorMeshes: Mesh[] = [];
   private readonly npcVehicles: NpcVehicle[] = [];
   private readonly pedestrians: Pedestrian[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
+  private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
+  private readonly authoredSignalHeads: AuthoredSignalHeadVisual[] = [];
+  private readonly railwayCrossingVisuals: RailwayCrossingVisual[] = [];
   private readonly disposers: Array<() => void> = [];
   private callbacks: SessionCallbacks;
   private options: SessionOptions;
@@ -1004,6 +1170,8 @@ class BabylonGameSession {
   private displayedZ = START_Z;
   private displayedHeading = 0;
   private cameraMotionSeconds = 0;
+  private lastSimulationHonkActive = false;
+  private lastSimulationCoachMessage: string | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -1029,7 +1197,18 @@ class BabylonGameSession {
         this.routePoints[index + 1].z - this.routePoints[index].z,
       );
     }
-    const start = scenarioStartPose(options.lesson, options.mapPack, this.activeTrafficSide);
+    this.simulation = new SimulationCore(
+      buildSimulationCoreConfig({
+        lesson: options.lesson,
+        mapPack: options.mapPack,
+        trafficSide: this.activeTrafficSide,
+        speedUnit: options.speedUnit,
+        touchFirst: options.inputCapabilities.touchFirst,
+      }),
+    );
+    if (options.paused) this.simulation.setPaused(true);
+    this.simulationSnapshot = this.simulation.getSnapshot();
+    const start = this.simulationSnapshot.player;
     this.playerState = {
       x: start.x,
       z: start.z,
@@ -1089,6 +1268,7 @@ class BabylonGameSession {
     this.buildEnvironment();
     this.buildPlayerCar();
     this.buildTraffic();
+    this.applySimulationNpcSnapshots(this.simulationSnapshot);
 
     this.thirdCamera = new ArcRotateCamera(
       "third-person-camera",
@@ -1177,6 +1357,14 @@ class BabylonGameSession {
   setPaused(paused: boolean, notify = true) {
     if (this.paused === paused) return;
     this.paused = paused;
+    if (paused) {
+      this.simulation.setPaused(true);
+    } else if (this.simulation.getSnapshot().status === "incident") {
+      this.simulation.resumeAfterIncident();
+    } else {
+      this.simulation.setPaused(false);
+    }
+    this.applySimulationSnapshot(this.simulation.getSnapshot());
     this.clearHeldInputs();
     if (notify) this.callbacks.onPauseChange?.(paused);
     this.publishHud(true);
@@ -1219,12 +1407,14 @@ class BabylonGameSession {
   }
 
   setGear(gear: DriveGear) {
-    if (this.playerState.speedMps > 0.25) {
-      this.coach("Come to a complete stop before changing between Drive and Reverse.");
+    const selected = this.simulation.selectGear(gear === "D" ? "drive" : "reverse");
+    const snapshot = this.simulation.getSnapshot();
+    this.applySimulationSnapshot(snapshot);
+    if (!selected) {
+      this.publishSimulationCoachMessage(snapshot);
+      this.publishHud(true);
       return;
     }
-    if (this.playerState.gear === gear) return;
-    this.playerState.gear = gear;
     this.emit("gear", gear === "D" ? "Drive selected." : "Reverse selected.");
     this.publishHud(true);
   }
@@ -1234,8 +1424,15 @@ class BabylonGameSession {
   }
 
   setIndicator(indicator: TurnIndicator) {
-    this.playerState.indicator =
-      this.playerState.indicator === indicator ? "off" : indicator;
+    const action: SimulationInput =
+      indicator === "left"
+        ? { signalLeft: true }
+        : indicator === "right"
+          ? { signalRight: true }
+          : { cancelSignal: true };
+    this.simulation.step(0, action);
+    this.simulationSnapshot = this.simulation.step(0, {});
+    this.applySimulationSnapshot(this.simulationSnapshot);
     this.indicatorBlinkSeconds = 0;
     this.emit(
       "indicator",
@@ -1250,31 +1447,32 @@ class BabylonGameSession {
     const now = eventNow();
     if (now < this.hornUntil - 80) return;
     this.hornUntil = now + 650;
+    this.simulation.step(0, { horn: true });
+    this.simulationSnapshot = this.simulation.step(0, {});
+    this.applySimulationSnapshot(this.simulationSnapshot);
     this.playHornTone();
     this.emit("horn", "Horn sounded.");
     this.publishHud(true);
   }
 
   reset(incidentMessage?: string) {
-    this.playerState.x = this.checkpoint.x;
-    this.playerState.z = this.checkpoint.z;
-    this.playerState.previousX = this.checkpoint.x;
-    this.playerState.previousZ = this.checkpoint.z;
-    this.playerState.heading = this.checkpoint.heading;
-    this.playerState.speedMps = 0;
-    this.playerState.gear = "D";
-    this.wrongSideSeconds = 0;
-    this.offRoadSeconds = 0;
-    this.restrictedLaneSeconds.clear();
-    this.collisionGraceUntil = eventNow() + 1_800;
+    if (incidentMessage) {
+      this.simulation.reportExternalCollision(
+        incidentMessage,
+        "Review the incident, then continue from the safe checkpoint.",
+        { source: "legacy-runtime-bridge" },
+      );
+    } else {
+      this.simulation.resetToCheckpoint();
+    }
+    this.applySimulationSnapshot(this.simulation.getSnapshot());
+    this.processSimulationEvents(this.simulation.drainEvents());
     this.clearHeldInputs();
     this.displayedX = this.playerState.x;
     this.displayedZ = this.playerState.z;
     this.displayedHeading = this.playerState.heading;
     if (incidentMessage) {
-      this.score = Math.max(0, this.score - 12);
       this.instruction = incidentMessage;
-      this.emit("incident", incidentMessage, "critical");
       this.setPaused(true);
     } else {
       this.instruction = "Reset to the last safe checkpoint.";
@@ -1287,6 +1485,7 @@ class BabylonGameSession {
     if (this.disposed) return;
     this.disposed = true;
     this.engine.stopRenderLoop(this.renderFrame);
+    this.simulation.dispose();
     this.inputRouter.dispose();
     this.clearHeldInputs();
     for (const dispose of this.disposers.splice(0)) dispose();
@@ -1307,7 +1506,7 @@ class BabylonGameSession {
 
     if (!this.paused) {
       this.accumulator = Math.min(this.accumulator + frameSeconds, FIXED_STEP * 6);
-      while (this.accumulator >= FIXED_STEP) {
+      while (this.accumulator >= FIXED_STEP && !this.paused) {
         this.fixedUpdate(FIXED_STEP);
         this.accumulator -= FIXED_STEP;
       }
@@ -1323,38 +1522,139 @@ class BabylonGameSession {
 
   private fixedUpdate(dt: number) {
     const input = this.mergedInput();
-    const state = this.playerState;
-    state.previousX = state.x;
-    state.previousZ = state.z;
     this.ruleElapsedSeconds += dt;
-
-    const throttle = input.throttle;
-    const brake = input.brake;
-    const maxSpeed = state.gear === "D" ? MAX_FORWARD_SPEED : MAX_REVERSE_SPEED;
-    const acceleration = throttle * (state.gear === "D" ? 6.5 : 4.2);
-    const braking = brake * 12;
-    const rollingResistance = state.speedMps > 0 ? 0.65 + state.speedMps * 0.035 : 0;
-    state.speedMps = clamp(
-      state.speedMps + (acceleration - braking - rollingResistance) * dt,
-      0,
-      maxSpeed,
-    );
-    const direction = state.gear === "D" ? 1 : -1;
-    const steeringAuthority = (0.38 + Math.min(state.speedMps, 12) * 0.025) *
-      this.options.steeringSensitivity;
-    if (state.speedMps > 0.08) {
-      state.heading += input.steer * steeringAuthority * direction * dt;
-    }
-    state.x += Math.sin(state.heading) * state.speedMps * direction * dt;
-    state.z += Math.cos(state.heading) * state.speedMps * direction * dt;
-
-    this.trafficAccumulator += dt;
-    if (this.trafficAccumulator >= TRAFFIC_STEP) {
-      this.updateTraffic(this.trafficAccumulator);
-      this.trafficAccumulator = 0;
-    }
+    const quickLookAngle =
+      Math.abs(input.quickLook) > 1.5 ? Math.PI : input.quickLook * 1.18;
+    const simulationInput: SimulationInput = {
+      throttle: input.throttle,
+      brake: input.brake,
+      steer: clamp(
+        input.steer * this.options.steeringSensitivity,
+        -1,
+        1,
+      ),
+      viewHeading: this.playerState.heading + quickLookAngle,
+    };
+    const snapshot = this.simulation.step(dt, simulationInput);
+    this.applySimulationSnapshot(snapshot);
+    const events = this.simulation.drainEvents();
+    this.processSimulationEvents(events);
+    if (events.length === 0) this.publishSimulationCoachMessage(snapshot);
     this.animatePedestrians(dt);
-    this.evaluateLesson(dt);
+    this.reportVulnerableRoadUserCollision();
+    this.evaluateAuthoredProgress();
+  }
+
+  private reportVulnerableRoadUserCollision() {
+    if (
+      this.simulationSnapshot.status !== "running" ||
+      this.playerState.speedMps < 0.25
+    ) {
+      return;
+    }
+    for (const roadUser of this.pedestrians) {
+      const safetyRadius = roadUser.kind === "cyclist" ? 1.9 : 1.55;
+      if (
+        Math.hypot(
+          this.playerState.x - roadUser.node.position.x,
+          this.playerState.z - roadUser.node.position.z,
+        ) >= safetyRadius
+      ) {
+        continue;
+      }
+      const cyclist = roadUser.kind === "cyclist";
+      const reported = this.simulation.reportExternalCollision(
+        cyclist
+          ? "Your vehicle collided with a cyclist."
+          : "Your vehicle entered an occupied pedestrian crossing.",
+        cyclist
+          ? "Leave more clearance and wait for a safe opportunity to pass."
+          : "Brake early and yield until the crossing is completely clear.",
+        {
+          roadUserType: cyclist ? "cyclist" : "pedestrian",
+          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+        },
+      );
+      if (!reported) return;
+      const snapshot = this.simulation.getSnapshot();
+      this.applySimulationSnapshot(snapshot);
+      this.processSimulationEvents(this.simulation.drainEvents());
+      return;
+    }
+  }
+
+  private evaluateAuthoredProgress() {
+    const lesson = this.options.lesson;
+    const mapPack = this.options.mapPack;
+    if (!lesson || !mapPack || this.routePoints.length < 2) {
+      this.completeFromSimulationIfNeeded();
+      return;
+    }
+    const state = this.playerState;
+    const routeProjection = this.projectToAuthoredRoute(state.x, state.z);
+    const roadProjection = this.projectToScenarioLanes(
+      state.x,
+      state.z,
+      mapPack.laneGraph.lanes,
+    );
+    const projectedLane = roadProjection
+      ? mapPack.laneGraph.lanes.find((lane) => lane.id === roadProjection.laneId)
+      : null;
+    const roadTolerance =
+      (projectedLane?.widthM ?? Math.min(3.5, mapPack.geometry.roadWidth * 0.45)) / 2 +
+      (mapPack.geometry.shoulderWidth ?? 1);
+
+    if (routeProjection && routeProjection.distance < roadTolerance * 1.4) {
+      this.routeSegment = Math.max(this.routeSegment, routeProjection.segmentIndex);
+      const candidateProgress =
+        this.routeLength > 0 ? routeProjection.distanceAlong / this.routeLength : 0;
+      if (candidateProgress <= this.routeProgress + 0.2) {
+        this.routeProgress = Math.max(
+          this.routeProgress,
+          clamp(candidateProgress, 0, 1),
+        );
+      }
+    }
+
+    this.advanceAuthoredCheckpoints(lesson, state);
+    for (const prompt of lesson.coachPrompts) {
+      if (
+        prompt.trigger.type === "route_progress" &&
+        this.routeProgress >= prompt.trigger.value &&
+        !this.triggeredPrompts.has(prompt.id)
+      ) {
+        this.triggeredPrompts.add(prompt.id);
+        this.coach(prompt.message);
+      }
+    }
+
+    if (lesson.kind === "free_drive") return;
+    const endpoint = this.routePoints[this.routePoints.length - 1];
+    const endpointReached = Math.hypot(state.x - endpoint.x, state.z - endpoint.z) <= 7;
+    const checkpointsComplete =
+      this.authoredCheckpoints.length === 0 ||
+      this.checkpointIndex >= this.authoredCheckpoints.length;
+    if (
+      this.simulationSnapshot.status !== "complete" &&
+      checkpointsComplete &&
+      (endpointReached || this.routeProgress >= 0.97)
+    ) {
+      this.simulation.completeLesson();
+      this.applySimulationSnapshot(this.simulation.getSnapshot());
+    }
+    this.completeFromSimulationIfNeeded();
+  }
+
+  private completeFromSimulationIfNeeded() {
+    if (this.completed || this.simulationSnapshot.status !== "complete") return;
+    this.completed = true;
+    this.routeProgress = 1;
+    this.instruction = this.options.lesson
+      ? `${this.options.lesson.title} complete — review your score and incident timeline.`
+      : "Orientation complete — safe positioning achieved.";
+    this.emit("complete", this.instruction);
+    this.callbacks.onComplete?.({ ...this.simulationSnapshot.score });
+    this.publishHud(true);
   }
 
   private mergedInput(): AnalogInput {
@@ -1415,9 +1715,18 @@ class BabylonGameSession {
 
     for (const npc of this.npcVehicles) {
       if (
+        npc.active !== false &&
         now >= this.collisionGraceUntil &&
         Math.hypot(state.x - npc.laneX, state.z - npc.z) < 2.35
       ) {
+        if (state.speedMps < 0.2 && (npc.currentSpeed ?? npc.speed) > 0.4) {
+          npc.active = false;
+          npc.respawnAfterSeconds = 3;
+          npc.currentSpeed = 0;
+          npc.node.setEnabled(false);
+          this.coach("Traffic recovered safely behind you. Continue when you are ready.");
+          continue;
+        }
         npc.z += npc.direction > 0 ? -22 : 22;
         this.reset("Collision detected. Leave a larger following gap and scan before moving.");
         return;
@@ -1458,7 +1767,7 @@ class BabylonGameSession {
       state.speedMps = 0;
       this.instruction = "Orientation complete — safe positioning achieved.";
       this.emit("complete", this.instruction);
-      this.callbacks.onComplete?.(Math.round(this.score));
+      this.callbacks.onComplete?.({ ...this.simulationSnapshot.score });
       this.publishHud(true);
     }
   }
@@ -1483,8 +1792,12 @@ class BabylonGameSession {
       ? this.wrongSideSeconds + dt
       : Math.max(0, this.wrongSideSeconds - dt * 2);
 
+    const projectedLane = roadProjection
+      ? mapPack.laneGraph.lanes.find((lane) => lane.id === roadProjection.laneId)
+      : null;
     const roadTolerance =
-      mapPack.geometry.roadWidth * 0.62 + (mapPack.geometry.shoulderWidth ?? 1);
+      (projectedLane?.widthM ?? Math.min(3.5, mapPack.geometry.roadWidth * 0.45)) / 2 +
+      (mapPack.geometry.shoulderWidth ?? 1);
     const offRoad = !roadProjection || roadProjection.distance > roadTolerance;
     this.offRoadSeconds = offRoad
       ? this.offRoadSeconds + dt
@@ -1507,13 +1820,21 @@ class BabylonGameSession {
     const now = eventNow();
     for (const npc of this.npcVehicles) {
       if (
+        npc.active !== false &&
         now >= this.collisionGraceUntil &&
         Math.hypot(
           state.x - npc.node.position.x,
           state.z - npc.node.position.z,
         ) < 2.35
       ) {
-        npc.pathDistance = (npc.pathDistance ?? 0) + 24;
+        if (state.speedMps < 0.2 && (npc.currentSpeed ?? npc.speed) > 0.4) {
+          npc.active = false;
+          npc.respawnAfterSeconds = 3;
+          npc.currentSpeed = 0;
+          npc.node.setEnabled(false);
+          this.coach("Traffic recovered safely behind you. Continue when you are ready.");
+          continue;
+        }
         this.reset("Collision detected. Leave a larger following gap and scan before moving.");
         return;
       }
@@ -1534,6 +1855,8 @@ class BabylonGameSession {
         return;
       }
     }
+
+    if (this.evaluateAuthoredSignalEntry(mapPack)) return;
 
     const displayLimit =
       roadProjection?.speedLimit ?? (this.options.speedUnit === "mph" ? 30 : 50);
@@ -1597,7 +1920,7 @@ class BabylonGameSession {
       this.routeProgress = 1;
       this.instruction = `${lesson.title} complete — review your score and incident timeline.`;
       this.emit("complete", this.instruction);
-      this.callbacks.onComplete?.(Math.round(this.score));
+      this.callbacks.onComplete?.({ ...this.simulationSnapshot.score });
       this.publishHud(true);
     }
   }
@@ -1697,6 +2020,65 @@ class BabylonGameSession {
     }
   }
 
+  private authoredSignalAspect(
+    control: GameCanvasTrafficControl,
+    approach: GameCanvasTrafficControlApproach,
+  ): AuthoredSignalAspect {
+    const signalInstallation = (control.installations ?? []).find(
+      (installation) =>
+        (installation.style === "nyc_signal" || installation.style === "uk_signal") &&
+        installation.approachIds?.includes(approach.id),
+    );
+    const style: AuthoredSignalStyle =
+      signalInstallation?.style === "uk_signal" ||
+      this.options.mapPack?.id.includes("london")
+        ? "uk_signal"
+        : "nyc_signal";
+    return authoredSignalAspectAt({
+      elapsedSeconds: this.trafficLightSeconds,
+      controlId: control.id,
+      phaseGroup: approach.phaseGroup,
+      phaseGroups: (control.approaches ?? []).map((candidate) => candidate.phaseGroup),
+      style,
+    });
+  }
+
+  private evaluateAuthoredSignalEntry(mapPack: GameCanvasMapPack): boolean {
+    const state = this.playerState;
+    if (state.gear !== "D" || state.speedMps < 0.25) return false;
+    for (const control of mapPack.laneGraph.controls) {
+      if (control.type !== "signal") continue;
+      for (const approach of control.approaches ?? []) {
+        const lane = mapPack.laneGraph.lanes.find(
+          (candidate) => candidate.id === approach.stopLine.laneId,
+        );
+        if (!lane) continue;
+        const previous = this.projectToScenarioLanes(
+          state.previousX,
+          state.previousZ,
+          [lane],
+        );
+        const current = this.projectToScenarioLanes(state.x, state.z, [lane]);
+        const laneTolerance = (lane.widthM ?? 3.2) / 2 + 0.7;
+        const stopDistance = approach.stopLine.distanceAlongM;
+        const crossedStopLine =
+          Boolean(previous && current) &&
+          previous!.distance <= laneTolerance &&
+          current!.distance <= laneTolerance &&
+          previous!.distanceAlong < stopDistance - 0.08 &&
+          current!.distanceAlong >= stopDistance - 0.08;
+        if (!crossedStopLine) continue;
+        const aspect = this.authoredSignalAspect(control, approach);
+        if (!authoredSignalRequiresStop(aspect)) continue;
+        this.reset(
+          "Red signal entered. Stop before the line and wait for your approach to turn green.",
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
   private findBlockingAuthoredExit(
     playerProjection: ScenarioLaneProjection,
     polygon: readonly GameCanvasPoint[],
@@ -1772,6 +2154,13 @@ class BabylonGameSession {
       const next = this.authoredCheckpoints[this.checkpointIndex];
       if (Math.hypot(state.x - next.x, state.z - next.z) > 6) break;
       this.checkpoint = { x: next.x, z: next.z, heading: next.heading };
+      this.simulation.setCheckpoint({
+        id: next.id,
+        x: next.x,
+        z: next.z,
+        heading: next.heading,
+        radius: 6,
+      });
       this.checkpointLabel = next.label;
       this.checkpointIndex += 1;
       this.emit("coaching", `Checkpoint: ${next.label}.`);
@@ -1789,10 +2178,6 @@ class BabylonGameSession {
         (item) => item.checkpointId === next.id,
       );
       if (transition) {
-        this.activeTrafficSide =
-          transition.toCountryId === "fr" || transition.toCountryId === "us"
-            ? "right"
-            : "left";
         this.instruction = transition.message;
         this.emit("coaching", transition.message, "warning");
       }
@@ -1882,10 +2267,381 @@ class BabylonGameSession {
     return difference;
   }
 
+  private buildConnectedNpcPath(
+    mapPack: GameCanvasMapPack,
+    startLaneId: string,
+    branchOffset: number,
+  ): { segments: NpcPathSegment[]; loop: boolean } {
+    const lanes = new Map(mapPack.laneGraph.lanes.map((lane) => [lane.id, lane]));
+    const segments: NpcPathSegment[] = [];
+    const visited = new Set<string>();
+    let laneId: string | undefined = startLaneId;
+    let loop = false;
+    for (let hop = 0; laneId && hop < 24; hop += 1) {
+      const lane = lanes.get(laneId);
+      if (!lane || lane.centerline.length < 2) break;
+      if (visited.has(lane.id)) {
+        const first = segments[0];
+        const last = segments.at(-1);
+        loop = Boolean(
+          first &&
+          last &&
+          Math.hypot(last.end.x - first.start.x, last.end.z - first.start.z) < 1.5,
+        );
+        break;
+      }
+      visited.add(lane.id);
+      for (let index = 0; index < lane.centerline.length - 1; index += 1) {
+        const start = lane.centerline[index];
+        const end = lane.centerline[index + 1];
+        const length = Math.hypot(end.x - start.x, end.z - start.z);
+        if (length > 0.01) segments.push({ laneId: lane.id, start, end, length });
+      }
+      const successors = lane.successors ?? [];
+      if (successors.length === 0) break;
+      const successorId = successors[(branchOffset + hop) % successors.length];
+      const successor = lanes.get(successorId);
+      const last = segments.at(-1);
+      const firstSuccessorPoint = successor?.centerline[0];
+      if (
+        !successor ||
+        !last ||
+        !firstSuccessorPoint ||
+        Math.hypot(last.end.x - firstSuccessorPoint.x, last.end.z - firstSuccessorPoint.z) > 2.5
+      ) {
+        break;
+      }
+      laneId = successorId;
+    }
+    return { segments, loop };
+  }
+
+  private isNpcPositionSafe(
+    npc: NpcVehicle,
+    x: number,
+    z: number,
+    heading: number,
+    requireHiddenGate: boolean,
+  ): boolean {
+    const playerDx = this.playerState.x - x;
+    const playerDz = this.playerState.z - z;
+    const playerDistance = Math.hypot(playerDx, playerDz);
+    const forwardX = Math.sin(heading);
+    const forwardZ = Math.cos(heading);
+    const longitudinal = playerDx * forwardX + playerDz * forwardZ;
+    const lateral = Math.abs(playerDx * forwardZ - playerDz * forwardX);
+    const speed = Math.max(0, npc.speed);
+    if (lateral < 12) {
+      if (longitudinal >= 0 && longitudinal < 20) return false;
+      if (longitudinal < 0 && -longitudinal < Math.max(30, speed * 3 + 6)) return false;
+    }
+    if (playerDistance < 18) return false;
+    if (requireHiddenGate) {
+      if (playerDistance < 70) return false;
+      const playerForwardX = Math.sin(this.playerState.heading);
+      const playerForwardZ = Math.cos(this.playerState.heading);
+      const gateFromPlayerX = x - this.playerState.x;
+      const gateFromPlayerZ = z - this.playerState.z;
+      if (gateFromPlayerX * playerForwardX + gateFromPlayerZ * playerForwardZ > 0) return false;
+    }
+    for (const other of this.npcVehicles) {
+      if (other === npc || other.active === false) continue;
+      const requiredGap = Math.max(10, Math.max(speed, other.currentSpeed ?? other.speed) * 1.8 + 4);
+      if (Math.hypot(other.laneX - x, other.z - z) < requiredGap) return false;
+    }
+    return true;
+  }
+
+  private tryActivateQueuedNpc(npc: NpcVehicle): boolean {
+    const segments = npc.pathSegments;
+    if (!segments?.length) return false;
+    const segmentIndex = Math.min(npc.spawnPathSegment ?? 0, segments.length - 1);
+    const segment = segments[segmentIndex];
+    const distance = clamp(npc.spawnPathDistance ?? 0, 0, segment.length);
+    const amount = distance / segment.length;
+    const x = segment.start.x + (segment.end.x - segment.start.x) * amount;
+    const z = segment.start.z + (segment.end.z - segment.start.z) * amount;
+    const heading = Math.atan2(
+      segment.end.x - segment.start.x,
+      segment.end.z - segment.start.z,
+    );
+    if (!this.isNpcPositionSafe(npc, x, z, heading, true)) return false;
+    npc.pathSegment = segmentIndex;
+    npc.pathDistance = distance;
+    npc.laneId = segment.laneId;
+    npc.laneX = x;
+    npc.z = z;
+    npc.currentSpeed = 0;
+    npc.active = true;
+    npc.respawnAfterSeconds = 0;
+    npc.node.setEnabled(true);
+    npc.node.position.set(x, 0.12, z);
+    npc.node.rotation.y = heading;
+    return true;
+  }
+
+  private npcTargetSpeed(npc: NpcVehicle, segment: NpcPathSegment): number {
+    let target = npc.speed;
+    const heading = Math.atan2(segment.end.x - segment.start.x, segment.end.z - segment.start.z);
+    const forwardX = Math.sin(heading);
+    const forwardZ = Math.cos(heading);
+    const desiredGap = 4 + Math.max(0, npc.currentSpeed ?? npc.speed) * 1.8;
+    const applyLead = (x: number, z: number, leadSpeed: number) => {
+      const dx = x - npc.laneX;
+      const dz = z - npc.z;
+      const ahead = dx * forwardX + dz * forwardZ;
+      const lateral = Math.abs(dx * forwardZ - dz * forwardX);
+      if (ahead <= 0 || lateral > 2.2) return;
+      if (ahead <= 3) target = 0;
+      else if (ahead < desiredGap) target = Math.min(target, Math.max(0, leadSpeed * (ahead / desiredGap)));
+    };
+    const playerLane = this.options.mapPack
+      ? this.projectToScenarioLanes(
+          this.playerState.x,
+          this.playerState.z,
+          this.options.mapPack.laneGraph.lanes,
+        )
+      : null;
+    if (playerLane?.laneId === segment.laneId) {
+      applyLead(this.playerState.x, this.playerState.z, this.playerState.speedMps);
+    }
+    for (const other of this.npcVehicles) {
+      if (other === npc || other.active === false || other.laneId !== segment.laneId) continue;
+      applyLead(other.laneX, other.z, other.currentSpeed ?? other.speed);
+    }
+    if (this.options.mapPack) {
+      for (const control of this.options.mapPack.laneGraph.controls) {
+        if (control.type !== "signal" && control.type !== "railway_signal") continue;
+        for (const approach of control.approaches ?? []) {
+          if (!approach.laneIds.includes(segment.laneId)) continue;
+          const mustStop =
+            control.type === "railway_signal"
+              ? this.trafficLightIsRed
+              : authoredSignalRequiresStop(
+                  this.authoredSignalAspect(control, approach),
+                  true,
+                );
+          if (!mustStop) continue;
+          const stop = resolveLaneAnchor(this.options.mapPack.laneGraph.lanes, approach.stopLine);
+          if (stop) applyLead(stop.x, stop.z, 0);
+        }
+      }
+    }
+    return target;
+  }
+
+  private computeNpcRenderSnapshots(dt: number): NpcRenderSnapshot[] {
+    const snapshots: NpcRenderSnapshot[] = [];
+    for (const npc of this.npcVehicles) {
+      if (npc.active === false) {
+        npc.respawnAfterSeconds = Math.max(0, (npc.respawnAfterSeconds ?? 0) - dt);
+        if ((npc.respawnAfterSeconds ?? 0) <= 0) this.tryActivateQueuedNpc(npc);
+      }
+      const segments = npc.pathSegments;
+      if (npc.active === false || !segments?.length) {
+        snapshots.push({ x: npc.laneX, z: npc.z, heading: npc.node.rotation.y, active: false });
+        continue;
+      }
+      let segmentIndex = npc.pathSegment ?? 0;
+      let segment = segments[segmentIndex];
+      const targetSpeed = this.npcTargetSpeed(npc, segment);
+      const currentSpeed = npc.currentSpeed ?? npc.speed;
+      const speedDelta = clamp(targetSpeed - currentSpeed, -5 * dt, 2.2 * dt);
+      npc.currentSpeed = Math.max(0, currentSpeed + speedDelta);
+      let distance = (npc.pathDistance ?? 0) + npc.currentSpeed * dt;
+      while (distance > segment.length) {
+        distance -= segment.length;
+        segmentIndex += 1;
+        if (segmentIndex >= segments.length) {
+          if (npc.loop) segmentIndex = 0;
+          else {
+            npc.active = false;
+            npc.respawnAfterSeconds = 2.5;
+            npc.currentSpeed = 0;
+            break;
+          }
+        }
+        segment = segments[segmentIndex];
+      }
+      if (npc.active === false) {
+        snapshots.push({ x: npc.laneX, z: npc.z, heading: npc.node.rotation.y, active: false });
+        continue;
+      }
+      segment = segments[segmentIndex];
+      const amount = clamp(distance / segment.length, 0, 1);
+      npc.pathSegment = segmentIndex;
+      npc.pathDistance = distance;
+      npc.laneId = segment.laneId;
+      npc.laneX = segment.start.x + (segment.end.x - segment.start.x) * amount;
+      npc.z = segment.start.z + (segment.end.z - segment.start.z) * amount;
+      snapshots.push({
+        x: npc.laneX,
+        z: npc.z,
+        heading: Math.atan2(segment.end.x - segment.start.x, segment.end.z - segment.start.z),
+        active: true,
+      });
+    }
+    return snapshots;
+  }
+
+  private applyNpcRenderSnapshots(snapshots: readonly NpcRenderSnapshot[]) {
+    for (let index = 0; index < snapshots.length; index += 1) {
+      const npc = this.npcVehicles[index];
+      const snapshot = snapshots[index];
+      if (!npc || !snapshot) continue;
+      npc.node.setEnabled(snapshot.active);
+      if (!snapshot.active) continue;
+      npc.node.position.set(snapshot.x, 0.12, snapshot.z);
+      npc.node.rotation.y = snapshot.heading;
+    }
+  }
+
+  private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
+    for (const npc of this.npcVehicles) {
+      npc.active = false;
+      npc.node.setEnabled(false);
+    }
+    for (const vehicle of snapshot.npcs) {
+      const numericIndex = Number.parseInt(vehicle.id.replace(/^npc-/, ""), 10) - 1;
+      const npc =
+        this.npcVehicles.find((candidate) => candidate.simulationId === vehicle.id) ??
+        this.npcVehicles[numericIndex] ??
+        this.npcVehicles.find((candidate) => !candidate.simulationId);
+      if (!npc) continue;
+      npc.simulationId = vehicle.id;
+      npc.active = true;
+      npc.laneId = vehicle.laneId;
+      npc.currentSpeed = vehicle.speedMps;
+      npc.speed = vehicle.speedMps;
+      npc.laneX = vehicle.x;
+      npc.z = vehicle.z;
+      npc.node.setEnabled(true);
+      npc.node.position.set(vehicle.x, 0.12, vehicle.z);
+      npc.node.rotation.y = vehicle.heading;
+    }
+  }
+
+  private applySimulationSnapshot(snapshot: SimulationSnapshot) {
+    const previousX = this.playerState.x;
+    const previousZ = this.playerState.z;
+    this.simulationSnapshot = snapshot;
+    this.playerState.previousX = previousX;
+    this.playerState.previousZ = previousZ;
+    this.playerState.x = snapshot.player.x;
+    this.playerState.z = snapshot.player.z;
+    this.playerState.heading = snapshot.player.heading;
+    this.playerState.speedMps = snapshot.player.speedMps;
+    this.playerState.gear = snapshot.player.gear === "drive" ? "D" : "R";
+    this.playerState.indicator = snapshot.player.signal;
+    this.score = snapshot.score.total;
+    this.activeTrafficSide = snapshot.trafficSide;
+    this.applySimulationNpcSnapshots(snapshot);
+    this.updateAuthoredSignalVisuals();
+
+    const npcHonkActive = snapshot.honk.active;
+    if (npcHonkActive && !this.lastSimulationHonkActive) {
+      this.hornUntil = eventNow() + 1_150;
+      this.playHornTone();
+    }
+    this.lastSimulationHonkActive = npcHonkActive;
+  }
+
+  private processSimulationEvents(events: readonly SimulationRuleEvent[]) {
+    for (const event of events) {
+      const prompt = this.options.lesson?.coachPrompts.find(
+        (candidate) =>
+          candidate.trigger.type === "rule_event" &&
+          candidate.trigger.ruleCode === event.code &&
+          !this.triggeredPrompts.has(candidate.id),
+      );
+      if (prompt) this.triggeredPrompts.add(prompt.id);
+      const correction = prompt?.message ?? event.correction;
+      this.instruction = correction;
+      this.lastSimulationCoachMessage = correction;
+      this.playCoachTone();
+      this.emit(
+        event.severity === "critical" ? "incident" : "coaching",
+        `${event.message} ${correction}`,
+        event.severity === "critical" ? "critical" : "warning",
+        {
+          ruleCode: event.code,
+          penalty: event.penalty,
+          evidence: event.evidence,
+        },
+      );
+      if (event.severity === "critical") this.setPaused(true);
+    }
+  }
+
+  private publishSimulationCoachMessage(snapshot: SimulationSnapshot) {
+    const message = snapshot.coachingMessage;
+    if (!message || message === this.lastSimulationCoachMessage) return;
+    this.lastSimulationCoachMessage = message;
+    this.instruction = message;
+    this.emit("coaching", message, "info");
+  }
+
+  private updateAuthoredSignalVisuals() {
+    for (const head of this.authoredSignalHeads) {
+      const simulationLight = this.simulationSnapshot.trafficLights.find(
+        (light) => head.trafficLightIds.includes(light.id),
+      );
+      const aspect: AuthoredSignalAspect = simulationLight?.state ??
+        authoredSignalAspectAt({
+          elapsedSeconds: this.trafficLightSeconds,
+          controlId: head.controlId,
+          phaseGroup: head.phaseGroup,
+          phaseGroups: head.phaseGroups,
+          style: head.style,
+        });
+      const redOn =
+        aspect === "red" || aspect === "red_amber" || aspect === "all_red";
+      const amberOn = aspect === "amber" || aspect === "red_amber";
+      const greenOn = aspect === "green";
+      head.redMaterial.emissiveColor.copyFromFloats(
+        redOn ? 0.75 : 0.08,
+        redOn ? 0.025 : 0.005,
+        redOn ? 0.015 : 0.005,
+      );
+      head.amberMaterial.emissiveColor.copyFromFloats(
+        amberOn ? 0.72 : 0.08,
+        amberOn ? 0.31 : 0.04,
+        amberOn ? 0.015 : 0.005,
+      );
+      head.greenMaterial.emissiveColor.copyFromFloats(
+        greenOn ? 0.01 : 0.005,
+        greenOn ? 0.46 : 0.06,
+        greenOn ? 0.1 : 0.012,
+      );
+    }
+    for (const crossing of this.railwayCrossingVisuals) {
+      const light = this.simulationSnapshot.trafficLights.find((candidate) =>
+        crossing.trafficLightIds.includes(candidate.id),
+      );
+      const warningActive = Boolean(light && light.state !== "green");
+      const flashIndex = Math.floor(this.simulationSnapshot.elapsedMs / 360) % 2;
+      crossing.lampMaterials.forEach((material, index) => {
+        const illuminated = warningActive && index % 2 === flashIndex;
+        material.emissiveColor.copyFromFloats(
+          illuminated ? 0.92 : 0.08,
+          illuminated ? 0.035 : 0.005,
+          illuminated ? 0.02 : 0.005,
+        );
+      });
+      const targetBarrierRotation = warningActive ? 0 : -1.22;
+      if (this.options.reducedMotion) {
+        crossing.barrierPivot.rotation.z = targetBarrierRotation;
+      } else {
+        crossing.barrierPivot.rotation.z +=
+          (targetBarrierRotation - crossing.barrierPivot.rotation.z) * 0.16;
+      }
+    }
+  }
+
   private updateTraffic(dt: number) {
-    this.trafficLightSeconds = (this.trafficLightSeconds + dt) % 14;
-    this.trafficLightIsRed = this.trafficLightSeconds > 8;
-    if (this.signalRedMaterial && this.signalGreenMaterial) {
+    this.trafficLightSeconds = (this.trafficLightSeconds + dt) % 3600;
+    this.trafficLightIsRed = this.trafficLightSeconds % 14 > 8;
+    if (this.signalRedMaterial && this.signalAmberMaterial && this.signalGreenMaterial) {
       this.signalRedMaterial.emissiveColor.copyFromFloats(
         this.trafficLightIsRed ? 0.75 : 0.08,
         this.trafficLightIsRed ? 0.025 : 0.005,
@@ -1896,32 +2652,14 @@ class BabylonGameSession {
         this.trafficLightIsRed ? 0.06 : 0.46,
         this.trafficLightIsRed ? 0.012 : 0.1,
       );
+      this.signalAmberMaterial.emissiveColor.copyFromFloats(0.08, 0.04, 0.005);
+    }
+    this.updateAuthoredSignalVisuals();
+    if (this.options.mapPack && this.options.lesson) {
+      this.applyNpcRenderSnapshots(this.computeNpcRenderSnapshots(dt));
+      return;
     }
     for (const npc of this.npcVehicles) {
-      if (npc.path && npc.path.length >= 2) {
-        let segmentIndex = npc.pathSegment ?? 0;
-        let distance = (npc.pathDistance ?? 0) + npc.speed * dt;
-        let start = npc.path[segmentIndex];
-        let end = npc.path[segmentIndex + 1];
-        let segmentLength = Math.max(0.01, Math.hypot(end.x - start.x, end.z - start.z));
-        while (distance > segmentLength) {
-          distance -= segmentLength;
-          segmentIndex += 1;
-          if (segmentIndex >= npc.path.length - 1) segmentIndex = 0;
-          start = npc.path[segmentIndex];
-          end = npc.path[segmentIndex + 1];
-          segmentLength = Math.max(0.01, Math.hypot(end.x - start.x, end.z - start.z));
-        }
-        const amount = distance / segmentLength;
-        npc.laneX = start.x + (end.x - start.x) * amount;
-        npc.z = start.z + (end.z - start.z) * amount;
-        npc.pathSegment = segmentIndex;
-        npc.pathDistance = distance;
-        npc.node.position.x = npc.laneX;
-        npc.node.position.z = npc.z;
-        npc.node.rotation.y = Math.atan2(end.x - start.x, end.z - start.z);
-        continue;
-      }
       const nextZ = npc.z + npc.direction * npc.speed * dt;
       const sharesPlayerLane = Math.abs(npc.laneX - this.playerState.x) < 1.1;
       const approachingFromBehind =
@@ -2095,6 +2833,7 @@ class BabylonGameSession {
       new Color3(0.86, 0.66, 0.19),
       new Color3(0.08, 0.045, 0.005),
     );
+    routeMaterial.alpha = 0.58;
     const laneMaterial = makeMaterial(scene, "scenario-marking", new Color3(0.88, 0.88, 0.79));
     const dark = makeMaterial(scene, "scenario-fixture", new Color3(0.08, 0.1, 0.1));
     const stopRed = makeMaterial(scene, "scenario-stop", new Color3(0.72, 0.08, 0.06));
@@ -2125,39 +2864,63 @@ class BabylonGameSession {
     setMeshMaterial(ground, grass);
 
     const routeLaneIds = new Set(this.options.lesson?.route ?? []);
-    for (const lane of mapPack.laneGraph.lanes) {
-      for (let index = 0; index < lane.centerline.length - 1; index += 1) {
-        const start = lane.centerline[index];
-        const end = lane.centerline[index + 1];
+    const roadSurfaces = mapPack.geometry.roadSurfaces?.length
+      ? mapPack.geometry.roadSurfaces
+      : mapPack.laneGraph.lanes.map((lane) => ({
+          id: `legacy-${lane.id}`,
+          centerline: lane.centerline,
+          widthM: lane.widthM ?? mapPack.geometry.roadWidth,
+          laneIds: [lane.id],
+          marking: "none" as const,
+        }));
+    for (const surface of roadSurfaces) {
+      for (let index = 0; index < surface.centerline.length - 1; index += 1) {
+        const start = surface.centerline[index];
+        const end = surface.centerline[index + 1];
         this.createFlatSegment(
-          `road-${lane.id}-${index}`,
+          `road-${surface.id}-${index}`,
           start,
           end,
-          mapPack.geometry.roadWidth,
+          surface.widthM,
           0.07,
           asphalt,
         );
-        this.createFlatSegment(
-          `lane-mark-${lane.id}-${index}`,
-          start,
-          end,
-          routeLaneIds.has(lane.id) ? 0.2 : 0.1,
-          0.115,
-          routeLaneIds.has(lane.id) ? routeMaterial : laneMaterial,
+        if (surface.marking !== "shared_space" && surface.marking !== "roundabout") {
+          const edgeOffset = Math.max(0.5, surface.widthM / 2 - 0.2);
+          this.createOffsetFlatSegment(
+            `road-edge-${surface.id}-${index}-left`,
+            start,
+            end,
+            edgeOffset,
+            0.11,
+            0.118,
+            laneMaterial,
+          );
+          this.createOffsetFlatSegment(
+            `road-edge-${surface.id}-${index}-right`,
+            start,
+            end,
+            -edgeOffset,
+            0.11,
+            0.118,
+            laneMaterial,
+          );
+        }
+      }
+      if (surface.marking === "center_line" || surface.marking === "lane_divider") {
+        this.createDashedPath(
+          `road-centre-${surface.id}`,
+          surface.centerline,
+          0.11,
+          0.12,
+          laneMaterial,
+          surface.marking === "center_line" ? 3.2 : 2.2,
+          surface.marking === "center_line" ? 4.3 : 3.4,
         );
       }
-      if (lane.centerline.length >= 2) {
-        const start = lane.centerline[0];
-        const end = lane.centerline[1];
-        const arrow = createBox(
-          scene,
-          `direction-${lane.id}`,
-          { width: 0.55, height: 0.035, depth: 2.1 },
-          new Vector3(start.x, 0.135, start.z),
-          routeLaneIds.has(lane.id) ? routeMaterial : laneMaterial,
-        );
-        arrow.rotation.y = Math.atan2(end.x - start.x, end.z - start.z);
-      }
+    }
+    for (const lane of mapPack.laneGraph.lanes) {
+      if (routeLaneIds.has(lane.id)) this.createRouteChevrons(lane, routeMaterial);
     }
 
     const random = seededUnit(this.options.lesson?.trafficSeed ?? 47);
@@ -2295,55 +3058,162 @@ class BabylonGameSession {
     }
 
     const redLamp = makeMaterial(scene, "scenario-signal-red", new Color3(0.45, 0.02, 0.01));
+    const amberLamp = makeMaterial(scene, "scenario-signal-amber", new Color3(0.55, 0.27, 0.015));
     const greenLamp = makeMaterial(scene, "scenario-signal-green", new Color3(0.02, 0.4, 0.12));
+    const paleFixture = makeMaterial(scene, "scenario-control-pale", new Color3(0.9, 0.9, 0.82));
+    const warningYellow = makeMaterial(scene, "scenario-control-warning", new Color3(0.94, 0.68, 0.08));
+    const restrictedBlue = makeMaterial(scene, "scenario-control-restricted", new Color3(0.08, 0.31, 0.56));
+    const controlMaterials: TrafficControlMaterials = {
+      dark,
+      pale: paleFixture,
+      redLamp,
+      amberLamp,
+      greenLamp,
+      stopRed,
+      yieldGold,
+      warningYellow,
+      restrictedBlue,
+    };
     this.signalRedMaterial = redLamp;
+    this.signalAmberMaterial = amberLamp;
     this.signalGreenMaterial = greenLamp;
     for (const control of mapPack.laneGraph.controls) {
-      const heading = degreesToRadians(control.headingDeg);
-      if (control.type === "crosswalk") {
-        for (let stripe = -3; stripe <= 3; stripe += 1) {
-          const acrossX = Math.cos(heading) * stripe * 1.1;
-          const acrossZ = -Math.sin(heading) * stripe * 1.1;
-          const marking = createBox(
-            scene,
-            `${control.id}-stripe-${stripe}`,
-            { width: 0.65, height: 0.035, depth: mapPack.geometry.roadWidth * 0.72 },
-            new Vector3(control.position.x + acrossX, 0.14, control.position.z + acrossZ),
-            laneMaterial,
+      const logicalHeading = degreesToRadians(control.headingDeg);
+      const offset = mapPack.geometry.roadWidth / 2 + 1.25;
+      const inferredPosition = {
+        x: control.position.x + Math.cos(logicalHeading) * offset,
+        z: control.position.z - Math.sin(logicalHeading) * offset,
+      };
+      const installations = control.installations?.length
+        ? control.installations
+        : [{
+            id: `${control.id}-legacy-safe`,
+            position:
+              control.type === "crosswalk" || control.type === "box_junction"
+                ? control.position
+                : inferredPosition,
+            headingDeg: control.headingDeg,
+            mounting:
+              control.type === "crosswalk" || control.type === "box_junction"
+                ? "road_marking" as const
+                : control.type === "railway_signal"
+                  ? "railway_crossing" as const
+                  : "roadside_pole" as const,
+            style:
+              control.type === "signal"
+                ? (mapId.includes("london") ? "uk_signal" as const : "nyc_signal" as const)
+                : control.type === "railway_signal"
+                  ? "japan_railway" as const
+                  : control.type === "crosswalk"
+                    ? "crosswalk" as const
+                    : control.type === "box_junction"
+                      ? "box_junction" as const
+                      : control.type === "restricted_lane"
+                        ? "restricted_lane" as const
+                        : control.type === "side_swap_gate"
+                          ? "side_swap_gate" as const
+                          : control.type === "yield"
+                            ? "yield_sign" as const
+                            : "stop_sign" as const,
+            role: "primary" as const,
+            approachIds: (control.approaches ?? []).map((approach) => approach.id),
+          }];
+      const phaseGroups = [
+        ...new Set((control.approaches ?? []).map((approach) => approach.phaseGroup)),
+      ];
+      for (const installation of installations) {
+        if (installation.style === "nyc_signal" || installation.style === "uk_signal") {
+          const installationApproaches = (installation.approachIds ?? [])
+            .map((approachId) =>
+              (control.approaches ?? []).find((approach) => approach.id === approachId),
+            )
+            .filter((approach): approach is NonNullable<typeof approach> => Boolean(approach));
+          this.buildSignalInstallation(
+            control.id,
+            installation,
+            mapPack.geometry.roadWidth,
+            controlMaterials,
+            {
+              trafficLightIds: installationApproaches.length
+                ? installationApproaches.map((approach) => approach.id)
+                : (control.approaches ?? []).map((approach) => approach.id),
+              phaseGroup: installationApproaches[0]?.phaseGroup ?? phaseGroups[0] ?? control.id,
+              phaseGroups: phaseGroups.length ? phaseGroups : [control.id],
+              style: installation.style,
+            },
           );
-          marking.rotation.y = heading;
+          continue;
         }
-        continue;
-      }
-      const pole = createCylinder(
-        scene,
-        `${control.id}-pole`,
-        { height: 3.3, diameter: 0.17 },
-        new Vector3(control.position.x, 1.65, control.position.z),
-        dark,
-      );
-      pole.rotation.y = heading;
-      if (control.type === "signal" || control.type === "railway_signal") {
-        const signalBox = createBox(
+        if (installation.style === "japan_railway") {
+          this.buildRailwayCrossingInstallation(
+            control.id,
+            installation,
+            controlMaterials,
+            installation.approachIds?.length
+              ? installation.approachIds
+              : (control.approaches ?? []).map((approach) => approach.id),
+          );
+          continue;
+        }
+        if (installation.mounting === "road_marking") {
+          this.buildRoadMarkingInstallation(
+            control,
+            installation,
+            mapPack.geometry.roadWidth,
+            laneMaterial,
+            warningYellow,
+          );
+          continue;
+        }
+        if (installation.style === "side_swap_gate") {
+          this.buildTerminalPortal(
+            control.id,
+            installation,
+            mapPack.geometry.roadWidth,
+            controlMaterials,
+          );
+          continue;
+        }
+        const pole = createCylinder(
           scene,
-          `${control.id}-box`,
-          { width: 0.65, height: 1.5, depth: 0.48 },
-          new Vector3(0, 1.25, 0),
+          `${control.id}-${installation.id}-pole`,
+          { height: 3.1, diameter: 0.17, tessellation: 14 },
+          new Vector3(installation.position.x, 1.55, installation.position.z),
           dark,
-          pole,
         );
-        createCylinder(scene, `${control.id}-red`, { height: 0.1, diameter: 0.28 }, new Vector3(0, 0.36, -0.28), redLamp, signalBox).rotation.x = Math.PI / 2;
-        createCylinder(scene, `${control.id}-green`, { height: 0.1, diameter: 0.28 }, new Vector3(0, -0.36, -0.28), greenLamp, signalBox).rotation.x = Math.PI / 2;
-      } else {
+        pole.rotation.y = degreesToRadians(installation.headingDeg);
+        const isYield = installation.style === "yield_sign";
         const sign = createCylinder(
           scene,
-          `${control.id}-sign`,
-          { height: 0.13, diameter: 0.92, tessellation: control.type === "yield" ? 3 : 8 },
+          `${control.id}-${installation.id}-sign`,
+          { height: 0.13, diameter: 0.92, tessellation: isYield ? 3 : 8 },
           new Vector3(0, 1.2, 0),
-          control.type === "yield" ? yieldGold : stopRed,
+          installation.style === "restricted_lane"
+            ? restrictedBlue
+            : isYield
+              ? yieldGold
+              : stopRed,
           pole,
         );
         sign.rotation.x = Math.PI / 2;
+      }
+      for (const approach of control.approaches ?? []) {
+        const stop = resolveLaneAnchor(mapPack.laneGraph.lanes, approach.stopLine);
+        const lane = mapPack.laneGraph.lanes.find(
+          (candidate) => candidate.id === approach.stopLine.laneId,
+        );
+        if (!stop || !lane) continue;
+        const halfWidth = (lane.widthM ?? 3.2) / 2;
+        const sideX = Math.cos(stop.heading);
+        const sideZ = -Math.sin(stop.heading);
+        this.createFlatSegment(
+          `${control.id}-${approach.id}-stop-line`,
+          { x: stop.x - sideX * halfWidth, z: stop.z - sideZ * halfWidth },
+          { x: stop.x + sideX * halfWidth, z: stop.z + sideZ * halfWidth },
+          0.28,
+          0.147,
+          laneMaterial,
+        );
       }
     }
 
@@ -2640,6 +3510,405 @@ class BabylonGameSession {
     segment.rotation.y = Math.atan2(dx, dz);
   }
 
+  private createOffsetFlatSegment(
+    name: string,
+    start: GameCanvasPoint,
+    end: GameCanvasPoint,
+    offset: number,
+    width: number,
+    y: number,
+    material: StandardMaterial,
+  ) {
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.01) return;
+    const lateralX = (dz / length) * offset;
+    const lateralZ = (-dx / length) * offset;
+    this.createFlatSegment(
+      name,
+      { x: start.x + lateralX, z: start.z + lateralZ },
+      { x: end.x + lateralX, z: end.z + lateralZ },
+      width,
+      y,
+      material,
+    );
+  }
+
+  private createDashedPath(
+    name: string,
+    points: readonly GameCanvasPoint[],
+    width: number,
+    y: number,
+    material: StandardMaterial,
+    dashLength = 3,
+    gapLength = 4,
+  ) {
+    let dashIndex = 0;
+    let phase = 0;
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const start = points[index];
+      const end = points[index + 1];
+      const dx = end.x - start.x;
+      const dz = end.z - start.z;
+      const length = Math.hypot(dx, dz);
+      if (length < 0.01) continue;
+      const ux = dx / length;
+      const uz = dz / length;
+      for (let distance = -phase; distance < length; distance += dashLength + gapLength) {
+        const from = Math.max(0, distance);
+        const to = Math.min(length, distance + dashLength);
+        if (to - from > 0.2) {
+          this.createFlatSegment(
+            `${name}-${dashIndex}`,
+            { x: start.x + ux * from, z: start.z + uz * from },
+            { x: start.x + ux * to, z: start.z + uz * to },
+            width,
+            y,
+            material,
+          );
+          dashIndex += 1;
+        }
+      }
+      phase = (phase + length) % (dashLength + gapLength);
+    }
+  }
+
+  private createRouteChevrons(
+    lane: GameCanvasLane,
+    material: StandardMaterial,
+  ) {
+    let travelled = 0;
+    let nextChevronAt = 8;
+    let index = 0;
+    for (let segmentIndex = 0; segmentIndex < lane.centerline.length - 1; segmentIndex += 1) {
+      const start = lane.centerline[segmentIndex];
+      const end = lane.centerline[segmentIndex + 1];
+      const dx = end.x - start.x;
+      const dz = end.z - start.z;
+      const length = Math.hypot(dx, dz);
+      if (length < 0.01) continue;
+      const ux = dx / length;
+      const uz = dz / length;
+      const sideX = uz;
+      const sideZ = -ux;
+      while (nextChevronAt <= travelled + length) {
+        const along = nextChevronAt - travelled;
+        const tip = { x: start.x + ux * along, z: start.z + uz * along };
+        const back = { x: tip.x - ux * 1.45, z: tip.z - uz * 1.45 };
+        this.createFlatSegment(
+          `route-chevron-${lane.id}-${index}-left`,
+          { x: back.x + sideX * 0.82, z: back.z + sideZ * 0.82 },
+          tip,
+          0.22,
+          0.145,
+          material,
+        );
+        this.createFlatSegment(
+          `route-chevron-${lane.id}-${index}-right`,
+          { x: back.x - sideX * 0.82, z: back.z - sideZ * 0.82 },
+          tip,
+          0.22,
+          0.145,
+          material,
+        );
+        nextChevronAt += 18;
+        index += 1;
+      }
+      travelled += length;
+    }
+  }
+
+  private createSignalHead(
+    name: string,
+    position: GameCanvasPoint,
+    heading: number,
+    height: number,
+    materials: TrafficControlMaterials,
+    runtime: Pick<
+      AuthoredSignalHeadVisual,
+      "controlId" | "trafficLightIds" | "phaseGroup" | "phaseGroups" | "style"
+    >,
+  ) {
+    const head = new TransformNode(`${name}-head`, this.scene);
+    head.position.set(position.x, height, position.z);
+    head.rotation.y = heading;
+    createBox(
+      this.scene,
+      `${name}-housing`,
+      { width: 0.58, height: 1.48, depth: 0.42 },
+      Vector3.Zero(),
+      materials.dark,
+      head,
+    );
+    const redMaterial = materials.redLamp.clone(`${name}-red-material`);
+    const amberMaterial = materials.amberLamp.clone(`${name}-amber-material`);
+    const greenMaterial = materials.greenLamp.clone(`${name}-green-material`);
+    redMaterial.emissiveColor.copyFromFloats(0.08, 0.005, 0.005);
+    amberMaterial.emissiveColor.copyFromFloats(0.08, 0.04, 0.005);
+    greenMaterial.emissiveColor.copyFromFloats(0.005, 0.06, 0.012);
+    this.authoredSignalHeads.push({
+      ...runtime,
+      redMaterial,
+      amberMaterial,
+      greenMaterial,
+    });
+    const lamps = [
+      { id: "red", y: 0.43, material: redMaterial },
+      { id: "amber", y: 0, material: amberMaterial },
+      { id: "green", y: -0.43, material: greenMaterial },
+    ];
+    for (const lamp of lamps) {
+      const lens = createCylinder(
+        this.scene,
+        `${name}-${lamp.id}`,
+        { height: 0.1, diameter: 0.25, tessellation: 18 },
+        new Vector3(0, lamp.y, -0.25),
+        lamp.material,
+        head,
+      );
+      lens.rotation.x = Math.PI / 2;
+    }
+  }
+
+  private buildSignalInstallation(
+    controlId: string,
+    installation: NonNullable<
+      GameCanvasMapPack["laneGraph"]["controls"][number]["installations"]
+    >[number],
+    roadWidth: number,
+    materials: TrafficControlMaterials,
+    runtime: Pick<
+      AuthoredSignalHeadVisual,
+      "trafficLightIds" | "phaseGroup" | "phaseGroups" | "style"
+    >,
+  ) {
+    const headHeading = degreesToRadians(installation.headingDeg);
+    const armHeading = degreesToRadians(
+      installation.armHeadingDeg ?? installation.headingDeg,
+    );
+    const base = installation.position;
+    const mastArm = installation.mounting === "mast_arm";
+    const poleHeight = mastArm ? 5.4 : 3.7;
+    createCylinder(
+      this.scene,
+      `${controlId}-${installation.id}-pole`,
+      { height: poleHeight, diameter: mastArm ? 0.22 : 0.17, tessellation: 14 },
+      new Vector3(base.x, poleHeight / 2, base.z),
+      materials.dark,
+    );
+    if (mastArm) {
+      const span = Math.max(4.8, Math.min(8.5, roadWidth * 0.68));
+      const sideX = Math.cos(armHeading);
+      const sideZ = -Math.sin(armHeading);
+      const arm = createBox(
+        this.scene,
+        `${controlId}-${installation.id}-mast-arm`,
+        { width: span, height: 0.18, depth: 0.18 },
+        new Vector3(
+          base.x + sideX * span / 2,
+          poleHeight - 0.18,
+          base.z + sideZ * span / 2,
+        ),
+        materials.dark,
+      );
+      arm.rotation.y = armHeading;
+      this.createSignalHead(
+        `${controlId}-${installation.id}`,
+        { x: base.x + sideX * (span - 0.45), z: base.z + sideZ * (span - 0.45) },
+        headHeading,
+        poleHeight - 0.95,
+        materials,
+        { controlId, ...runtime },
+      );
+      return;
+    }
+    this.createSignalHead(
+      `${controlId}-${installation.id}`,
+      base,
+      headHeading,
+      poleHeight - 0.95,
+      materials,
+      { controlId, ...runtime },
+    );
+  }
+
+  private buildRailwayCrossingInstallation(
+    controlId: string,
+    installation: NonNullable<
+      GameCanvasMapPack["laneGraph"]["controls"][number]["installations"]
+    >[number],
+    materials: TrafficControlMaterials,
+    trafficLightIds: readonly string[],
+  ) {
+    const heading = degreesToRadians(installation.headingDeg);
+    const base = installation.position;
+    const poleHeight = 3.4;
+    createCylinder(
+      this.scene,
+      `${controlId}-${installation.id}-rail-pole`,
+      { height: poleHeight, diameter: 0.18, tessellation: 14 },
+      new Vector3(base.x, poleHeight / 2, base.z),
+      materials.dark,
+    );
+    const crossbuck = new TransformNode(`${controlId}-${installation.id}-crossbuck`, this.scene);
+    crossbuck.position.set(base.x, 3.15, base.z);
+    crossbuck.rotation.y = heading;
+    for (const angle of [-0.63, 0.63]) {
+      const bar = createBox(
+        this.scene,
+        `${controlId}-${installation.id}-crossbuck-${angle}`,
+        { width: 1.6, height: 0.14, depth: 0.08 },
+        Vector3.Zero(),
+        materials.pale,
+        crossbuck,
+      );
+      bar.rotation.z = angle;
+    }
+    const sideX = Math.cos(heading);
+    const sideZ = -Math.sin(heading);
+    const lampMaterials: StandardMaterial[] = [];
+    for (const side of [-1, 1]) {
+      const lampMaterial = materials.redLamp.clone(
+        `${controlId}-${installation.id}-warning-${side}-material`,
+      );
+      lampMaterial.emissiveColor.copyFromFloats(0.08, 0.005, 0.005);
+      lampMaterials.push(lampMaterial);
+      const lamp = createCylinder(
+        this.scene,
+        `${controlId}-${installation.id}-warning-${side}`,
+        { height: 0.11, diameter: 0.35, tessellation: 18 },
+        new Vector3(base.x + sideX * side * 0.34, 2.38, base.z + sideZ * side * 0.34),
+        lampMaterial,
+      );
+      lamp.rotation.x = Math.PI / 2;
+      lamp.rotation.y = heading;
+    }
+    const barrierLength = 4.6;
+    const barrierPivot = new TransformNode(
+      `${controlId}-${installation.id}-barrier-pivot`,
+      this.scene,
+    );
+    barrierPivot.position.set(base.x, 1.25, base.z);
+    barrierPivot.rotation.y = heading;
+    const barrier = createBox(
+      this.scene,
+      `${controlId}-${installation.id}-barrier`,
+      { width: barrierLength, height: 0.14, depth: 0.14 },
+      new Vector3(barrierLength / 2, 0, 0),
+      materials.warningYellow,
+      barrierPivot,
+    );
+    barrier.rotation.y = 0;
+    barrierPivot.rotation.z = -1.22;
+    this.railwayCrossingVisuals.push({
+      trafficLightIds,
+      lampMaterials,
+      barrierPivot,
+    });
+  }
+
+  private buildRoadMarkingInstallation(
+    control: GameCanvasMapPack["laneGraph"]["controls"][number],
+    installation: NonNullable<
+      GameCanvasMapPack["laneGraph"]["controls"][number]["installations"]
+    >[number],
+    roadWidth: number,
+    laneMaterial: StandardMaterial,
+    warningMaterial: StandardMaterial,
+  ) {
+    const heading = degreesToRadians(installation.headingDeg);
+    if (installation.style === "crosswalk") {
+      for (let stripe = -3; stripe <= 3; stripe += 1) {
+        const acrossX = Math.cos(heading) * stripe * 1.05;
+        const acrossZ = -Math.sin(heading) * stripe * 1.05;
+        const marking = createBox(
+          this.scene,
+          `${control.id}-${installation.id}-stripe-${stripe}`,
+          { width: 0.62, height: 0.035, depth: roadWidth * 0.82 },
+          new Vector3(
+            installation.position.x + acrossX,
+            0.14,
+            installation.position.z + acrossZ,
+          ),
+          laneMaterial,
+        );
+        marking.rotation.y = heading;
+      }
+      return;
+    }
+    if (installation.style !== "box_junction") return;
+    const zones = this.options.mapPack?.laneGraph.conflictZones ?? [];
+    for (const zoneId of control.conflictZoneIds ?? []) {
+      const zone = zones.find((candidate) => candidate.id === zoneId);
+      if (!zone || zone.polygon.length < 3) continue;
+      for (let index = 0; index < zone.polygon.length; index += 1) {
+        this.createFlatSegment(
+          `${control.id}-${installation.id}-box-edge-${index}`,
+          zone.polygon[index],
+          zone.polygon[(index + 1) % zone.polygon.length],
+          0.18,
+          0.145,
+          warningMaterial,
+        );
+      }
+      const minX = Math.min(...zone.polygon.map((point) => point.x));
+      const maxX = Math.max(...zone.polygon.map((point) => point.x));
+      const minZ = Math.min(...zone.polygon.map((point) => point.z));
+      const maxZ = Math.max(...zone.polygon.map((point) => point.z));
+      const span = Math.max(maxX - minX, maxZ - minZ);
+      for (let offset = -span; offset <= span; offset += 3) {
+        const start = { x: Math.max(minX, minX + offset), z: Math.max(minZ, minZ - offset) };
+        const end = { x: Math.min(maxX, maxX + offset), z: Math.min(maxZ, maxZ - offset) };
+        if (Math.hypot(end.x - start.x, end.z - start.z) > 1) {
+          this.createFlatSegment(
+            `${control.id}-${installation.id}-box-hatch-${offset}`,
+            start,
+            end,
+            0.12,
+            0.144,
+            warningMaterial,
+          );
+        }
+      }
+    }
+  }
+
+  private buildTerminalPortal(
+    controlId: string,
+    installation: NonNullable<
+      GameCanvasMapPack["laneGraph"]["controls"][number]["installations"]
+    >[number],
+    roadWidth: number,
+    materials: TrafficControlMaterials,
+  ) {
+    const heading = degreesToRadians(installation.headingDeg);
+    const sideX = Math.cos(heading);
+    const sideZ = -Math.sin(heading);
+    const span = Math.max(6, roadWidth * 0.82);
+    for (const side of [-1, 1]) {
+      createCylinder(
+        this.scene,
+        `${controlId}-${installation.id}-portal-post-${side}`,
+        { height: 4.8, diameter: 0.28, tessellation: 14 },
+        new Vector3(
+          installation.position.x + sideX * side * span / 2,
+          2.4,
+          installation.position.z + sideZ * side * span / 2,
+        ),
+        materials.dark,
+      );
+    }
+    const beam = createBox(
+      this.scene,
+      `${controlId}-${installation.id}-portal-beam`,
+      { width: span + 0.3, height: 0.32, depth: 0.32 },
+      new Vector3(installation.position.x, 4.65, installation.position.z),
+      materials.warningYellow,
+    );
+    beam.rotation.y = heading;
+  }
+
   private buildEnvironment() {
     if (this.options.mapPack && this.options.lesson) {
       this.buildScenarioEnvironment(this.options.mapPack);
@@ -2667,7 +3936,14 @@ class BabylonGameSession {
       new Color3(0.03, 0.42, 0.15),
       new Color3(0.01, 0.18, 0.04),
     );
+    const amberLamp = makeMaterial(
+      scene,
+      "signal-amber",
+      new Color3(0.58, 0.3, 0.02),
+      new Color3(0.08, 0.04, 0.005),
+    );
     this.signalRedMaterial = redLamp;
+    this.signalAmberMaterial = amberLamp;
     this.signalGreenMaterial = greenLamp;
 
     const hemi = new HemisphericLight("soft-sky", new Vector3(0.2, 1, 0.1), scene);
@@ -3013,7 +4289,9 @@ class BabylonGameSession {
     const scene = this.scene;
     const random = seededUnit(lesson.trafficSeed);
     const densityCounts = { none: 0, light: 6, moderate: 12, busy: 18 } as const;
-    const count = densityCounts[lesson.trafficDensity];
+    const count = this.options.inputCapabilities.touchFirst
+      ? Math.min(12, densityCounts[lesson.trafficDensity])
+      : densityCounts[lesson.trafficDensity];
     const usableLanes = mapPack.laneGraph.lanes.filter((lane) => lane.centerline.length >= 2);
     const vehicleSpawns = mapPack.laneGraph.spawnPoints.filter(
       (spawn) => spawn.kind === "vehicle",
@@ -3030,27 +4308,54 @@ class BabylonGameSession {
 
     for (let index = 0; index < count && usableLanes.length > 0; index += 1) {
       const spawn = vehicleSpawns[index % Math.max(1, vehicleSpawns.length)];
+      const authoredAnchor =
+        spawn && "anchor" in spawn && spawn.anchor && index < vehicleSpawns.length
+          ? spawn.anchor
+          : null;
+      const legacyLaneId = spawn && "laneId" in spawn ? spawn.laneId : undefined;
       const lane =
-        (spawn?.laneId && usableLanes.find((candidate) => candidate.id === spawn.laneId)) ||
+        ((authoredAnchor?.laneId ?? legacyLaneId) &&
+          usableLanes.find(
+            (candidate) => candidate.id === (authoredAnchor?.laneId ?? legacyLaneId),
+          )) ||
         usableLanes[(index * 3 + Math.floor(random() * usableLanes.length)) % usableLanes.length];
-      const path = lane.centerline;
-      const segment = Math.min(
-        path.length - 2,
-        Math.floor(random() * Math.max(1, path.length - 1)),
-      );
-      const start = path[segment];
-      const end = path[segment + 1];
-      const segmentLength = Math.max(0.01, Math.hypot(end.x - start.x, end.z - start.z));
-      const initialDistance = spawn && index < vehicleSpawns.length
-        ? clamp(
-            Math.hypot(
-              spawn.pose.position.x - start.x,
-              spawn.pose.position.z - start.z,
-            ),
+      const connectedPath = this.buildConnectedNpcPath(mapPack, lane.id, index);
+      if (connectedPath.segments.length === 0) continue;
+      const anchored = authoredAnchor
+        ? resolveLaneAnchor(mapPack.laneGraph.lanes, authoredAnchor)
+        : null;
+      const legacyPose = spawn && "pose" in spawn ? spawn.pose : undefined;
+      let segment = anchored?.segmentIndex ?? Math.floor(random() * connectedPath.segments.length);
+      if (segment >= connectedPath.segments.length) segment = connectedPath.segments.length - 1;
+      let pathSegment = connectedPath.segments[segment];
+      let initialDistance = anchored?.distanceOnSegment ?? random() * pathSegment.length;
+      if (legacyPose && index < vehicleSpawns.length && !anchored) {
+        let bestDistance = Number.POSITIVE_INFINITY;
+        for (let candidateIndex = 0; candidateIndex < connectedPath.segments.length; candidateIndex += 1) {
+          const candidate = connectedPath.segments[candidateIndex];
+          const dx = candidate.end.x - candidate.start.x;
+          const dz = candidate.end.z - candidate.start.z;
+          const amount = clamp(
+            ((legacyPose.position.x - candidate.start.x) * dx +
+              (legacyPose.position.z - candidate.start.z) * dz) /
+              Math.max(0.001, candidate.length * candidate.length),
             0,
-            segmentLength,
-          )
-        : random() * segmentLength;
+            1,
+          );
+          const x = candidate.start.x + dx * amount;
+          const z = candidate.start.z + dz * amount;
+          const distance = Math.hypot(legacyPose.position.x - x, legacyPose.position.z - z);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            segment = candidateIndex;
+            pathSegment = candidate;
+            initialDistance = candidate.length * amount;
+          }
+        }
+      }
+      const start = pathSegment.start;
+      const end = pathSegment.end;
+      const segmentLength = pathSegment.length;
       const amount = initialDistance / segmentLength;
       const x = start.x + (end.x - start.x) * amount;
       const z = start.z + (end.z - start.z) * amount;
@@ -3186,19 +4491,31 @@ class BabylonGameSession {
       const limitMps = this.options.speedUnit === "mph"
         ? displayLimit / 2.236936
         : displayLimit / 3.6;
-      node.position.set(x, 0.12, z);
-      node.rotation.y = heading;
-      this.npcVehicles.push({
+      const cruiseSpeed = Math.max(3.5, limitMps * (0.58 + random() * 0.22));
+      const npc: NpcVehicle = {
         node,
         direction: 1,
-        speed: Math.max(3.5, limitMps * (0.58 + random() * 0.22)),
+        speed: cruiseSpeed,
+        currentSpeed: cruiseSpeed,
         z,
         laneX: x,
-        laneId: lane.id,
-        path,
+        laneId: pathSegment.laneId,
+        pathSegments: connectedPath.segments,
         pathSegment: segment,
         pathDistance: initialDistance,
-      });
+        spawnPathSegment: segment,
+        spawnPathDistance: initialDistance,
+        spawnIndex: index % Math.max(1, vehicleSpawns.length),
+        loop: connectedPath.loop,
+        active: true,
+      };
+      const safeAtStart = this.isNpcPositionSafe(npc, x, z, heading, false);
+      npc.active = safeAtStart;
+      npc.respawnAfterSeconds = safeAtStart ? 0 : 2.5;
+      node.position.set(x, 0.12, z);
+      node.rotation.y = heading;
+      node.setEnabled(safeAtStart);
+      this.npcVehicles.push(npc);
     }
 
     const requestedPedestrians = Math.min(10, lesson.vulnerableRoadUsers?.pedestrians ?? 0);
@@ -3214,10 +4531,11 @@ class BabylonGameSession {
     for (let index = 0; index < roadUserCount; index += 1) {
       const isCyclist = index >= requestedPedestrians;
       const authored = authoredSpawns[index % Math.max(1, authoredSpawns.length)];
+      const authoredPose = authored && "pose" in authored ? authored.pose : undefined;
       const crosswalk = crosswalks[index % Math.max(1, crosswalks.length)];
-      const source = authored?.pose.position ?? crosswalk?.position ?? this.routePoints[index % Math.max(1, this.routePoints.length)] ?? { x: 0, z: 0 };
-      const heading = authored
-        ? degreesToRadians(authored.pose.headingDeg)
+      const source = authoredPose?.position ?? crosswalk?.position ?? this.routePoints[index % Math.max(1, this.routePoints.length)] ?? { x: 0, z: 0 };
+      const heading = authoredPose
+        ? degreesToRadians(authoredPose.headingDeg)
         : crosswalk
           ? degreesToRadians(crosswalk.headingDeg + 90)
           : (index % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
@@ -3516,10 +4834,9 @@ class BabylonGameSession {
     const now = performance.now();
     if (!force && now - this.lastHudTime < 90) return;
     this.lastHudTime = now;
-    const metersPerSecond = this.playerState.speedMps;
-    const speed = this.options.speedUnit === "mph"
-      ? metersPerSecond * 2.236936
-      : metersPerSecond * 3.6;
+    const speed = this.simulationSnapshot.speedDisplay;
+    const speedUnit: SpeedUnit =
+      this.simulationSnapshot.speedUnit === "kmh" ? "km/h" : "mph";
     const objectives = this.options.lesson?.objectives ?? [];
     const objectiveIndex = objectives.length
       ? Math.min(
@@ -3536,7 +4853,7 @@ class BabylonGameSession {
         );
     this.callbacks.onHudUpdate?.({
       speed: Math.round(speed),
-      speedUnit: this.options.speedUnit,
+      speedUnit,
       gear: this.playerState.gear,
       cameraMode: this.cameraMode,
       indicator: this.playerState.indicator,
@@ -3552,7 +4869,7 @@ class BabylonGameSession {
         objectives[objectiveIndex]?.label ??
         "Reach the end of the training route",
       checkpoint: this.checkpointLabel,
-      trafficSide: this.activeTrafficSide,
+      trafficSide: this.simulationSnapshot.trafficSide,
       scenarioClock: this.options.lesson?.scenarioClock?.label,
     });
   }

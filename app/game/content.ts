@@ -9,6 +9,7 @@ import type {
   FreeDriveId,
   FrozenMapSource,
   GameSessionConfig,
+  LaneAnchor,
   LaneGraph,
   LaneNode,
   LaneRole,
@@ -22,11 +23,15 @@ import type {
   OfficialRuleReference,
   ResolvedGameSessionConfig,
   RuleCode,
+  RoadSurface,
   ScenarioId,
   ScoringConfig,
+  SpeedUnit,
   SteeringPreference,
   SteeringSide,
   TrafficControl,
+  TrafficControlApproach,
+  TrafficControlInstallation,
   TrafficSide,
   WorldPoint,
 } from "./types";
@@ -96,6 +101,48 @@ const node = (id: string, x: number, z: number): LaneNode => ({
   position: point(x, z),
 });
 
+const roadIdForLane = (id: string): string => {
+  if (id.startsWith("yard-r-")) return "yard-right-loop";
+  if (id.startsWith("yard-l-")) return "yard-left-loop";
+  if (id.startsWith("nyc-72-")) return "nyc-west-72";
+  if (id.startsWith("nyc-79-")) return "nyc-west-79";
+  if (id.startsWith("nyc-bway-")) return "nyc-broadway";
+  if (id.startsWith("nyc-columbus-")) return "nyc-columbus";
+  if (id.startsWith("nyc-west-end-")) return "nyc-west-end";
+  if (id.startsWith("uk-rb-")) return "uk-roundabout";
+  if (id.includes("entry-north") || id.includes("exit-north")) return id.startsWith("fr-") ? "fr-north-approach" : "uk-north-approach";
+  if (id.includes("entry-east") || id.includes("exit-east")) return id.startsWith("fr-") ? "fr-east-approach" : "uk-east-approach";
+  if (id.includes("entry-south") || id.includes("exit-south")) return id.startsWith("fr-") ? "fr-south-approach" : "uk-south-approach";
+  if (id.includes("entry-west") || id.includes("exit-west")) return id.startsWith("fr-") ? "fr-west-approach" : "uk-west-approach";
+  if (id.startsWith("uk-dual-n-east")) return "uk-dual-carriageway";
+  if (id.startsWith("uk-east-north")) return "uk-east-link";
+  if (id.startsWith("uk-south-west") || id.startsWith("uk-west-south")) return "uk-oldbrook-loop";
+  if (id.startsWith("fr-rb-")) return "fr-roundabout";
+  if (id.startsWith("fr-south-east")) return "fr-south-east-road";
+  if (id.startsWith("fr-east-south")) return "fr-east-south-road";
+  if (id.startsWith("fr-north-west")) return "fr-north-west-road";
+  if (id.startsWith("jp-south-east")) return "jp-south-road";
+  if (id.startsWith("jp-curve")) return "jp-east-curve";
+  if (id.startsWith("jp-center-west")) return "jp-center-road";
+  if (id.startsWith("jp-west-north")) return "jp-west-road";
+  if (id.startsWith("jp-north-east")) return "jp-north-road";
+  if (id.startsWith("jp-junction-south")) return "jp-junction-road";
+  if (id.startsWith("jp-narrow-north")) return "jp-narrow-road";
+  if (id.startsWith("xf-uk-approach")) return "xf-uk-road";
+  if (id.startsWith("xf-uk-terminal")) return "xf-uk-terminal-road";
+  if (id.startsWith("xf-shuttle")) return "xf-shuttle-road";
+  if (id.startsWith("xf-fr-terminal") || id.startsWith("xf-fr-exit")) return "xf-fr-terminal-road";
+  if (id.startsWith("xf-fr-road")) return "xf-fr-road-surface";
+  return id;
+};
+
+const laneWidthForLane = (id: string): number => {
+  if (id.startsWith("jp-")) return id.includes("narrow") ? 2.7 : 3.0;
+  if (id.startsWith("uk-dual") || id.startsWith("fr-south-east") || id.startsWith("xf-")) return 3.5;
+  if (id.startsWith("nyc-")) return 3.4;
+  return 3.2;
+};
+
 const lane = (
   id: string,
   from: LaneNode,
@@ -106,35 +153,62 @@ const lane = (
   role: LaneRole = "travel",
   via: readonly WorldPoint[] = [],
   adjacentLaneIds?: readonly string[],
+  roadId: string = roadIdForLane(id),
+  widthM = laneWidthForLane(id),
+  localSpeedUnit?: SpeedUnit,
 ): LaneSegment => ({
   id,
+  roadId,
+  widthM,
   from: from.id,
   to: to.id,
   centerline: [from.position, ...via, to.position],
   role,
   trafficSide,
   speedLimit,
+  ...(localSpeedUnit ? { localSpeedUnit } : {}),
   successors,
   ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
 });
+
+const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
+  laneId,
+  distanceAlongM,
+});
+
+const roadSurface = (
+  id: string,
+  centerline: readonly WorldPoint[],
+  widthM: number,
+  laneIds: readonly string[],
+  marking: RoadSurface["marking"] = "center_line",
+): RoadSurface => ({ id, centerline, widthM, laneIds, marking });
 
 const checkpoint = (
   id: string,
   label: string,
   laneId: string,
-  x: number,
-  z: number,
-  headingDeg: number,
+  distanceAlongM: number,
 ): MapCheckpoint => ({
   id,
   label,
-  laneId,
-  pose: { position: point(x, z), headingDeg },
+  anchor: anchor(laneId, distanceAlongM),
 });
 
-const spawn = (
+const anchoredSpawn = (
   id: string,
-  kind: MapSpawnPoint["kind"],
+  kind: "player" | "vehicle",
+  laneId: string,
+  distanceAlongM: number,
+): MapSpawnPoint => ({
+  id,
+  kind,
+  anchor: anchor(laneId, distanceAlongM),
+});
+
+const freeSpawn = (
+  id: string,
+  kind: "pedestrian" | "cyclist",
   x: number,
   z: number,
   headingDeg: number,
@@ -146,6 +220,41 @@ const spawn = (
   ...(laneId ? { laneId } : {}),
 });
 
+const approach = (
+  id: string,
+  laneId: string,
+  distanceAlongM: number,
+  phaseGroup: string,
+  conflictZoneIds?: readonly string[],
+): TrafficControlApproach => ({
+  id,
+  laneIds: [laneId],
+  stopLine: anchor(laneId, distanceAlongM),
+  phaseGroup,
+  ...(conflictZoneIds ? { conflictZoneIds } : {}),
+});
+
+const installation = (
+  id: string,
+  x: number,
+  z: number,
+  headingDeg: number,
+  mounting: TrafficControlInstallation["mounting"],
+  style: TrafficControlInstallation["style"],
+  role: TrafficControlInstallation["role"],
+  approachIds?: readonly string[],
+  armHeadingDeg?: number,
+): TrafficControlInstallation => ({
+  id,
+  position: point(x, z),
+  headingDeg,
+  mounting,
+  style,
+  role,
+  ...(approachIds ? { approachIds } : {}),
+  ...(armHeadingDeg === undefined ? {} : { armHeadingDeg }),
+});
+
 const control = (
   id: string,
   type: TrafficControl["type"],
@@ -154,6 +263,8 @@ const control = (
   headingDeg: number,
   laneIds: readonly string[],
   conflictZoneIds?: readonly string[],
+  approaches: readonly TrafficControlApproach[] = [],
+  installations: readonly TrafficControlInstallation[] = [],
 ): TrafficControl => ({
   id,
   type,
@@ -161,6 +272,8 @@ const control = (
   headingDeg,
   laneIds,
   ...(conflictZoneIds ? { conflictZoneIds } : {}),
+  approaches,
+  installations,
 });
 
 const graph = (
@@ -511,16 +624,16 @@ const nycNodes = {
 const nycLanes: readonly LaneSegment[] = [
   lane("nyc-72-east-1", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-2", "nyc-bway-n-1"], "one_way"),
   lane("nyc-72-east-2", nycNodes.b, nycNodes.c, "right", 25, ["nyc-columbus-n-1"], "one_way"),
-  lane("nyc-bway-n-1", nycNodes.b, nycNodes.e, "right", 25, ["nyc-bway-n-2"]),
-  lane("nyc-bway-n-2", nycNodes.e, nycNodes.h, "right", 25, ["nyc-79-west-2", "nyc-bway-s-1"]),
+  lane("nyc-bway-n-1", nycNodes.b, nycNodes.e, "right", 25, ["nyc-bway-n-2"], "travel", [point(3.4, -36)], ["nyc-bway-s-2"]),
+  lane("nyc-bway-n-2", nycNodes.e, nycNodes.h, "right", 25, ["nyc-79-west-2", "nyc-bway-s-1"], "travel", [point(3.4, 36)], ["nyc-bway-s-1"]),
   lane("nyc-columbus-n-1", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-2"]),
   lane("nyc-columbus-n-2", nycNodes.d, nycNodes.i, "right", 25, ["nyc-79-west-1"]),
   lane("nyc-79-west-1", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-2", "nyc-bway-s-1"], "one_way"),
   lane("nyc-79-west-2", nycNodes.h, nycNodes.g, "right", 25, ["nyc-west-end-s-1"], "one_way"),
   lane("nyc-west-end-s-1", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-2"]),
   lane("nyc-west-end-s-2", nycNodes.f, nycNodes.a, "right", 25, ["nyc-72-east-1"]),
-  lane("nyc-bway-s-1", nycNodes.h, nycNodes.e, "right", 25, ["nyc-bway-s-2"]),
-  lane("nyc-bway-s-2", nycNodes.e, nycNodes.b, "right", 25, ["nyc-72-east-2"]),
+  lane("nyc-bway-s-1", nycNodes.h, nycNodes.e, "right", 25, ["nyc-bway-s-2"], "travel", [point(-3.4, 36)], ["nyc-bway-n-2"]),
+  lane("nyc-bway-s-2", nycNodes.e, nycNodes.b, "right", 25, ["nyc-72-east-2"], "travel", [point(-3.4, -36)], ["nyc-bway-n-1"]),
 ];
 
 const ukNodes = {
@@ -540,19 +653,19 @@ const ukLanes: readonly LaneSegment[] = [
   lane("uk-rb-e-s", ukNodes.e, ukNodes.s, "left", 30, ["uk-rb-s-w", "uk-exit-south"], "roundabout", [point(25, -25)]),
   lane("uk-rb-s-w", ukNodes.s, ukNodes.w, "left", 30, ["uk-rb-w-n", "uk-exit-west"], "roundabout", [point(-25, -25)]),
   lane("uk-rb-w-n", ukNodes.w, ukNodes.n, "left", 30, ["uk-rb-n-e", "uk-exit-north"], "roundabout", [point(-25, 25)]),
-  lane("uk-entry-north", ukNodes.no, ukNodes.n, "left", 40, ["uk-rb-n-e"], "entry"),
-  lane("uk-exit-north", ukNodes.n, ukNodes.no, "left", 40, ["uk-dual-n-east"], "exit", [], ["uk-entry-north"]),
-  lane("uk-entry-east", ukNodes.eo, ukNodes.e, "left", 40, ["uk-rb-e-s"], "entry"),
-  lane("uk-exit-east", ukNodes.e, ukNodes.eo, "left", 40, ["uk-entry-east"], "exit", [], ["uk-entry-east"]),
-  lane("uk-entry-south", ukNodes.so, ukNodes.s, "left", 40, ["uk-rb-s-w"], "entry"),
-  lane("uk-exit-south", ukNodes.s, ukNodes.so, "left", 40, ["uk-south-west"], "exit", [], ["uk-entry-south"]),
-  lane("uk-entry-west", ukNodes.wo, ukNodes.w, "left", 40, ["uk-rb-w-n"], "entry"),
-  lane("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south"], "exit", [], ["uk-entry-west"]),
-  lane("uk-dual-n-east", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "travel", [], ["uk-dual-n-east-pass"]),
-  lane("uk-dual-n-east-pass", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "passing", [point(48, 104)], ["uk-dual-n-east"]),
+  lane("uk-entry-north", ukNodes.no, ukNodes.n, "left", 40, ["uk-rb-n-e"], "entry", [point(1.7, 76)], ["uk-exit-north"]),
+  lane("uk-exit-north", ukNodes.n, ukNodes.no, "left", 40, ["uk-dual-n-east"], "exit", [point(-1.7, 76)], ["uk-entry-north"]),
+  lane("uk-entry-east", ukNodes.eo, ukNodes.e, "left", 40, ["uk-rb-e-s"], "entry", [point(82, -1.7)], ["uk-exit-east"]),
+  lane("uk-exit-east", ukNodes.e, ukNodes.eo, "left", 40, ["uk-entry-east"], "exit", [point(82, 1.7)], ["uk-entry-east"]),
+  lane("uk-entry-south", ukNodes.so, ukNodes.s, "left", 40, ["uk-rb-s-w"], "entry", [point(-1.7, -76)], ["uk-exit-south"]),
+  lane("uk-exit-south", ukNodes.s, ukNodes.so, "left", 40, ["uk-south-west"], "exit", [point(1.7, -76)], ["uk-entry-south"]),
+  lane("uk-entry-west", ukNodes.wo, ukNodes.w, "left", 40, ["uk-rb-w-n"], "entry", [point(-82, 1.7)], ["uk-exit-west"]),
+  lane("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south"], "exit", [point(-82, -1.7)], ["uk-entry-west"]),
+  lane("uk-dual-n-east", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "travel", [point(48, 98.25)], ["uk-dual-n-east-pass"]),
+  lane("uk-dual-n-east-pass", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "passing", [point(48, 101.75)], ["uk-dual-n-east"]),
   lane("uk-east-north", ukNodes.ne, ukNodes.eo, "left", 40, ["uk-entry-east"]),
   lane("uk-south-west", ukNodes.so, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-65, -104)]),
-  lane("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-105, -65)]),
+  lane("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-65, -40)]),
 ];
 
 const frNodes = {
@@ -572,16 +685,16 @@ const frLanes: readonly LaneSegment[] = [
   lane("fr-rb-w-s", frNodes.w, frNodes.s, "right", 30, ["fr-rb-s-e", "fr-exit-south"], "roundabout", [point(-25, -25)]),
   lane("fr-rb-s-e", frNodes.s, frNodes.e, "right", 30, ["fr-rb-e-n", "fr-exit-east"], "roundabout", [point(25, -25)]),
   lane("fr-rb-e-n", frNodes.e, frNodes.n, "right", 30, ["fr-rb-n-w", "fr-exit-north"], "roundabout", [point(25, 25)]),
-  lane("fr-entry-north", frNodes.no, frNodes.n, "right", 50, ["fr-rb-n-w"], "entry"),
-  lane("fr-exit-north", frNodes.n, frNodes.no, "right", 50, ["fr-north-west"], "exit", [], ["fr-entry-north"]),
-  lane("fr-entry-east", frNodes.eo, frNodes.e, "right", 50, ["fr-rb-e-n"], "entry"),
-  lane("fr-exit-east", frNodes.e, frNodes.eo, "right", 50, ["fr-east-south"], "exit", [], ["fr-entry-east"]),
-  lane("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry"),
-  lane("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [], ["fr-entry-south"]),
-  lane("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry"),
-  lane("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [], ["fr-entry-west"]),
-  lane("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(52, -102), point(92, -82)], ["fr-south-east-pass"]),
-  lane("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(54, -96), point(96, -76)], ["fr-south-east"]),
+  lane("fr-entry-north", frNodes.no, frNodes.n, "right", 50, ["fr-rb-n-w"], "entry", [point(-1.7, 76)], ["fr-exit-north"]),
+  lane("fr-exit-north", frNodes.n, frNodes.no, "right", 50, ["fr-north-west"], "exit", [point(1.7, 76)], ["fr-entry-north"]),
+  lane("fr-entry-east", frNodes.eo, frNodes.e, "right", 50, ["fr-rb-e-n"], "entry", [point(86, 1.7)], ["fr-exit-east"]),
+  lane("fr-exit-east", frNodes.e, frNodes.eo, "right", 50, ["fr-east-south"], "exit", [point(86, -1.7)], ["fr-entry-east"]),
+  lane("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry", [point(1.7, -76)], ["fr-exit-south"]),
+  lane("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [point(-1.7, -76)], ["fr-entry-south"]),
+  lane("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry", [point(-86, -1.7)], ["fr-exit-west"]),
+  lane("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
+  lane("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(53, -100.7), point(94, -80.7)], ["fr-south-east-pass"]),
+  lane("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(53, -97.3), point(94, -77.3)], ["fr-south-east"]),
   lane("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(92, -82)]),
   lane("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-80, 76)]),
 ];
@@ -600,18 +713,30 @@ const jpNodes = {
 };
 
 const jpLanes: readonly LaneSegment[] = [
-  lane("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"]),
-  lane("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing"),
-  lane("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(102, -56)]),
-  lane("jp-center-west-1", jpNodes.d, jpNodes.e, "left", 30, ["jp-center-west-2"]),
-  lane("jp-center-west-2", jpNodes.e, jpNodes.f, "left", 30, ["jp-center-west-3", "jp-narrow-north-2"]),
-  lane("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north"]),
-  lane("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1"]),
-  lane("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"]),
-  lane("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south"]),
-  lane("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"]),
-  lane("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"]),
-  lane("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2"]),
+  lane("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
+  lane("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
+  lane("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, [], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
+  lane("jp-south-west-2", jpNodes.c, jpNodes.b, "left", 30, ["jp-south-west-1"], "rail_crossing", [point(21, -73.5)], ["jp-south-east-2"], "jp-south-road", 3),
+  lane("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(100.5, -56), point(106.5, -35)], ["jp-curve-south"]),
+  lane("jp-curve-south", jpNodes.d, jpNodes.c, "left", 30, ["jp-south-west-2"], "travel", [point(109.5, -35), point(103.5, -56)], ["jp-curve-north"], "jp-east-curve", 3),
+  lane("jp-center-west-1", jpNodes.d, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(82, 16.5)], ["jp-center-east-3"]),
+  lane("jp-center-west-2", jpNodes.e, jpNodes.f, "left", 30, ["jp-center-west-3", "jp-narrow-north-2"], "travel", [point(12, 16.5)], ["jp-center-east-2"]),
+  lane("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north"], "travel", [point(-71, 16.5)], ["jp-center-east-1"]),
+  lane("jp-center-east-1", jpNodes.g, jpNodes.f, "left", 30, ["jp-center-east-2", "jp-narrow-south-1"], "travel", [point(-71, 19.5)], ["jp-center-west-3"], "jp-center-road", 3),
+  lane("jp-center-east-2", jpNodes.f, jpNodes.e, "left", 30, ["jp-center-east-3"], "travel", [point(12, 19.5)], ["jp-center-west-2"], "jp-center-road", 3),
+  lane("jp-center-east-3", jpNodes.e, jpNodes.d, "left", 30, ["jp-curve-south"], "travel", [point(82, 19.5)], ["jp-center-west-1"], "jp-center-road", 3),
+  lane("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
+  lane("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
+  lane("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"], "travel", [point(-71, 77.5)], ["jp-north-west-2"]),
+  lane("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
+  lane("jp-north-west-1", jpNodes.j, jpNodes.i, "left", 30, ["jp-north-west-2", "jp-narrow-south-2"], "travel", [point(26, 74.5)], ["jp-north-east-2"], "jp-north-road", 3),
+  lane("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
+  lane("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(83.5, 47)], ["jp-junction-north"]),
+  lane("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1"], "travel", [point(80.5, 47)], ["jp-junction-south"], "jp-junction-road", 3),
+  lane("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
+  lane("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
+  lane("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
+  lane("jp-narrow-south-2", jpNodes.i, jpNodes.f, "left", 20, ["jp-narrow-south-1"], "travel", [point(-28.65, 47)], ["jp-narrow-north-2"], "jp-narrow-road", 2.7),
 ];
 
 const transitionNodes = {
@@ -625,12 +750,14 @@ const transitionNodes = {
 };
 
 const transitionLanes: readonly LaneSegment[] = [
-  lane("xf-uk-approach", transitionNodes.uk0, transitionNodes.uk1, "left", 30, ["xf-uk-terminal"], "terminal"),
+  lane("xf-uk-approach", transitionNodes.uk0, transitionNodes.uk1, "left", 30, ["xf-uk-terminal"], "terminal", [point(-110, -32.25)], ["xf-uk-approach-opposite"]),
+  lane("xf-uk-approach-opposite", transitionNodes.uk1, transitionNodes.uk0, "left", 30, [], "terminal", [point(-110, -35.75)], ["xf-uk-approach"], "xf-uk-road", 3.5),
   lane("xf-uk-terminal", transitionNodes.uk1, transitionNodes.uk2, "left", 15, ["xf-shuttle"], "terminal", [point(-48, -20)]),
   lane("xf-shuttle", transitionNodes.uk2, transitionNodes.gate, "left", 10, ["xf-fr-terminal"], "terminal"),
-  lane("xf-fr-terminal", transitionNodes.gate, transitionNodes.fr0, "right", 10, ["xf-fr-exit"], "terminal"),
-  lane("xf-fr-exit", transitionNodes.fr0, transitionNodes.fr1, "right", 30, ["xf-fr-road"], "terminal", [point(48, 18)]),
-  lane("xf-fr-road", transitionNodes.fr1, transitionNodes.fr2, "right", 50, [], "travel"),
+  lane("xf-fr-terminal", transitionNodes.gate, transitionNodes.fr0, "right", 10, ["xf-fr-exit"], "terminal", [], undefined, undefined, undefined, "kmh"),
+  lane("xf-fr-exit", transitionNodes.fr0, transitionNodes.fr1, "right", 30, ["xf-fr-road"], "terminal", [point(48, 18)], undefined, undefined, undefined, "kmh"),
+  lane("xf-fr-road", transitionNodes.fr1, transitionNodes.fr2, "right", 50, [], "travel", [point(110, 32.25)], ["xf-fr-road-opposite"], undefined, undefined, "kmh"),
+  lane("xf-fr-road-opposite", transitionNodes.fr2, transitionNodes.fr1, "right", 50, [], "travel", [point(110, 35.75)], ["xf-fr-road"], "xf-fr-road-surface", 3.5, "kmh"),
 ];
 
 export const MAP_PACKS: readonly MapPack[] = [
@@ -648,6 +775,10 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(140, 110),
       roadWidth: 8,
       shoulderWidth: 1.5,
+      roadSurfaces: [
+        roadSurface("yard-right-loop", [orientationNodes.r0.position, orientationNodes.r1.position, orientationNodes.r2.position, orientationNodes.r3.position, orientationNodes.r0.position], 8, ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"]),
+        roadSurface("yard-left-loop", [orientationNodes.l0.position, orientationNodes.l1.position, orientationNodes.l2.position, orientationNodes.l3.position, orientationNodes.l0.position], 8, ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"]),
+      ],
       blocks: [],
       landmarks: [
         { id: "yard-cones", kind: "station", center: point(0, 0), size: point(18, 12), color: "#f27a32" },
@@ -657,19 +788,23 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(orientationNodes),
       orientationLanes,
       [
-        control("yard-r-stop", "stop", 44, -32, 180, ["yard-r-east"]),
-        control("yard-l-stop", "stop", -34, -22, 90, ["yard-l-west"]),
+        control("yard-r-stop", "stop", 44, -32, 180, ["yard-r-east"], undefined,
+          [approach("yard-r-stop-approach", "yard-r-east", 56, "yard-r")],
+          [installation("yard-r-stop-sign", 50, -24, 180, "roadside_pole", "stop_sign", "primary")]),
+        control("yard-l-stop", "stop", -34, -22, 90, ["yard-l-west"], undefined,
+          [approach("yard-l-stop-approach", "yard-l-west", 36, "yard-l")],
+          [installation("yard-l-stop-sign", -28, -14, 180, "roadside_pole", "stop_sign", "primary")]),
       ],
       [],
       [
-        spawn("yard-r-player", "player", -34, 32, 90, "yard-r-north"),
-        spawn("yard-l-player", "player", -34, 12, 180, "yard-l-west"),
+        anchoredSpawn("yard-r-player", "player", "yard-r-north", 10),
+        anchoredSpawn("yard-l-player", "player", "yard-l-west", 10),
       ],
       [
-        checkpoint("yard-r-start", "Right-side start", "yard-r-north", -34, 32, 90),
-        checkpoint("yard-r-turn", "Right-side turn", "yard-r-east", 44, 20, 180),
-        checkpoint("yard-l-start", "Left-side start", "yard-l-west", -34, 12, 180),
-        checkpoint("yard-l-turn", "Left-side turn", "yard-l-south", -20, -22, 90),
+        checkpoint("yard-r-start", "Right-side start", "yard-r-north", 10),
+        checkpoint("yard-r-turn", "Right-side turn", "yard-r-east", 12),
+        checkpoint("yard-l-start", "Left-side start", "yard-l-west", 10),
+        checkpoint("yard-l-turn", "Left-side turn", "yard-l-south", 14),
       ],
     ),
   },
@@ -688,6 +823,13 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(250, 190),
       roadWidth: 11,
       shoulderWidth: 1.5,
+      roadSurfaces: [
+        roadSurface("nyc-west-72", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], 10.2, ["nyc-72-east-1", "nyc-72-east-2"]),
+        roadSurface("nyc-west-79", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], 10.2, ["nyc-79-west-1", "nyc-79-west-2"]),
+        roadSurface("nyc-broadway", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], 10.8, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"]),
+        roadSurface("nyc-columbus", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], 7.4, ["nyc-columbus-n-1", "nyc-columbus-n-2"], "lane_divider"),
+        roadSurface("nyc-west-end", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], 7.4, ["nyc-west-end-s-1", "nyc-west-end-s-2"], "lane_divider"),
+      ],
       blocks: [
         { id: "nyc-block-nw", center: point(-52, 36), size: point(82, 48), heightRange: [18, 42], density: 0.8, material: "brick" },
         { id: "nyc-block-ne", center: point(52, 36), size: point(82, 48), heightRange: [22, 48], density: 0.85, material: "sandstone" },
@@ -703,9 +845,27 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(nycNodes),
       nycLanes,
       [
-        control("nyc-signal-72-bway", "signal", 0, -72, 90, ["nyc-72-east-1", "nyc-bway-n-1"], ["nyc-conflict-72-bway"]),
-        control("nyc-crosswalk-79", "crosswalk", 0, 72, 270, ["nyc-79-west-1", "nyc-bway-n-2"], ["nyc-conflict-79-bway"]),
-        control("nyc-signal-columbus", "signal", 105, 0, 0, ["nyc-columbus-n-1"], ["nyc-conflict-columbus"]),
+        control("nyc-signal-72-bway", "signal", 0, -72, 90, ["nyc-72-east-1", "nyc-bway-n-1"], ["nyc-conflict-72-bway"],
+          [
+            approach("nyc-72-east-approach", "nyc-72-east-1", 97, "nyc-72-east", ["nyc-conflict-72-bway"]),
+            approach("nyc-bway-north-approach", "nyc-bway-n-1", 8, "nyc-bway-north", ["nyc-conflict-72-bway"]),
+          ],
+          [
+            installation("nyc-72-bway-mast", 8.5, -80.5, 90, "mast_arm", "nyc_signal", "primary", ["nyc-72-east-approach"], 270),
+            installation("nyc-72-bway-companion", -8.5, -63.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-bway-north-approach"]),
+          ]),
+        control("nyc-crosswalk-79", "crosswalk", 0, 72, 270, ["nyc-79-west-1", "nyc-bway-n-2"], ["nyc-conflict-79-bway"],
+          [
+            approach("nyc-79-west-crosswalk", "nyc-79-west-1", 97, "crosswalk", ["nyc-conflict-79-bway"]),
+            approach("nyc-bway-north-crosswalk", "nyc-bway-n-2", 64, "crosswalk", ["nyc-conflict-79-bway"]),
+          ],
+          [installation("nyc-79-crosswalk-marking", 0, 72, 270, "road_marking", "crosswalk", "marking")]),
+        control("nyc-signal-columbus", "signal", 105, 0, 0, ["nyc-columbus-n-1"], ["nyc-conflict-columbus"],
+          [approach("nyc-columbus-north-approach", "nyc-columbus-n-1", 64, "nyc-columbus-north", ["nyc-conflict-columbus"])],
+          [
+            installation("nyc-columbus-mast", 113.5, -8.5, 0, "mast_arm", "nyc_signal", "primary", ["nyc-columbus-north-approach"], 180),
+            installation("nyc-columbus-companion", 96.5, 8.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-columbus-north-approach"]),
+          ]),
       ],
       [
         { id: "nyc-conflict-72-bway", laneIds: ["nyc-72-east-1", "nyc-bway-n-1"], polygon: [point(-8, -80), point(8, -80), point(8, -64), point(-8, -64)] },
@@ -713,17 +873,17 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-conflict-columbus", laneIds: ["nyc-columbus-n-1"], polygon: [point(97, -8), point(113, -8), point(113, 8), point(97, 8)] },
       ],
       [
-        spawn("nyc-player", "player", -88, -72, 90, "nyc-72-east-1"),
-        spawn("nyc-car-1", "vehicle", 24, -72, 90, "nyc-72-east-2"),
-        spawn("nyc-car-2", "vehicle", 105, 34, 0, "nyc-columbus-n-2"),
-        spawn("nyc-ped-1", "pedestrian", -6, 64, 0),
-        spawn("nyc-cyclist-1", "cyclist", -62, 0, 90, "nyc-west-end-s-1"),
+        anchoredSpawn("nyc-player", "player", "nyc-72-east-1", 17),
+        anchoredSpawn("nyc-car-1", "vehicle", "nyc-72-east-2", 24),
+        anchoredSpawn("nyc-car-2", "vehicle", "nyc-columbus-n-2", 34),
+        freeSpawn("nyc-ped-1", "pedestrian", -6, 64, 0),
+        freeSpawn("nyc-cyclist-1", "cyclist", -62, 0, 90, "nyc-west-end-s-1"),
       ],
       [
-        checkpoint("nyc-start", "West 72nd start", "nyc-72-east-1", -88, -72, 90),
-        checkpoint("nyc-broadway", "Broadway signal", "nyc-bway-n-1", 0, -48, 0),
-        checkpoint("nyc-79", "West 79th crosswalk", "nyc-79-west-1", 72, 72, 270),
-        checkpoint("nyc-finish", "West End finish", "nyc-west-end-s-2", -105, -42, 180),
+        checkpoint("nyc-start", "West 72nd start", "nyc-72-east-1", 17),
+        checkpoint("nyc-broadway", "Broadway signal", "nyc-bway-n-1", 24),
+        checkpoint("nyc-79", "West 79th crosswalk", "nyc-79-west-1", 33),
+        checkpoint("nyc-finish", "West End finish", "nyc-west-end-s-2", 42),
       ],
     ),
   },
@@ -741,6 +901,16 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(300, 270),
       roadWidth: 9,
       shoulderWidth: 2,
+      roadSurfaces: [
+        roadSurface("uk-roundabout", [ukNodes.n.position, point(25, 25), ukNodes.e.position, point(25, -25), ukNodes.s.position, point(-25, -25), ukNodes.w.position, point(-25, 25), ukNodes.n.position], 7.2, ["uk-rb-n-e", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n"], "roundabout"),
+        roadSurface("uk-north-approach", [ukNodes.n.position, ukNodes.no.position], 7.2, ["uk-entry-north", "uk-exit-north"]),
+        roadSurface("uk-east-approach", [ukNodes.e.position, ukNodes.eo.position], 7.2, ["uk-entry-east", "uk-exit-east"]),
+        roadSurface("uk-south-approach", [ukNodes.s.position, ukNodes.so.position], 7.2, ["uk-entry-south", "uk-exit-south"]),
+        roadSurface("uk-west-approach", [ukNodes.w.position, ukNodes.wo.position], 7.2, ["uk-entry-west", "uk-exit-west"]),
+        roadSurface("uk-dual-carriageway", [ukNodes.no.position, point(48, 100), ukNodes.ne.position], 7.4, ["uk-dual-n-east", "uk-dual-n-east-pass"], "lane_divider"),
+        roadSurface("uk-east-link", [ukNodes.ne.position, ukNodes.eo.position], 7.2, ["uk-east-north"]),
+        roadSurface("uk-oldbrook-loop", [ukNodes.so.position, point(-65, -104), ukNodes.wo.position, point(-65, -40), ukNodes.so.position], 7.2, ["uk-south-west", "uk-west-south"]),
+      ],
       blocks: [
         { id: "uk-oldbrook", center: point(-78, 72), size: point(90, 72), heightRange: [5, 12], density: 0.55, material: "brick" },
         { id: "uk-retail", center: point(84, -72), size: point(96, 70), heightRange: [6, 14], density: 0.4, material: "concrete" },
@@ -754,24 +924,30 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(ukNodes),
       ukLanes,
       [
-        control("uk-yield-south", "yield", 0, -42, 0, ["uk-entry-south"], ["uk-roundabout-conflict"]),
-        control("uk-yield-north", "yield", 0, 42, 180, ["uk-entry-north"], ["uk-roundabout-conflict"]),
-        control("uk-crosswalk-oldbrook", "crosswalk", -102, -102, 45, ["uk-west-south"]),
+        control("uk-yield-south", "yield", 0, -42, 0, ["uk-entry-south"], ["uk-roundabout-conflict"],
+          [approach("uk-yield-south-approach", "uk-entry-south", 74, "yield", ["uk-roundabout-conflict"])],
+          [installation("uk-yield-south-sign", -7.5, -47, 0, "roadside_pole", "yield_sign", "primary")]),
+        control("uk-yield-north", "yield", 0, 42, 180, ["uk-entry-north"], ["uk-roundabout-conflict"],
+          [approach("uk-yield-north-approach", "uk-entry-north", 74, "yield", ["uk-roundabout-conflict"])],
+          [installation("uk-yield-north-sign", 7.5, 47, 180, "roadside_pole", "yield_sign", "primary")]),
+        control("uk-crosswalk-oldbrook", "crosswalk", -102, -102, 45, ["uk-west-south"], undefined,
+          [approach("uk-oldbrook-crosswalk-approach", "uk-west-south", 150, "crosswalk")],
+          [installation("uk-oldbrook-crosswalk-marking", -102, -102, 45, "road_marking", "crosswalk", "marking")]),
       ],
       [
         { id: "uk-roundabout-conflict", laneIds: ["uk-rb-n-e", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n"], polygon: [point(-40, -40), point(40, -40), point(40, 40), point(-40, 40)] },
       ],
       [
-        spawn("uk-player", "player", 0, -96, 0, "uk-entry-south"),
-        spawn("uk-car-1", "vehicle", -24, 24, 315, "uk-rb-w-n"),
-        spawn("uk-car-2", "vehicle", 48, 104, 45, "uk-dual-n-east"),
-        spawn("uk-ped-1", "pedestrian", -104, -92, 0),
+        anchoredSpawn("uk-player", "player", "uk-entry-south", 22),
+        anchoredSpawn("uk-car-1", "vehicle", "uk-rb-w-n", 27),
+        anchoredSpawn("uk-car-2", "vehicle", "uk-dual-n-east", 50),
+        freeSpawn("uk-ped-1", "pedestrian", -104, -92, 0),
       ],
       [
-        checkpoint("uk-start", "Oldbrook approach", "uk-entry-south", 0, -96, 0),
-        checkpoint("uk-roundabout", "South Grafton Roundabout", "uk-rb-s-w", -12, -32, 270),
-        checkpoint("uk-dual", "Dual carriageway", "uk-dual-n-east", 46, 102, 45),
-        checkpoint("uk-finish", "Oldbrook return", "uk-west-south", -110, -44, 135),
+        checkpoint("uk-start", "Oldbrook approach", "uk-entry-south", 22),
+        checkpoint("uk-roundabout", "South Grafton Roundabout", "uk-rb-s-w", 13),
+        checkpoint("uk-dual", "Dual carriageway", "uk-dual-n-east", 48),
+        checkpoint("uk-finish", "Oldbrook return", "uk-west-south", 48),
       ],
     ),
   },
@@ -789,6 +965,16 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(310, 270),
       roadWidth: 9,
       shoulderWidth: 2,
+      roadSurfaces: [
+        roadSurface("fr-roundabout", [frNodes.n.position, point(-25, 25), frNodes.w.position, point(-25, -25), frNodes.s.position, point(25, -25), frNodes.e.position, point(25, 25), frNodes.n.position], 7.2, ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], "roundabout"),
+        roadSurface("fr-north-approach", [frNodes.n.position, frNodes.no.position], 7.2, ["fr-entry-north", "fr-exit-north"]),
+        roadSurface("fr-east-approach", [frNodes.e.position, frNodes.eo.position], 7.2, ["fr-entry-east", "fr-exit-east"]),
+        roadSurface("fr-south-approach", [frNodes.s.position, frNodes.so.position], 7.2, ["fr-entry-south", "fr-exit-south"]),
+        roadSurface("fr-west-approach", [frNodes.w.position, frNodes.wo.position], 7.2, ["fr-entry-west", "fr-exit-west"]),
+        roadSurface("fr-south-east-road", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], 7.4, ["fr-south-east", "fr-south-east-pass"], "lane_divider"),
+        roadSurface("fr-east-south-road", [frNodes.eo.position, point(92, -82), frNodes.so.position], 7.2, ["fr-east-south"]),
+        roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
+      ],
       blocks: [
         { id: "fr-coquelles", center: point(-82, 70), size: point(100, 72), heightRange: [5, 13], density: 0.45, material: "stucco" },
         { id: "fr-commercial", center: point(88, -70), size: point(104, 76), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
@@ -802,24 +988,30 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(frNodes),
       frLanes,
       [
-        control("fr-yield-south", "yield", 0, -42, 0, ["fr-entry-south"], ["fr-roundabout-conflict"]),
-        control("fr-yield-east", "yield", 42, 0, 270, ["fr-entry-east"], ["fr-roundabout-conflict"]),
-        control("fr-priority-right", "yield", -74, 72, 225, ["fr-north-west"]),
+        control("fr-yield-south", "yield", 0, -42, 0, ["fr-entry-south"], ["fr-roundabout-conflict"],
+          [approach("fr-yield-south-approach", "fr-entry-south", 74, "yield", ["fr-roundabout-conflict"])],
+          [installation("fr-yield-south-sign", 8, -48, 0, "roadside_pole", "yield_sign", "primary")]),
+        control("fr-yield-east", "yield", 42, 0, 270, ["fr-entry-east"], ["fr-roundabout-conflict"],
+          [approach("fr-yield-east-approach", "fr-entry-east", 94, "yield", ["fr-roundabout-conflict"])],
+          [installation("fr-yield-east-sign", 48, 8, 270, "roadside_pole", "yield_sign", "primary")]),
+        control("fr-priority-right", "yield", -74, 72, 225, ["fr-north-west"], undefined,
+          [approach("fr-priority-right-approach", "fr-north-west", 82, "priority")],
+          [installation("fr-priority-right-sign", -70, 65, 225, "roadside_pole", "yield_sign", "warning")]),
       ],
       [
         { id: "fr-roundabout-conflict", laneIds: ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], polygon: [point(-40, -40), point(40, -40), point(40, 40), point(-40, 40)] },
       ],
       [
-        spawn("fr-player", "player", 0, -96, 0, "fr-entry-south"),
-        spawn("fr-car-1", "vehicle", 22, -24, 45, "fr-rb-s-e"),
-        spawn("fr-car-2", "vehicle", 54, -98, 45, "fr-south-east"),
-        spawn("fr-cyclist-1", "cyclist", -74, 80, 225, "fr-north-west"),
+        anchoredSpawn("fr-player", "player", "fr-entry-south", 22),
+        anchoredSpawn("fr-car-1", "vehicle", "fr-rb-s-e", 28),
+        anchoredSpawn("fr-car-2", "vehicle", "fr-south-east", 59),
+        freeSpawn("fr-cyclist-1", "cyclist", -74, 80, 225, "fr-north-west"),
       ],
       [
-        checkpoint("fr-start", "Coquelles start", "fr-entry-south", 0, -96, 0),
-        checkpoint("fr-roundabout", "Roundabout entry", "fr-rb-s-e", 12, -32, 90),
-        checkpoint("fr-priority", "Priority-to-right junction", "fr-north-west", -72, 74, 225),
-        checkpoint("fr-finish", "Terminal road finish", "fr-south-east", 62, -98, 45),
+        checkpoint("fr-start", "Coquelles start", "fr-entry-south", 22),
+        checkpoint("fr-roundabout", "Roundabout entry", "fr-rb-s-e", 13),
+        checkpoint("fr-priority", "Priority-to-right junction", "fr-north-west", 82),
+        checkpoint("fr-finish", "Terminal road finish", "fr-south-east", 70),
       ],
     ),
   },
@@ -837,6 +1029,15 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(270, 190),
       roadWidth: 6.5,
       shoulderWidth: 0.8,
+      roadSurfaces: [
+        roadSurface("jp-south-road", [jpNodes.a.position, jpNodes.b.position, jpNodes.c.position], 6.4, ["jp-south-east-1", "jp-south-east-2", "jp-south-west-1", "jp-south-west-2"]),
+        roadSurface("jp-east-curve", [jpNodes.c.position, point(102, -56), point(108, -35), jpNodes.d.position], 6.4, ["jp-curve-north", "jp-curve-south"]),
+        roadSurface("jp-center-road", [jpNodes.d.position, point(82, 18), jpNodes.e.position, jpNodes.f.position, jpNodes.g.position], 6.4, ["jp-center-west-1", "jp-center-west-2", "jp-center-west-3", "jp-center-east-1", "jp-center-east-2", "jp-center-east-3"]),
+        roadSurface("jp-west-road", [jpNodes.g.position, jpNodes.h.position], 6.4, ["jp-west-north", "jp-west-south"]),
+        roadSurface("jp-north-road", [jpNodes.h.position, jpNodes.i.position, jpNodes.j.position], 6.4, ["jp-north-east-1", "jp-north-east-2", "jp-north-west-1", "jp-north-west-2"]),
+        roadSurface("jp-junction-road", [jpNodes.e.position, point(82, 47), jpNodes.j.position], 6.4, ["jp-junction-south", "jp-junction-north"]),
+        roadSurface("jp-narrow-road", [jpNodes.b.position, jpNodes.f.position, jpNodes.i.position], 5.8, ["jp-narrow-north-1", "jp-narrow-north-2", "jp-narrow-south-1", "jp-narrow-south-2"], "shared_space"),
+      ],
       blocks: [
         { id: "jp-block-west", center: point(-70, 46), size: point(64, 40), heightRange: [5, 14], density: 0.72, material: "plaster" },
         { id: "jp-block-center", center: point(10, 46), size: point(64, 40), heightRange: [6, 18], density: 0.78, material: "tile" },
@@ -852,25 +1053,37 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(jpNodes),
       jpLanes,
       [
-        control("jp-rail-signal", "railway_signal", 18, -72, 90, ["jp-south-east-2"]),
-        control("jp-stop-narrow", "stop", -30, 12, 0, ["jp-narrow-north-1"]),
-        control("jp-crosswalk-station", "crosswalk", -30, 18, 90, ["jp-center-west-2", "jp-narrow-north-2"]),
+        control("jp-rail-signal", "railway_signal", 18, -72, 90, ["jp-south-east-2"], ["jp-rail-conflict"],
+          [approach("jp-rail-eastbound-approach", "jp-south-east-2", 42, "railway", ["jp-rail-conflict"])],
+          [
+            installation("jp-rail-east-crossing", 12, -77, 90, "railway_crossing", "japan_railway", "primary"),
+            installation("jp-rail-west-crossing", 24, -67, 270, "railway_crossing", "japan_railway", "secondary"),
+          ]),
+        control("jp-stop-narrow", "stop", -30, 12, 0, ["jp-narrow-north-1"], undefined,
+          [approach("jp-stop-narrow-approach", "jp-narrow-north-1", 84, "stop")],
+          [installation("jp-stop-narrow-sign", -36, 10, 0, "roadside_pole", "stop_sign", "primary")]),
+        control("jp-crosswalk-station", "crosswalk", -30, 18, 90, ["jp-center-west-2", "jp-narrow-north-2"], ["jp-station-conflict"],
+          [
+            approach("jp-station-westbound-crosswalk", "jp-center-west-2", 76, "crosswalk", ["jp-station-conflict"]),
+            approach("jp-station-northbound-crosswalk", "jp-narrow-north-2", 0, "crosswalk", ["jp-station-conflict"]),
+          ],
+          [installation("jp-station-crosswalk-marking", -30, 18, 90, "road_marking", "crosswalk", "marking")]),
       ],
       [
         { id: "jp-rail-conflict", laneIds: ["jp-south-east-2"], polygon: [point(12, -80), point(24, -80), point(24, -64), point(12, -64)] },
         { id: "jp-station-conflict", laneIds: ["jp-center-west-2", "jp-narrow-north-2"], polygon: [point(-38, 10), point(-22, 10), point(-22, 26), point(-38, 26)] },
       ],
       [
-        spawn("jp-player", "player", -94, -72, 90, "jp-south-east-1"),
-        spawn("jp-car-1", "vehicle", 80, -68, 45, "jp-curve-north"),
-        spawn("jp-ped-1", "pedestrian", -35, 10, 0),
-        spawn("jp-cyclist-1", "cyclist", -30, 48, 0, "jp-narrow-north-2"),
+        anchoredSpawn("jp-player", "player", "jp-south-east-1", 18),
+        anchoredSpawn("jp-car-1", "vehicle", "jp-curve-north", 12),
+        freeSpawn("jp-ped-1", "pedestrian", -35, 10, 0),
+        freeSpawn("jp-cyclist-1", "cyclist", -30, 48, 0, "jp-narrow-north-2"),
       ],
       [
-        checkpoint("jp-start", "Setagaya start", "jp-south-east-1", -94, -72, 90),
-        checkpoint("jp-rail", "Setagaya Line crossing", "jp-south-east-2", 8, -72, 90),
-        checkpoint("jp-station", "Gotokuji station street", "jp-center-west-2", 4, 18, 270),
-        checkpoint("jp-finish", "Neighbourhood finish", "jp-north-east-2", 24, 76, 90),
+        checkpoint("jp-start", "Setagaya start", "jp-south-east-1", 18),
+        checkpoint("jp-rail", "Setagaya Line crossing", "jp-south-east-2", 38),
+        checkpoint("jp-station", "Gotokuji station street", "jp-center-west-2", 50),
+        checkpoint("jp-finish", "Neighbourhood finish", "jp-north-east-2", 54),
       ],
     ),
   },
@@ -889,6 +1102,13 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(330, 130),
       roadWidth: 8,
       shoulderWidth: 1.5,
+      roadSurfaces: [
+        roadSurface("xf-uk-road", [transitionNodes.uk0.position, transitionNodes.uk1.position], 7.4, ["xf-uk-approach", "xf-uk-approach-opposite"]),
+        roadSurface("xf-uk-terminal-road", [transitionNodes.uk1.position, point(-48, -20), transitionNodes.uk2.position], 7.2, ["xf-uk-terminal"], "terminal"),
+        roadSurface("xf-shuttle-road", [transitionNodes.uk2.position, transitionNodes.gate.position], 6, ["xf-shuttle"], "terminal"),
+        roadSurface("xf-fr-terminal-road", [transitionNodes.gate.position, transitionNodes.fr0.position, point(48, 18), transitionNodes.fr1.position], 7.2, ["xf-fr-terminal", "xf-fr-exit"], "terminal"),
+        roadSurface("xf-fr-road-surface", [transitionNodes.fr1.position, transitionNodes.fr2.position], 7.4, ["xf-fr-road", "xf-fr-road-opposite"]),
+      ],
       blocks: [],
       landmarks: [
         { id: "xf-folkestone-terminal", kind: "terminal", center: point(-92, 26), size: point(76, 42), color: "#1f4f79" },
@@ -900,19 +1120,21 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(transitionNodes),
       transitionLanes,
       [
-        control("xf-side-swap-gate", "side_swap_gate", 0, 0, 90, ["xf-shuttle", "xf-fr-terminal"]),
+        control("xf-side-swap-gate", "side_swap_gate", 0, 0, 90, ["xf-shuttle", "xf-fr-terminal"], undefined,
+          [approach("xf-side-swap-approach", "xf-shuttle", 18, "transition")],
+          [installation("xf-side-swap-portal", 0, 0, 90, "terminal_portal", "side_swap_gate", "primary")]),
       ],
       [],
       [
-        spawn("xf-player", "player", -132, -34, 90, "xf-uk-approach"),
-        spawn("xf-car-1", "vehicle", -88, -34, 90, "xf-uk-approach"),
-        spawn("xf-car-2", "vehicle", 98, 34, 90, "xf-fr-road"),
+        anchoredSpawn("xf-player", "player", "xf-uk-approach", 12),
+        anchoredSpawn("xf-car-1", "vehicle", "xf-uk-approach", 56),
+        anchoredSpawn("xf-car-2", "vehicle", "xf-fr-road", 22),
       ],
       [
-        checkpoint("xf-uk-start", "Folkestone approach", "xf-uk-approach", -132, -34, 90),
-        checkpoint("xf-shuttle", "Shuttle transition", "xf-shuttle", -12, 0, 90),
-        checkpoint("xf-fr-start", "Coquelles exit", "xf-fr-terminal", 12, 0, 90),
-        checkpoint("xf-finish", "French road", "xf-fr-road", 118, 34, 90),
+        checkpoint("xf-uk-start", "Folkestone approach", "xf-uk-approach", 12),
+        checkpoint("xf-shuttle", "Shuttle transition", "xf-shuttle", 12),
+        checkpoint("xf-fr-start", "Coquelles exit", "xf-fr-terminal", 12),
+        checkpoint("xf-finish", "French road", "xf-fr-road", 42),
       ],
     ),
   },
@@ -940,6 +1162,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [3, 5],
+    startSpawnId: "yard-r-player",
     route: ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"],
     objectives: [
       { id: "right-position", label: "Keep to the right side", ruleCode: "wrong_way" },
@@ -968,6 +1191,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 1,
     estimatedMinutes: [3, 5],
+    startSpawnId: "yard-l-player",
     route: ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"],
     objectives: [
       { id: "left-position", label: "Keep to the left side", ruleCode: "wrong_way" },
@@ -999,6 +1223,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [5, 7],
+    startSpawnId: "nyc-player",
     route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
     objectives: [
       { id: "us-correct-side", label: "Stay right on two-way streets", ruleCode: "wrong_way" },
@@ -1029,6 +1254,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 2,
     estimatedMinutes: [6, 8],
+    startSpawnId: "nyc-player",
     route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
     objectives: [
       { id: "us-red", label: "Stop before a red-light conflict zone", ruleCode: "red_light" },
@@ -1059,6 +1285,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 3,
     estimatedMinutes: [6, 8],
+    startSpawnId: "nyc-player",
     route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
     objectives: [
       { id: "us-observe", label: "Mirror, signal and check before changing lanes", ruleCode: "observation" },
@@ -1089,6 +1316,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 1,
     estimatedMinutes: [5, 7],
+    startSpawnId: "uk-player",
     route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south"],
     objectives: [
       { id: "uk-side", label: "Keep left after every turn", ruleCode: "wrong_way" },
@@ -1119,6 +1347,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 2,
     estimatedMinutes: [6, 8],
+    startSpawnId: "uk-player",
     route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-exit-east", "uk-entry-east", "uk-rb-e-s", "uk-exit-south"],
     objectives: [
       { id: "uk-yield", label: "Give way to traffic from the right", ruleCode: "roundabout_yield" },
@@ -1149,6 +1378,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 3,
     estimatedMinutes: [6, 8],
+    startSpawnId: "uk-player",
     route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-exit-north", "uk-dual-n-east", "uk-east-north", "uk-entry-east", "uk-rb-e-s", "uk-exit-south"],
     objectives: [
       { id: "uk-merge", label: "Merge into a safe gap", ruleCode: "merge" },
@@ -1179,6 +1409,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [5, 7],
+    startSpawnId: "fr-player",
     route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south"],
     objectives: [
       { id: "fr-side", label: "Keep right after turns", ruleCode: "wrong_way" },
@@ -1209,6 +1440,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 2,
     estimatedMinutes: [6, 8],
+    startSpawnId: "fr-player",
     route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
       { id: "fr-priority", label: "Yield at an unsigned priority-to-right junction", ruleCode: "priority_to_right" },
@@ -1239,6 +1471,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 3,
     estimatedMinutes: [6, 8],
+    startSpawnId: "fr-player",
     route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
     objectives: [
       { id: "fr-merge", label: "Merge without forcing traffic to brake", ruleCode: "merge" },
@@ -1269,6 +1502,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 1,
     estimatedMinutes: [5, 7],
+    startSpawnId: "jp-player",
     route: ["jp-south-east-1", "jp-narrow-north-1", "jp-narrow-north-2", "jp-north-east-2", "jp-junction-south", "jp-center-west-2", "jp-center-west-3"],
     objectives: [
       { id: "jp-side", label: "Keep left on narrow streets", ruleCode: "wrong_way" },
@@ -1299,6 +1533,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 2,
     estimatedMinutes: [6, 8],
+    startSpawnId: "jp-player",
     route: ["jp-south-east-1", "jp-narrow-north-1", "jp-narrow-north-2", "jp-north-east-2", "jp-junction-south", "jp-center-west-2", "jp-center-west-3", "jp-west-north"],
     objectives: [
       { id: "jp-ped", label: "Yield at the station crosswalk", ruleCode: "pedestrian_priority" },
@@ -1329,6 +1564,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 3,
     estimatedMinutes: [6, 8],
+    startSpawnId: "jp-player",
     route: ["jp-south-east-1", "jp-south-east-2", "jp-curve-north", "jp-center-west-1", "jp-center-west-2", "jp-center-west-3", "jp-west-north", "jp-north-east-1", "jp-north-east-2"],
     objectives: [
       { id: "jp-rail-stop", label: "Stop and check before the railway", ruleCode: "railway_crossing" },
@@ -1357,6 +1593,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "left",
     difficulty: 4,
     estimatedMinutes: [7, 10],
+    startSpawnId: "xf-player",
     route: ["xf-uk-approach", "xf-uk-terminal", "xf-shuttle", "xf-fr-terminal", "xf-fr-exit", "xf-fr-road"],
     objectives: [
       { id: "xf-uk-side", label: "Approach the UK terminal on the left", ruleCode: "wrong_way" },
@@ -1397,6 +1634,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     title: "Free Drive — New York City",
     description: "Explore the Upper West Side miniature with coaching available but no fixed route.",
     unlockAfter: "us-one-way-grid",
+    startSpawnId: "nyc-player",
     trafficSeed: 2101,
   },
   {
@@ -1407,6 +1645,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     title: "Free Drive — Milton Keynes",
     description: "Practise left-side roads and roundabout approaches at your own pace.",
     unlockAfter: "uk-left-side-basics",
+    startSpawnId: "uk-player",
     trafficSeed: 2201,
   },
   {
@@ -1417,6 +1656,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     title: "Free Drive — Calais & Coquelles",
     description: "Explore right-side French roads, roundabouts and priority junctions.",
     unlockAfter: "fr-right-side-basics",
+    startSpawnId: "fr-player",
     trafficSeed: 2301,
   },
   {
@@ -1427,6 +1667,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     title: "Free Drive — Tokyo Setagaya",
     description: "Navigate narrow left-side neighbourhood streets with patient local traffic.",
     unlockAfter: "jp-left-side-basics",
+    startSpawnId: "jp-player",
     trafficSeed: 2401,
   },
 ];

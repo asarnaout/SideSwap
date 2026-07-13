@@ -3,6 +3,7 @@ import {
   SimulationCore,
   isRestrictionWindowActive,
 } from "../app/game/simulation";
+import { SCORING_CONFIG } from "../app/game/content";
 
 describe("deterministic simulation", () => {
   it("produces the same snapshots for the same seed and inputs", () => {
@@ -97,6 +98,9 @@ describe("deterministic simulation", () => {
     const snapshot = simulation.getSnapshot();
     expect(snapshot.status).toBe("incident");
     expect(snapshot.activeIncident?.code).toBe("wrong_way");
+    expect(snapshot.activeIncident?.penalty).toBe(
+      SCORING_CONFIG.penalties.wrong_way,
+    );
     expect(snapshot.activeIncident?.correction).toContain("Keep to the right");
     expect(snapshot.score.criticalErrors).toBe(1);
     expect(snapshot.player.speedMps).toBe(0);
@@ -137,6 +141,14 @@ describe("deterministic simulation", () => {
       ],
       spawn: { x: 0, z: -12, heading: 0 },
       bounds: { minX: -10, maxX: 10, minZ: -24, maxZ: 24 },
+      trafficGates: [
+        {
+          id: "slow-blocker",
+          laneId: "cromwell-east",
+          distance: 28,
+          desiredSpeedMps: 1,
+        },
+      ],
       boxJunctions: [
         {
           id: "cromwell-yellow-box",
@@ -160,14 +172,16 @@ describe("deterministic simulation", () => {
       .getEvents()
       .find((candidate) => candidate.code === "box_junction");
     expect(event?.severity).toBe("minor");
-    expect(event?.penalty).toBe(6);
+    expect(event?.penalty).toBe(SCORING_CONFIG.penalties.box_junction);
     expect(event?.message).toContain("exit was clear");
     expect(event?.evidence).toMatchObject({
       junctionId: "cromwell-yellow-box",
       laneId: "cromwell-east",
       blockingVehicleId: "npc-1",
     });
-    expect(simulation.getSnapshot().score.ruleUse).toBe(94);
+    expect(simulation.getSnapshot().score.ruleUse).toBe(
+      100 - (SCORING_CONFIG.penalties.box_junction ?? 0),
+    );
   });
 
   it("does not penalize a box-junction entry when its exit is clear", () => {
@@ -311,5 +325,248 @@ describe("deterministic simulation", () => {
         },
       ),
     ).toBe(false);
+  });
+
+  it("moves NPCs continuously through authored successor lanes", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      lanes: [
+        {
+          id: "player-lane",
+          points: [{ x: 50, z: 0 }, { x: 50, z: 100 }],
+          loop: false,
+        },
+        {
+          id: "approach",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 20 }],
+          successorLaneIds: ["exit"],
+          loop: false,
+        },
+        {
+          id: "exit",
+          points: [{ x: 0, z: 20 }, { x: 20, z: 20 }],
+          loop: false,
+        },
+      ],
+      spawn: { x: 50, z: 10, heading: 0 },
+      bounds: { minX: -10, maxX: 60, minZ: -10, maxZ: 110 },
+      trafficGates: [
+        { id: "approach-edge", laneId: "approach", distance: 18, desiredSpeedMps: 6 },
+      ],
+    });
+
+    let previous = simulation.getSnapshot().npcs[0];
+    let enteredSuccessor = false;
+    for (let index = 0; index < 180; index += 1) {
+      const current = simulation.step(1 / 60).npcs[0];
+      if (!current) continue;
+      const displacement = Math.hypot(current.x - previous.x, current.z - previous.z);
+      expect(displacement).toBeLessThanOrEqual(current.speedMps / 60 + 0.05);
+      enteredSuccessor ||= current.laneId === "exit";
+      previous = current;
+    }
+    expect(enteredSuccessor).toBe(true);
+    expect(simulation.getSnapshot().status).toBe("running");
+  });
+
+  it("queues an NPC at a dead end instead of wrapping it to the lane start", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      minRuntimeSpawnDistanceM: 200,
+      lanes: [
+        {
+          id: "player-lane",
+          points: [{ x: 100, z: 0 }, { x: 100, z: 100 }],
+          loop: false,
+        },
+        {
+          id: "dead-end",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 10 }],
+          loop: false,
+        },
+      ],
+      spawn: { x: 100, z: 10, heading: 0 },
+      bounds: { minX: -10, maxX: 110, minZ: -10, maxZ: 110 },
+      trafficGates: [
+        { id: "dead-end-edge", laneId: "dead-end", distance: 8, desiredSpeedMps: 6 },
+      ],
+    });
+    for (let index = 0; index < 180; index += 1) simulation.step(1 / 60);
+    expect(simulation.getSnapshot().npcs).toHaveLength(0);
+    expect(simulation.getSnapshot().queuedNpcCount).toBe(1);
+  });
+
+  it("keeps a safe gap behind a stationary legal player for sixty seconds", () => {
+    const simulation = new SimulationCore({
+      seed: 1251,
+      npcCount: 1,
+      lanes: [
+        {
+          id: "london-left-lane",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 300 }],
+          speedLimitMps: 13,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 100, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -10, maxZ: 310 },
+      trafficGates: [
+        { id: "london-rear-gate", laneId: "london-left-lane", distance: 40, desiredSpeedMps: 12 },
+      ],
+    });
+    for (let index = 0; index < 60 * 60; index += 1) simulation.step(1 / 60);
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.score.criticalErrors).toBe(0);
+    expect(snapshot.npcs[0].z).toBeLessThanOrEqual(95);
+  });
+
+  it("requeues traffic that conflicts with a restored checkpoint", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      minRuntimeSpawnDistanceM: 200,
+      lanes: [
+        {
+          id: "recovery-lane",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 300 }],
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 100, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -10, maxZ: 310 },
+      trafficGates: [
+        { id: "recovery-gate", laneId: "recovery-lane", distance: 20, desiredSpeedMps: 4 },
+      ],
+    });
+    expect(simulation.getSnapshot().npcs).toHaveLength(1);
+    simulation.setCheckpoint({ id: "near-traffic", x: 0, z: 22, heading: 0 });
+    simulation.resetToCheckpoint();
+    expect(simulation.getSnapshot().npcs).toHaveLength(0);
+    expect(simulation.getSnapshot().queuedNpcCount).toBe(1);
+    expect(simulation.getSnapshot().score.criticalErrors).toBe(0);
+  });
+
+  it("supports UK red-amber and all-red clearance phases per approach", () => {
+    const simulation = new SimulationCore({
+      npcCount: 0,
+      lanes: [
+        { id: "signal-lane", points: [{ x: 0, z: 0 }, { x: 0, z: 100 }], loop: false },
+      ],
+      spawn: { x: 0, z: 10, heading: 0 },
+      trafficLights: [
+        {
+          id: "uk-primary",
+          phaseGroup: "north-south",
+          x: 0,
+          z: 50,
+          cycle: {
+            sequence: "uk",
+            greenSeconds: 1,
+            amberSeconds: 1,
+            allRedSeconds: 1,
+            redSeconds: 1,
+            redAmberSeconds: 1,
+          },
+        },
+      ],
+    });
+    const state = () => simulation.getSnapshot().trafficLights[0];
+    const advance = (seconds: number) => {
+      for (let index = 0; index < Math.ceil(seconds * 60); index += 1) {
+        simulation.step(1 / 60);
+      }
+    };
+    expect(state()).toMatchObject({ state: "green", phaseGroup: "north-south" });
+    advance(1.05);
+    expect(state().state).toBe("amber");
+    advance(1);
+    expect(state().state).toBe("all_red");
+    advance(1);
+    expect(state().state).toBe("red");
+    advance(1);
+    expect(state().state).toBe("red_amber");
+  });
+
+  it("stops NPC traffic at an active railway warning and assesses a player crossing", () => {
+    const sharedConfig = {
+      lanes: [
+        {
+          id: "rail-approach",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 100 }],
+          width: 3.2,
+          speedLimitMps: 12,
+          loop: false,
+        },
+        {
+          id: "player-safe-lane",
+          points: [{ x: 50, z: 0 }, { x: 50, z: 100 }],
+          width: 3.2,
+          speedLimitMps: 12,
+          loop: false,
+        },
+      ],
+      bounds: { minX: -10, maxX: 60, minZ: -10, maxZ: 110 },
+      trafficLights: [
+        {
+          id: "rail-warning",
+          phaseGroup: "railway",
+          x: 0,
+          z: 20,
+          cycle: {
+            sequence: "standard" as const,
+            greenSeconds: 1,
+            amberSeconds: 0.5,
+            allRedSeconds: 0.5,
+            redSeconds: 20,
+            redAmberSeconds: 0,
+            offsetSeconds: 2.1,
+          },
+        },
+      ],
+      stopLines: [
+        {
+          id: "rail-stop-line",
+          laneId: "rail-approach",
+          distance: 20,
+          kind: "railway" as const,
+          trafficLightId: "rail-warning",
+        },
+      ],
+    };
+
+    const traffic = new SimulationCore({
+      ...sharedConfig,
+      spawn: { x: 50, z: 10, heading: 0 },
+      npcCount: 1,
+      trafficGates: [
+        {
+          id: "rail-traffic-gate",
+          laneId: "rail-approach",
+          distance: 2,
+          desiredSpeedMps: 8,
+        },
+      ],
+    });
+    for (let tick = 0; tick < 6 * 60; tick += 1) traffic.step(1 / 60);
+    const railNpc = traffic.getSnapshot().npcs[0];
+    expect(railNpc?.z).toBeLessThan(20);
+    expect(railNpc?.speedMps).toBeLessThan(0.4);
+
+    const player = new SimulationCore({
+      ...sharedConfig,
+      spawn: { x: 0, z: 10, heading: 0 },
+      npcCount: 0,
+      scoring: SCORING_CONFIG,
+    });
+    for (let tick = 0; tick < 5 * 60; tick += 1) {
+      player.step(1 / 60, { throttle: 1 });
+    }
+    const railwayEvent = player
+      .getEvents()
+      .find((event) => event.code === "railway_crossing");
+    expect(railwayEvent?.penalty).toBe(
+      SCORING_CONFIG.penalties.railway_crossing,
+    );
+    expect(railwayEvent?.evidence).toMatchObject({ warningActive: true });
   });
 });
