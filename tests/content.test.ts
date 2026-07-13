@@ -75,6 +75,20 @@ describe("SideSwap content", () => {
     expect(us.trafficSide).toBe("right");
   });
 
+  it("keeps London left-side and New York right-side regardless of familiar-side metadata", () => {
+    const london = resolveSessionConfig({
+      ...sessionConfig("uk-london", "orientation-left"),
+      familiarTrafficSide: "right",
+    });
+    const newYork = resolveSessionConfig({
+      ...sessionConfig("us-nyc", "orientation-right"),
+      familiarTrafficSide: "left",
+    });
+
+    expect(london.trafficSide).toBe("left");
+    expect(newYork.trafficSide).toBe("right");
+  });
+
   it("resolves every traffic-side and steering-side combination independently", () => {
     for (const country of COUNTRY_PROFILES) {
       expect(resolveSteeringSide("auto", country)).toBe(

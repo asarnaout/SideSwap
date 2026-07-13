@@ -75,34 +75,30 @@ afterEach(() => {
 });
 
 describe("game-first launcher", () => {
-  it("returns corrupted saves to first-time setup", async () => {
+  it("returns corrupted saves to a directly playable default launcher", async () => {
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, "{broken");
     render(<SideSwapApp />);
 
     expect(
       await screen.findByRole("heading", {
-        name: /Which side feels normal to you/i,
+        name: /Swap your instincts. Start driving./i,
       }),
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: /Choose your usual traffic side/i }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
+    ).toBeEnabled();
+    expect(screen.queryByText(/Tell us where you normally drive/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Traffic keeps (right|left)/i })).not.toBeInTheDocument();
   });
 
-  it("requires only the familiar traffic side and features London as the opposite-side suggestion", async () => {
+  it("starts the selected destination immediately without a familiarity profile", async () => {
     render(<SideSwapApp />);
 
     expect(
-      await screen.findByRole("heading", { name: /Which side feels normal to you/i }),
+      await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i }),
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: /Choose your usual traffic side/i }),
-    ).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
-
-    expect(
-      screen.getByRole("button", { name: /Start London orientation/i }),
+      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
     ).toBeEnabled();
     const destinations = within(
       screen.getByRole("group", { name: "Destination" }),
@@ -112,16 +108,24 @@ describe("game-first launcher", () => {
     expect(destinations[2]).not.toHaveTextContent("Specialist · Roundabout Academy");
     expect(destinations[0]).toHaveAttribute("aria-pressed", "true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps left" }));
+    fireEvent.click(destinations[1]);
     expect(
-      screen.getByRole("button", { name: /Start New York City orientation/i }),
+      screen.getByRole("button", { name: /Start Right-Side Orientation/i }),
     ).toBeEnabled();
     expect(destinations[1]).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Start Right-Side Orientation/i }),
+    );
+    expect(await screen.findByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
+      "data-scenario",
+      "orientation-right",
+    );
   });
 
   it("renders a straight, destination-specific preview with the car on the local traffic side", async () => {
     const { container } = render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     const londonPreview = screen.getByLabelText("London training preview");
     expect(londonPreview).toHaveClass("launcher-scene-uk-london");
@@ -158,21 +162,20 @@ describe("game-first launcher", () => {
     expect(tokyoPreview.querySelector(".tokyo-tramway")).toBeInTheDocument();
   });
 
-  it("preserves a manually selected destination and restores focus after setup closes", async () => {
+  it("preserves a selected destination and restores focus after setup closes", async () => {
     render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     const destinations = screen.getByRole("group", { name: "Destination" });
     fireEvent.click(
       within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps left" }));
 
     expect(
       within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(
-      screen.getByRole("button", { name: /Start Tokyo — Setagaya orientation/i }),
+      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
     ).toBeEnabled();
 
     const setupTrigger = screen.getByRole("button", { name: /^Wheel/i });
@@ -187,8 +190,7 @@ describe("game-first launcher", () => {
 
   it("resets a wheel override to the destination default when the destination changes", async () => {
     render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
-    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
     fireEvent.click(screen.getByRole("button", { name: /^LeftWheel on the left$/i }));
@@ -208,7 +210,7 @@ describe("game-first launcher", () => {
 
   it("offers only left and right wheel positions, defaulting to the selected destination", async () => {
     render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
     const wheelGroup = within(screen.getByRole("dialog", { name: "Ready your drive" }))
@@ -221,7 +223,7 @@ describe("game-first launcher", () => {
 
   it("uses modern option cards for wheel and camera without a control preference", async () => {
     render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     const setupSummary = screen.getByLabelText("Current car setup");
     expect(within(setupSummary).getAllByRole("button")).toHaveLength(2);
@@ -249,11 +251,12 @@ describe("game-first launcher", () => {
 
   it("keeps camera preferences in Settings without persisting a control preference", async () => {
     const { container } = render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
     expect(screen.getByRole("heading", { name: "Make the road comfortable to read" })).toBeVisible();
     expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.queryByText("Familiar traffic side")).not.toBeInTheDocument();
 
     const cameraGroup = screen.getByRole("group", { name: "Default camera" });
     fireEvent.click(within(cameraGroup).getByRole("button", { name: /Driver view/i }));
@@ -446,10 +449,9 @@ describe("game-first launcher", () => {
     });
 
     render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Which side feels normal to you/i });
+    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
     const destinations = screen.getByRole("group", { name: "Destination" });
     fireEvent.click(within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Traffic keeps right" }));
 
     expect(scrollIntoView).toHaveBeenLastCalledWith({
       behavior: "smooth",
@@ -457,7 +459,7 @@ describe("game-first launcher", () => {
       inline: "center",
     });
     expect(
-      screen.getByRole("button", { name: /Start Tokyo — Setagaya orientation/i }),
+      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
     ).toBeVisible();
   });
 

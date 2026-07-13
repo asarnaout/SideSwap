@@ -109,11 +109,6 @@ const CAMERA_CHOICES: readonly ChoiceOption<CameraMode>[] = [
   { value: "third_person", symbol: "3P", label: "Chase view", hint: "Third person" },
 ];
 
-const TRAFFIC_SIDE_CHOICES: readonly ChoiceOption<TrafficSide>[] = [
-  { value: "right", symbol: "R", label: "Traffic keeps right", hint: "US, France & more" },
-  { value: "left", symbol: "L", label: "Traffic keeps left", hint: "UK, Japan & more" },
-];
-
 const toCanvasCamera = (camera: CameraMode): "first" | "third" =>
   camera === "first_person" ? "first" : "third";
 
@@ -125,10 +120,6 @@ const formatMinutes = (lesson: LessonDefinition) =>
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
-
-function initialSelectedDestination(side: TrafficSide): DestinationId {
-  return side === "right" ? "uk-london" : "us-nyc";
-}
 
 function defaultWheelForDestination(destinationId: DestinationId): SteeringSide {
   return getCountryProfile(
@@ -163,7 +154,7 @@ function useGamepadUiNavigation(
     const preferredFocusable = (items: HTMLElement[]) =>
       items.find((item) =>
         item.matches(
-          ".launcher-primary:not(:disabled), .launcher-familiar button:not(:disabled), .primary-button:not(:disabled)",
+          ".launcher-primary:not(:disabled), .primary-button:not(:disabled)",
         ),
       ) ?? items[0];
     const moveFocus = (direction: -1 | 1) => {
@@ -310,11 +301,11 @@ export default function SideSwapApp() {
   );
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("launcher");
-  const [familiarSide, setFamiliarSide] = useState<TrafficSide | null>(null);
+  // Retained only for backward-compatible session metadata. Destination
+  // profiles—not this saved preference—remain authoritative for road rules.
+  const [familiarSide, setFamiliarSide] = useState<TrafficSide>("right");
   const [destinationId, setDestinationId] =
     useState<DestinationId>("uk-london");
-  const [destinationChosenManually, setDestinationChosenManually] =
-    useState(false);
   const [wheelPreference, setWheelPreference] =
     useState<SteeringSide>("right");
   const [camera, setCamera] = useState<CameraMode>("third_person");
@@ -354,9 +345,8 @@ export default function SideSwapApp() {
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const loaded = loadProgress();
-      const firstVisit = !loaded.familiarSideConfirmed;
       setProgress(loaded);
-      setFamiliarSide(firstVisit ? null : loaded.familiarTrafficSide);
+      setFamiliarSide(loaded.familiarTrafficSide);
       setDestinationId(loaded.lastDestinationId);
       setWheelPreference(defaultWheelForDestination(loaded.lastDestinationId));
       setCamera(loaded.preferredCamera);
@@ -457,18 +447,8 @@ export default function SideSwapApp() {
     }
   }, [destinationId, hydrated, progress.accessibility.reducedMotion]);
 
-  const chooseFamiliarSide = (side: TrafficSide) => {
-    setFamiliarSide(side);
-    if (!destinationChosenManually) {
-      const suggestedDestination = initialSelectedDestination(side);
-      setDestinationId(suggestedDestination);
-      setWheelPreference(defaultWheelForDestination(suggestedDestination));
-    }
-  };
-
   const chooseDestination = (id: DestinationId) => {
     setDestinationId(id);
-    setDestinationChosenManually(true);
     setWheelPreference(defaultWheelForDestination(id));
   };
 
@@ -476,7 +456,6 @@ export default function SideSwapApp() {
     scenarioId: ScenarioId,
     nextDestinationId = destinationId,
   ) => {
-    if (!familiarSide) return;
     const nextDestination = getDestinationProfile(nextDestinationId);
     const nextCountryId = nextDestination.countryId;
     const nextWheelPreference =
@@ -497,7 +476,6 @@ export default function SideSwapApp() {
     resolveSessionConfig(session);
     const committedProgress: PlayerProgressV1 = {
       ...progress,
-      familiarSideConfirmed: true,
       familiarTrafficSide: familiarSide,
       lastCountryId: nextCountryId,
       lastDestinationId: nextDestinationId,
@@ -558,7 +536,6 @@ export default function SideSwapApp() {
       });
       const withPreferences: PlayerProgressV1 = {
         ...updated,
-        familiarSideConfirmed: true,
         familiarTrafficSide: activeSession.familiarTrafficSide,
         lastCountryId: activeSession.countryId,
         lastDestinationId: activeSession.destinationId,
@@ -578,11 +555,7 @@ export default function SideSwapApp() {
   const saveSettings = (next: PlayerProgressV1) => {
     setProgress(next);
     setFamiliarSide(next.familiarTrafficSide);
-    setDestinationId(
-      !next.familiarSideConfirmed && !destinationChosenManually
-        ? initialSelectedDestination(next.familiarTrafficSide)
-        : next.lastDestinationId,
-    );
+    setDestinationId(next.lastDestinationId);
     setCamera(next.preferredCamera);
     saveProgress(next);
   };
@@ -748,13 +721,8 @@ export default function SideSwapApp() {
     );
   }
 
-  const configured = progress.familiarSideConfirmed;
-  const launcherScenarioId = configured ? recommendation.scenarioId : orientation.id;
-  const launcherDriveTitle = configured
-    ? scenarioTitle(recommendation.scenarioId)
-    : familiarSide
-      ? `${destination.destinationName} orientation`
-      : null;
+  const launcherScenarioId = recommendation.scenarioId;
+  const launcherDriveTitle = scenarioTitle(recommendation.scenarioId);
 
   return (
     <main
@@ -835,9 +803,8 @@ export default function SideSwapApp() {
           onReset={() => {
             const reset = resetProgress();
             setProgress(reset);
-            setFamiliarSide(null);
+            setFamiliarSide(reset.familiarTrafficSide);
             setDestinationId(reset.lastDestinationId);
-            setDestinationChosenManually(false);
             setWheelPreference(defaultWheelForDestination(reset.lastDestinationId));
             setCamera(reset.preferredCamera);
             setView("launcher");
@@ -850,49 +817,12 @@ export default function SideSwapApp() {
       )}
 
       {view === "launcher" && (
-        <section className={`launcher-page ${configured ? "returning" : "first-run"}`}>
+        <section className="launcher-page">
           <div className="launcher-copy">
-            <p className="eyebrow">
-              {configured ? "READY FOR YOUR NEXT DRIVE" : "A ROAD-FAMILIARISATION GAME"}
-            </p>
-            <h1
-              aria-label={
-                configured
-                  ? "Swap your instincts. Start driving."
-                  : "Which side feels normal to you?"
-              }
-            >
-              {configured ? (
-                <>Swap your instincts.<br /><em>Start driving.</em></>
-              ) : (
-                <>Which side feels<br /><em>normal to you?</em></>
-              )}
+            <p className="eyebrow">READY FOR YOUR NEXT DRIVE</p>
+            <h1 aria-label="Swap your instincts. Start driving.">
+              <>Swap your instincts.<br /><em>Start driving.</em></>
             </h1>
-            {!configured && (
-              <p className="launcher-lead">
-                Tell us where you normally drive. We’ll suggest the opposite side and put you straight into orientation.
-              </p>
-            )}
-
-            {!configured && (
-              <fieldset className="launcher-familiar">
-                <legend>Where do you normally drive?</legend>
-                <div className="segmented two">
-                  {(["right", "left"] as const).map((side) => (
-                    <button
-                      key={side}
-                      type="button"
-                      className={familiarSide === side ? "active" : ""}
-                      aria-pressed={familiarSide === side}
-                      onClick={() => chooseFamiliarSide(side)}
-                    >
-                      <span className={`lane-icon ${side}`} aria-hidden="true"><i /></span>
-                      Traffic keeps {side}
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
-            )}
 
             <div
               className="launcher-destinations"
@@ -960,32 +890,25 @@ export default function SideSwapApp() {
               <button
                 className="primary-button launcher-primary"
                 type="button"
-                disabled={!familiarSide}
-                aria-label={
-                  launcherDriveTitle
-                    ? `Start ${launcherDriveTitle}`
-                    : "Choose your usual traffic side"
-                }
+                aria-label={`Start ${launcherDriveTitle}`}
                 onClick={() =>
                   beginDrive(
                     launcherScenarioId,
-                    configured ? recommendation.destinationId : destinationId,
+                    recommendation.destinationId,
                   )
                 }
               >
-                {launcherDriveTitle ? "Start" : "Choose your usual traffic side"}
+                Start
                 <span aria-hidden="true">→</span>
               </button>
-              {configured && (
-                <button
-                  className="secondary-button launcher-browse"
-                  type="button"
-                  aria-label="Browse all drives, lessons, and free practice"
-                  onClick={() => setView("training")}
-                >
-                  Browse all drives
-                </button>
-              )}
+              <button
+                className="secondary-button launcher-browse"
+                type="button"
+                aria-label="Browse all drives, lessons, and free practice"
+                onClick={() => setView("training")}
+              >
+                Browse all drives
+              </button>
             </div>
           </div>
 
@@ -1014,7 +937,7 @@ export default function SideSwapApp() {
               <em>{destination.destinationSubtitle}</em>
               <small>Traffic keeps {country.trafficSide} · {country.speedUnit === "kmh" ? "km/h" : "mph"}</small>
             </div>
-            {configured && (
+            {(completedCount > 0 || masteryCount > 0 || progress.badges.length > 0) && (
               <div className="launcher-progress" aria-label="Your progress">
                 <div><strong>{completedCount}</strong><span>complete</span></div>
                 <div><strong>{masteryCount}</strong><span>mastered</span></div>
@@ -1094,7 +1017,7 @@ export default function SideSwapApp() {
                   <button
                     type="button"
                     className="lesson-start"
-                    disabled={!unlocked || !familiarSide}
+                    disabled={!unlocked}
                     onClick={() => beginDrive(lesson.id, destinationId)}
                   >
                     {score ? `${score.total} · Drive again` : unlocked ? "Start" : "Locked"}
@@ -1108,7 +1031,7 @@ export default function SideSwapApp() {
               <button
                 type="button"
                 className="lesson-start"
-                disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId) || !familiarSide}
+                disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId)}
                 onClick={() => beginDrive(destination.freeDriveId, destinationId)}
               >
                 {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive" : "Complete lesson 1"}
@@ -1121,7 +1044,7 @@ export default function SideSwapApp() {
             <button
               type="button"
               className="secondary-button light"
-              disabled={!isLessonUnlocked(progress, "uk-fr-side-swap") || !familiarSide}
+              disabled={!isLessonUnlocked(progress, "uk-fr-side-swap")}
               onClick={() =>
                 beginDrive(
                   "uk-fr-side-swap",
@@ -1434,13 +1357,6 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
       <div className="settings-grid">
         <section className="settings-card" aria-labelledby="driving-preferences-title">
           <h2 id="driving-preferences-title">Driving preferences</h2>
-          <OptionPicker<TrafficSide>
-            label="Familiar traffic side"
-            value={draft.familiarTrafficSide}
-            options={TRAFFIC_SIDE_CHOICES}
-            onChange={(familiarTrafficSide) => setDraft((current) => ({ ...current, familiarTrafficSide }))}
-            hint="This changes recommendations only; each destination keeps its local road rules."
-          />
           <OptionPicker<CameraMode>
             label="Default camera"
             value={draft.preferredCamera}
