@@ -920,8 +920,8 @@ function createExtrudedPrism(
     indices.push(left, right, rightNext, left, rightNext, leftNext);
   }
   for (let index = 1; index < pointCount - 1; index += 1) {
-    indices.push(0, index + 1, index);
-    indices.push(pointCount, pointCount + index, pointCount + index + 1);
+    indices.push(0, index, index + 1);
+    indices.push(pointCount, pointCount + index + 1, pointCount + index);
   }
 
   const normals: number[] = [];
@@ -932,6 +932,7 @@ function createExtrudedPrism(
   vertexData.indices = indices;
   vertexData.normals = normals;
   vertexData.applyToMesh(mesh);
+  mesh.convertToFlatShadedMesh();
   mesh.parent = parent ?? null;
   setMeshMaterial(mesh, material);
   return mesh;
