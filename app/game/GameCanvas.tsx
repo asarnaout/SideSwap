@@ -382,12 +382,14 @@ export interface CockpitCameraPoses {
     x: number;
     y: number;
     z: number;
+    rotationX: number;
     rotationY: number;
   }>;
   readonly rear: Readonly<{
     x: number;
     y: number;
     z: number;
+    rotationX: number;
     rotationY: number;
   }>;
 }
@@ -437,15 +439,17 @@ export function resolveCockpitCameraPoses({
   const rightZ = -forwardX;
   return {
     first: {
-      x: x + rightX * seatSide + forwardX * 0.12,
-      y: 1.7 + headBob,
-      z: z + rightZ * seatSide + forwardZ * 0.12,
+      x: x + rightX * seatSide - forwardX * 0.62,
+      y: 1.46 + headBob,
+      z: z + rightZ * seatSide - forwardZ * 0.62,
+      rotationX: 0.055,
       rotationY: cameraHeading + quickLookAngle,
     },
     rear: {
-      x: x - forwardX * 0.08,
-      y: 1.88,
-      z: z - forwardZ * 0.08,
+      x: x - forwardX * 0.52,
+      y: 1.59,
+      z: z - forwardZ * 0.52,
+      rotationX: 0.04,
       rotationY: cameraHeading + Math.PI,
     },
   };
@@ -848,6 +852,8 @@ class BabylonGameSession {
   private readonly player: TransformNode;
   private readonly playerExterior: TransformNode;
   private readonly playerCockpit: TransformNode;
+  private steeringWheel: Mesh | null = null;
+  private steeringWheelSpoke: Mesh | null = null;
   private readonly thirdCamera: ArcRotateCamera;
   private readonly firstCamera: UniversalCamera;
   private readonly rearCamera: UniversalCamera;
@@ -1022,8 +1028,8 @@ class BabylonGameSession {
     );
     this.rearCamera.inputs.clear();
     this.rearCamera.minZ = 0.08;
-    this.rearCamera.fov = 0.72;
-    this.rearCamera.viewport = new Viewport(0.35, 0.79, 0.3, 0.17);
+    this.rearCamera.fov = 0.9;
+    this.rearCamera.viewport = new Viewport(0.34, 0.81, 0.32, 0.16);
 
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
@@ -1867,6 +1873,9 @@ class BabylonGameSession {
     this.displayedHeading += headingDelta * positionBlend;
     this.player.position.set(this.displayedX, 0.12, this.displayedZ);
     this.player.rotation.y = this.displayedHeading;
+    const visualSteer = this.mergedInput().steer;
+    if (this.steeringWheel) this.steeringWheel.rotation.z = -visualSteer * 0.72;
+    if (this.steeringWheelSpoke) this.steeringWheelSpoke.rotation.z = -visualSteer * 0.72;
   }
 
   private updateCamera(dt: number) {
@@ -1910,13 +1919,21 @@ class BabylonGameSession {
         poses.first.y,
         poses.first.z,
       );
-      this.firstCamera.rotation.set(0, poses.first.rotationY, 0);
+      this.firstCamera.rotation.set(
+        poses.first.rotationX,
+        poses.first.rotationY,
+        0,
+      );
       this.rearCamera.position.set(
         poses.rear.x,
         poses.rear.y,
         poses.rear.z,
       );
-      this.rearCamera.rotation.set(0, poses.rear.rotationY, 0);
+      this.rearCamera.rotation.set(
+        poses.rear.rotationX,
+        poses.rear.rotationY,
+        0,
+      );
     } else {
       const target = base.add(forward.scale(3.5)).add(new Vector3(0, 1.05, 0));
       const cameraShake =
@@ -2657,6 +2674,19 @@ class BabylonGameSession {
     const glass = makeMaterial(scene, "player-glass", new Color3(0.08, 0.14, 0.17));
     const rubber = makeMaterial(scene, "tire", new Color3(0.025, 0.03, 0.03));
     const dash = makeMaterial(scene, "dashboard", new Color3(0.06, 0.075, 0.08));
+    const cockpitTrim = makeMaterial(scene, "cockpit-trim", new Color3(0.12, 0.14, 0.15));
+    const instrumentFace = makeMaterial(
+      scene,
+      "instrument-face",
+      new Color3(0.03, 0.06, 0.07),
+      new Color3(0.02, 0.15, 0.18),
+    );
+    const instrumentGlow = makeMaterial(
+      scene,
+      "instrument-glow",
+      new Color3(0.22, 0.7, 0.76),
+      new Color3(0.08, 0.34, 0.38),
+    );
     const amberLeft = makeMaterial(scene, "amber-left", new Color3(0.45, 0.16, 0.01));
     const amberRight = makeMaterial(scene, "amber-right", new Color3(0.45, 0.16, 0.01));
 
@@ -2677,19 +2707,55 @@ class BabylonGameSession {
       (side < 0 ? this.leftIndicatorMeshes : this.rightIndicatorMeshes).push(front, rear);
     }
 
-    createBox(scene, "cockpit-hood", { width: 1.78, height: 0.18, depth: 1.3 }, new Vector3(0, 0.84, 1.42), body, this.playerCockpit);
-    createBox(scene, "cockpit-dash", { width: 1.8, height: 0.42, depth: 0.52 }, new Vector3(0, 0.98, 0.56), dash, this.playerCockpit);
+    createBox(scene, "cockpit-hood", { width: 1.66, height: 0.08, depth: 0.72 }, new Vector3(0, 0.86, 1.62), bodyDark, this.playerCockpit);
+    createBox(scene, "cockpit-dash", { width: 1.82, height: 0.3, depth: 0.66 }, new Vector3(0, 1.0, 0.54), dash, this.playerCockpit);
+    createBox(scene, "cockpit-dash-top", { width: 1.78, height: 0.09, depth: 0.4 }, new Vector3(0, 1.18, 0.68), cockpitTrim, this.playerCockpit);
+    createBox(scene, "windshield-sill", { width: 1.86, height: 0.08, depth: 0.11 }, new Vector3(0, 1.24, 0.82), dash, this.playerCockpit);
+    createBox(scene, "windshield-header", { width: 1.82, height: 0.1, depth: 0.14 }, new Vector3(0, 1.77, 0.24), dash, this.playerCockpit);
+    for (const side of [-1, 1]) {
+      const pillar = createBox(
+        scene,
+        `windshield-pillar-${side}`,
+        { width: 0.1, height: 0.92, depth: 0.13 },
+        new Vector3(side * 0.83, 1.48, 0.36),
+        dash,
+        this.playerCockpit,
+      );
+      pillar.rotation.z = -side * 0.1;
+      createBox(
+        scene,
+        `door-top-${side}`,
+        { width: 0.11, height: 0.24, depth: 1.45 },
+        new Vector3(side * 0.88, 1.2, -0.12),
+        cockpitTrim,
+        this.playerCockpit,
+      );
+    }
     const wheelX = this.options.steeringSide === "left" ? -0.48 : 0.48;
-    const steeringWheel = MeshBuilder.CreateTorus(
+    createBox(scene, "instrument-binnacle", { width: 0.58, height: 0.24, depth: 0.18 }, new Vector3(wheelX, 1.26, 0.61), cockpitTrim, this.playerCockpit);
+    for (const gaugeOffset of [-0.14, 0.14]) {
+      const gauge = createCylinder(
+        scene,
+        `instrument-gauge-${gaugeOffset}`,
+        { height: 0.035, diameter: 0.17, tessellation: 16 },
+        new Vector3(wheelX + gaugeOffset, 1.27, 0.505),
+        instrumentFace,
+        this.playerCockpit,
+      );
+      gauge.rotation.x = Math.PI / 2;
+    }
+    createBox(scene, "centre-display", { width: 0.32, height: 0.17, depth: 0.06 }, new Vector3(0, 1.22, 0.48), instrumentGlow, this.playerCockpit);
+    this.steeringWheel = MeshBuilder.CreateTorus(
       "steering-wheel",
-      { diameter: 0.48, thickness: 0.07, tessellation: 14 },
+      { diameter: 0.52, thickness: 0.065, tessellation: 16 },
       scene,
     );
-    steeringWheel.position.set(wheelX, 1.11, 0.31);
-    steeringWheel.rotation.x = Math.PI / 2.5;
-    steeringWheel.parent = this.playerCockpit;
-    setMeshMaterial(steeringWheel, rubber);
-    createBox(scene, "wheel-spoke", { width: 0.38, height: 0.055, depth: 0.055 }, new Vector3(wheelX, 1.11, 0.31), rubber, this.playerCockpit);
+    this.steeringWheel.position.set(wheelX, 1.19, 0.22);
+    this.steeringWheel.rotation.x = Math.PI / 2.65;
+    this.steeringWheel.parent = this.playerCockpit;
+    setMeshMaterial(this.steeringWheel, rubber);
+    this.steeringWheelSpoke = createBox(scene, "wheel-spoke", { width: 0.4, height: 0.055, depth: 0.055 }, new Vector3(wheelX, 1.19, 0.22), rubber, this.playerCockpit);
+    createCylinder(scene, "steering-column", { height: 0.28, diameter: 0.09, tessellation: 12 }, new Vector3(wheelX, 1.08, 0.38), cockpitTrim, this.playerCockpit).rotation.x = Math.PI / 2.7;
   }
 
   private buildTraffic() {
@@ -3727,18 +3793,32 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <div
                 style={{
                   position: "absolute",
-                  top: "2.3%",
+                  top: "2.7%",
                   left: "50%",
-                  width: "30%",
-                  height: "17%",
+                  width: "32%",
+                  height: "16%",
                   transform: "translateX(-50%)",
-                  border: "3px solid rgba(18,24,25,.9)",
-                  borderRadius: 10,
-                  boxShadow: "0 3px 14px rgba(0,0,0,.35)",
+                  border: "4px solid rgba(18,24,25,.94)",
+                  borderRadius: 13,
+                  background: "linear-gradient(145deg, rgba(255,255,255,.09), transparent 32%)",
+                  boxShadow: "inset 0 0 0 2px rgba(255,255,255,.13), 0 5px 18px rgba(0,0,0,.38)",
                   pointerEvents: "none",
                 }}
               >
-                <span style={{ position: "absolute", bottom: 4, left: 8, font: "700 9px system-ui", letterSpacing: ".12em", opacity: 0.72 }}>
+                <i
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute",
+                    bottom: -14,
+                    left: "50%",
+                    width: 22,
+                    height: 14,
+                    transform: "translateX(-50%)",
+                    background: "#182021",
+                    clipPath: "polygon(28% 0,72% 0,100% 100%,0 100%)",
+                  }}
+                />
+                <span style={{ position: "absolute", bottom: 5, left: 9, padding: "2px 5px", borderRadius: 5, background: "rgba(10,18,20,.45)", font: "750 8px system-ui", letterSpacing: ".13em", opacity: 0.76 }}>
                   REAR VIEW
                 </span>
               </div>
