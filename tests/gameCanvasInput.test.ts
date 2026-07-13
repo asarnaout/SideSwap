@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AdaptiveInputRouter,
+  DEFAULT_HORIZONTAL_FOV,
   INPUT_PROMPT_SWITCH_COOLDOWN_MS,
+  MAX_HORIZONTAL_FOV,
+  MIN_HORIZONTAL_FOV,
   TOUCH_CONTROL_DIM_DELAY_MS,
+  clampHorizontalFieldOfView,
   isCameraStackActive,
+  resolveCockpitPitch,
   resolveCockpitCameraPoses,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
@@ -63,14 +68,28 @@ describe("cockpit camera tracking", () => {
       quickLookAngle: -0.25,
     });
 
-    expect(pose.first.x).toBeCloseTo(11.05);
+    expect(pose.first.x).toBeCloseTo(11.4);
     expect(pose.first.z).toBeCloseTo(-5.46);
-    expect(pose.first.y).toBeCloseTo(1.59);
-    expect(pose.first.rotationX).toBeCloseTo(0.015);
+    expect(pose.first.y).toBeCloseTo(1.52);
+    expect(pose.first.rotationX).toBeCloseTo(0.11);
     expect(pose.first.rotationY).toBeCloseTo(Math.PI / 2 - 0.15);
     expect(pose.rear.x).toBeCloseTo(11.48);
     expect(pose.rear.rotationX).toBeCloseTo(0.04);
     expect(pose.rear.rotationY).toBeCloseTo(Math.PI / 2 + 0.1 + Math.PI);
+  });
+
+  it("keeps the saved cockpit FOV within the supported horizontal range", () => {
+    expect(clampHorizontalFieldOfView(DEFAULT_HORIZONTAL_FOV)).toBe(
+      DEFAULT_HORIZONTAL_FOV,
+    );
+    expect(clampHorizontalFieldOfView(0)).toBe(MIN_HORIZONTAL_FOV);
+    expect(clampHorizontalFieldOfView(Math.PI)).toBe(MAX_HORIZONTAL_FOV);
+  });
+
+  it("keeps the road sightline stable across landscape aspect ratios", () => {
+    expect(resolveCockpitPitch(1.6)).toBeCloseTo(0.03);
+    expect(resolveCockpitPitch(2)).toBeCloseTo(0.11);
+    expect(resolveCockpitPitch(2.2)).toBeCloseTo(0.11);
   });
 });
 

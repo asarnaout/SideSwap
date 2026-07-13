@@ -2,6 +2,7 @@
 
 import {
   ArcRotateCamera,
+  Camera,
   Color3,
   Color4,
   DirectionalLight,
@@ -58,6 +59,19 @@ export interface GameHudSnapshot {
   checkpoint: string;
   trafficSide: TrafficSide;
   scenarioClock?: string;
+}
+
+export const MIN_HORIZONTAL_FOV = (55 * Math.PI) / 180;
+export const MAX_HORIZONTAL_FOV = (100 * Math.PI) / 180;
+export const DEFAULT_HORIZONTAL_FOV = (72 * Math.PI) / 180;
+
+export function clampHorizontalFieldOfView(value: number): number {
+  return clamp(value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV);
+}
+
+export function resolveCockpitPitch(viewportAspectRatio: number): number {
+  const wideBlend = clamp((viewportAspectRatio - 1.6) / 0.4, 0, 1);
+  return 0.03 + wideBlend * 0.08;
 }
 
 export interface GameRuntimeEvent {
@@ -424,6 +438,7 @@ export function resolveCockpitCameraPoses({
   seatSide,
   headBob,
   quickLookAngle,
+  viewportAspectRatio = 2,
 }: {
   readonly x: number;
   readonly z: number;
@@ -432,6 +447,7 @@ export function resolveCockpitCameraPoses({
   readonly seatSide: number;
   readonly headBob: number;
   readonly quickLookAngle: number;
+  readonly viewportAspectRatio?: number;
 }): CockpitCameraPoses {
   const forwardX = Math.sin(vehicleHeading);
   const forwardZ = Math.cos(vehicleHeading);
@@ -439,10 +455,10 @@ export function resolveCockpitCameraPoses({
   const rightZ = -forwardX;
   return {
     first: {
-      x: x + rightX * seatSide - forwardX * 0.95,
-      y: 1.56 + headBob,
-      z: z + rightZ * seatSide - forwardZ * 0.95,
-      rotationX: 0.015,
+      x: x + rightX * seatSide - forwardX * 0.6,
+      y: 1.49 + headBob,
+      z: z + rightZ * seatSide - forwardZ * 0.6,
+      rotationX: resolveCockpitPitch(viewportAspectRatio),
       rotationY: cameraHeading + quickLookAngle,
     },
     rear: {
@@ -852,8 +868,7 @@ class BabylonGameSession {
   private readonly player: TransformNode;
   private readonly playerExterior: TransformNode;
   private readonly playerCockpit: TransformNode;
-  private steeringWheel: Mesh | null = null;
-  private steeringWheelSpoke: Mesh | null = null;
+  private steeringAssembly: TransformNode | null = null;
   private readonly thirdCamera: ArcRotateCamera;
   private readonly firstCamera: UniversalCamera;
   private readonly rearCamera: UniversalCamera;
@@ -1010,7 +1025,8 @@ class BabylonGameSession {
     this.thirdCamera.lowerRadiusLimit = 8;
     this.thirdCamera.upperRadiusLimit = 16;
     this.thirdCamera.minZ = 0.1;
-    this.thirdCamera.fov = options.fieldOfView;
+    this.thirdCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+    this.thirdCamera.fov = clampHorizontalFieldOfView(options.fieldOfView);
 
     this.firstCamera = new UniversalCamera(
       "first-person-camera",
@@ -1019,7 +1035,8 @@ class BabylonGameSession {
     );
     this.firstCamera.inputs.clear();
     this.firstCamera.minZ = 0.04;
-    this.firstCamera.fov = options.fieldOfView;
+    this.firstCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+    this.firstCamera.fov = clampHorizontalFieldOfView(options.fieldOfView);
 
     this.rearCamera = new UniversalCamera(
       "rear-view-camera",
@@ -1028,8 +1045,9 @@ class BabylonGameSession {
     );
     this.rearCamera.inputs.clear();
     this.rearCamera.minZ = 0.08;
-    this.rearCamera.fov = 0.9;
-    this.rearCamera.viewport = new Viewport(0.34, 0.81, 0.32, 0.16);
+    this.rearCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+    this.rearCamera.fov = (64 * Math.PI) / 180;
+    this.rearCamera.viewport = new Viewport(0.36, 0.845, 0.28, 0.125);
 
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
@@ -1055,8 +1073,8 @@ class BabylonGameSession {
     if (typeof options.reducedMotion === "boolean") {
       this.inputRouter.setReducedMotion(options.reducedMotion);
     }
-    this.thirdCamera.fov = this.options.fieldOfView;
-    this.firstCamera.fov = this.options.fieldOfView;
+    this.thirdCamera.fov = clampHorizontalFieldOfView(this.options.fieldOfView);
+    this.firstCamera.fov = clampHorizontalFieldOfView(this.options.fieldOfView);
     if (options.cameraMode) this.setCameraMode(options.cameraMode, false);
     if (typeof options.paused === "boolean") this.setPaused(options.paused, false);
   }
@@ -1874,8 +1892,9 @@ class BabylonGameSession {
     this.player.position.set(this.displayedX, 0.12, this.displayedZ);
     this.player.rotation.y = this.displayedHeading;
     const visualSteer = this.mergedInput().steer;
-    if (this.steeringWheel) this.steeringWheel.rotation.z = -visualSteer * 0.72;
-    if (this.steeringWheelSpoke) this.steeringWheelSpoke.rotation.z = -visualSteer * 0.72;
+    if (this.steeringAssembly) {
+      this.steeringAssembly.rotation.z = -visualSteer * 0.72;
+    }
   }
 
   private updateCamera(dt: number) {
@@ -1883,14 +1902,14 @@ class BabylonGameSession {
       this.playerState.speedMps < 0.2
         ? this.projectToAuthoredRoute(this.displayedX, this.displayedZ)
         : null;
-    const cameraHeading =
+    const chaseHeading =
       routeHeading && routeHeading.distance < 5
         ? routeHeading.heading
         : this.displayedHeading;
     const forward = new Vector3(
-      Math.sin(cameraHeading),
+      Math.sin(chaseHeading),
       0,
-      Math.cos(cameraHeading),
+      Math.cos(chaseHeading),
     );
     const right = new Vector3(forward.z, 0, -forward.x);
     const base = new Vector3(this.displayedX, 0.12, this.displayedZ);
@@ -1903,16 +1922,19 @@ class BabylonGameSession {
       const headBob =
         this.options.headBob && !this.options.reducedMotion
           ? Math.sin(this.cameraMotionSeconds * 1.9) *
-            Math.min(0.045, this.playerState.speedMps * 0.0035)
+            Math.min(0.015, this.playerState.speedMps * 0.0015)
           : 0;
       const poses = resolveCockpitCameraPoses({
         x: this.displayedX,
         z: this.displayedZ,
         vehicleHeading: this.displayedHeading,
-        cameraHeading,
+        cameraHeading: this.displayedHeading,
         seatSide,
         headBob,
         quickLookAngle,
+        viewportAspectRatio:
+          this.engine.getRenderWidth() /
+          Math.max(1, this.engine.getRenderHeight()),
       });
       this.firstCamera.position.set(
         poses.first.x,
@@ -2679,13 +2701,13 @@ class BabylonGameSession {
       scene,
       "instrument-face",
       new Color3(0.03, 0.06, 0.07),
-      new Color3(0.02, 0.15, 0.18),
+      new Color3(0.01, 0.055, 0.065),
     );
     const instrumentGlow = makeMaterial(
       scene,
       "instrument-glow",
-      new Color3(0.22, 0.7, 0.76),
-      new Color3(0.08, 0.34, 0.38),
+      new Color3(0.04, 0.13, 0.15),
+      new Color3(0.01, 0.035, 0.04),
     );
     const amberLeft = makeMaterial(scene, "amber-left", new Color3(0.45, 0.16, 0.01));
     const amberRight = makeMaterial(scene, "amber-right", new Color3(0.45, 0.16, 0.01));
@@ -2707,44 +2729,49 @@ class BabylonGameSession {
       (side < 0 ? this.leftIndicatorMeshes : this.rightIndicatorMeshes).push(front, rear);
     }
 
-    createBox(scene, "cockpit-hood", { width: 1.5, height: 0.04, depth: 0.42 }, new Vector3(0, 0.78, 1.78), bodyDark, this.playerCockpit);
-    createBox(scene, "cockpit-dash-top", { width: 1.7, height: 0.05, depth: 0.28 }, new Vector3(0, 0.9, 0.9), cockpitTrim, this.playerCockpit);
-    createBox(scene, "windshield-sill", { width: 1.78, height: 0.04, depth: 0.07 }, new Vector3(0, 0.94, 1.02), dash, this.playerCockpit);
+    createBox(scene, "cockpit-hood", { width: 1.62, height: 0.045, depth: 0.42 }, new Vector3(0, 0.74, 1.55), bodyDark, this.playerCockpit);
+    createBox(scene, "cockpit-dash-fascia", { width: 1.9, height: 0.32, depth: 0.46 }, new Vector3(0, 0.87, 0.58), dash, this.playerCockpit);
+    createBox(scene, "cockpit-dash-top", { width: 1.86, height: 0.06, depth: 0.42 }, new Vector3(0, 1.0, 0.72), cockpitTrim, this.playerCockpit);
+    createBox(scene, "windshield-sill", { width: 1.9, height: 0.045, depth: 0.08 }, new Vector3(0, 1.03, 0.92), dash, this.playerCockpit);
     for (const side of [-1, 1]) {
       createBox(
         scene,
-        `door-top-${side}`,
-        { width: 0.055, height: 0.06, depth: 1.05 },
-        new Vector3(side * 0.94, 0.88, 0.08),
+        `cockpit-door-shoulder-${side}`,
+        { width: 0.14, height: 0.28, depth: 1.1 },
+        new Vector3(side * 0.94, 0.85, 0.12),
         cockpitTrim,
         this.playerCockpit,
       );
     }
     const wheelX = this.options.steeringSide === "left" ? -0.48 : 0.48;
-    createBox(scene, "instrument-binnacle", { width: 0.48, height: 0.12, depth: 0.12 }, new Vector3(wheelX, 1.0, 0.88), cockpitTrim, this.playerCockpit);
+    createBox(scene, "instrument-binnacle", { width: 0.5, height: 0.18, depth: 0.16 }, new Vector3(wheelX, 1.1, 0.54), cockpitTrim, this.playerCockpit);
     for (const gaugeOffset of [-0.14, 0.14]) {
       const gauge = createCylinder(
         scene,
         `instrument-gauge-${gaugeOffset}`,
-        { height: 0.03, diameter: 0.14, tessellation: 16 },
-        new Vector3(wheelX + gaugeOffset, 1.005, 0.81),
+        { height: 0.025, diameter: 0.13, tessellation: 16 },
+        new Vector3(wheelX + gaugeOffset, 1.12, 0.445),
         instrumentFace,
         this.playerCockpit,
       );
       gauge.rotation.x = Math.PI / 2;
     }
-    createBox(scene, "centre-display", { width: 0.26, height: 0.1, depth: 0.045 }, new Vector3(0, 0.97, 0.8), instrumentGlow, this.playerCockpit);
-    this.steeringWheel = MeshBuilder.CreateTorus(
+    createBox(scene, "centre-display", { width: 0.18, height: 0.08, depth: 0.04 }, new Vector3(0, 0.92, 0.34), instrumentGlow, this.playerCockpit);
+
+    this.steeringAssembly = new TransformNode("steering-assembly", scene);
+    this.steeringAssembly.position.set(wheelX, 1.11, 0.42);
+    this.steeringAssembly.rotation.x = Math.PI / 2.65;
+    this.steeringAssembly.parent = this.playerCockpit;
+    const steeringWheel = MeshBuilder.CreateTorus(
       "steering-wheel",
-      { diameter: 0.38, thickness: 0.045, tessellation: 16 },
+      { diameter: 0.3, thickness: 0.028, tessellation: 20 },
       scene,
     );
-    this.steeringWheel.position.set(wheelX, 0.98, 0.5);
-    this.steeringWheel.rotation.x = Math.PI / 2.65;
-    this.steeringWheel.parent = this.playerCockpit;
-    setMeshMaterial(this.steeringWheel, rubber);
-    this.steeringWheelSpoke = createBox(scene, "wheel-spoke", { width: 0.28, height: 0.04, depth: 0.04 }, new Vector3(wheelX, 0.98, 0.5), rubber, this.playerCockpit);
-    createCylinder(scene, "steering-column", { height: 0.2, diameter: 0.07, tessellation: 12 }, new Vector3(wheelX, 0.9, 0.62), cockpitTrim, this.playerCockpit).rotation.x = Math.PI / 2.7;
+    steeringWheel.parent = this.steeringAssembly;
+    setMeshMaterial(steeringWheel, rubber);
+    createBox(scene, "wheel-horizontal-spoke", { width: 0.21, height: 0.028, depth: 0.028 }, Vector3.Zero(), rubber, this.steeringAssembly);
+    createBox(scene, "wheel-lower-spoke", { width: 0.028, height: 0.12, depth: 0.028 }, new Vector3(0, -0.052, 0), rubber, this.steeringAssembly);
+    createCylinder(scene, "steering-hub", { height: 0.055, diameter: 0.09, tessellation: 16 }, Vector3.Zero(), cockpitTrim, this.steeringAssembly);
   }
 
   private buildTraffic() {
@@ -3501,7 +3528,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       paused = false,
       reducedMotion = false,
       steeringSensitivity = 1,
-      fieldOfView = 0.9,
+      fieldOfView = DEFAULT_HORIZONTAL_FOV,
       masterVolume = 0.75,
       effectsVolume = 0.75,
       coachVolume = 0.8,
@@ -3637,7 +3664,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             paused: paused || touchPortraitGateRef.current,
             reducedMotion,
             steeringSensitivity: clamp(steeringSensitivity, 0.45, 1.8),
-            fieldOfView: clamp(fieldOfView, 0.65, 1.2),
+            fieldOfView: clampHorizontalFieldOfView(fieldOfView),
             masterVolume: clamp(masterVolume, 0, 1),
             effectsVolume: clamp(effectsVolume, 0, 1),
             coachVolume: clamp(coachVolume, 0, 1),
@@ -3682,7 +3709,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         paused: paused || touchPortraitGateRef.current,
         reducedMotion,
         steeringSensitivity: clamp(steeringSensitivity, 0.45, 1.8),
-        fieldOfView: clamp(fieldOfView, 0.65, 1.2),
+        fieldOfView: clampHorizontalFieldOfView(fieldOfView),
         masterVolume: clamp(masterVolume, 0, 1),
         effectsVolume: clamp(effectsVolume, 0, 1),
         coachVolume: clamp(coachVolume, 0, 1),
@@ -3747,21 +3774,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
           style={canvasStyle}
         />
 
-        {runtimeState === "ready" && hud.cameraMode === "first" && (
-          <div
-            aria-hidden="true"
-            style={{
-              position: "absolute",
-              inset: "auto 0 0",
-              height: "16%",
-              background: "linear-gradient(180deg, #202829 0%, #111718 58%, #0c1112 100%)",
-              clipPath: "polygon(0 14%, 5% 0, 95% 0, 100% 14%, 100% 100%, 0 100%)",
-              boxShadow: "inset 0 2px 0 rgba(255,255,255,.07)",
-              pointerEvents: "none",
-            }}
-          />
-        )}
-
         {showBuiltInHud && (
           <>
             <div
@@ -3797,11 +3809,12 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <div
                 style={{
                   position: "absolute",
-                  top: "2.7%",
+                  top: "3%",
                   left: "50%",
-                  width: "32%",
-                  height: "16%",
+                  width: "28%",
+                  height: "12.5%",
                   transform: "translateX(-50%)",
+                  boxSizing: "border-box",
                   border: "4px solid rgba(18,24,25,.94)",
                   borderRadius: 13,
                   background: "linear-gradient(145deg, rgba(255,255,255,.09), transparent 32%)",
