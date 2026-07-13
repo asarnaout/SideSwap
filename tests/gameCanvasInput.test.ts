@@ -63,10 +63,10 @@ describe("cockpit camera tracking", () => {
       quickLookAngle: -0.25,
     });
 
-    expect(pose.first.x).toBeCloseTo(11.38);
+    expect(pose.first.x).toBeCloseTo(11.18);
     expect(pose.first.z).toBeCloseTo(-5.46);
-    expect(pose.first.y).toBeCloseTo(1.49);
-    expect(pose.first.rotationX).toBeCloseTo(0.055);
+    expect(pose.first.y).toBeCloseTo(1.53);
+    expect(pose.first.rotationX).toBeCloseTo(0.035);
     expect(pose.first.rotationY).toBeCloseTo(Math.PI / 2 - 0.15);
     expect(pose.rear.x).toBeCloseTo(11.48);
     expect(pose.rear.rotationX).toBeCloseTo(0.04);

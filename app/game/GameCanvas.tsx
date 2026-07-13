@@ -439,10 +439,10 @@ export function resolveCockpitCameraPoses({
   const rightZ = -forwardX;
   return {
     first: {
-      x: x + rightX * seatSide - forwardX * 0.62,
-      y: 1.46 + headBob,
-      z: z + rightZ * seatSide - forwardZ * 0.62,
-      rotationX: 0.055,
+      x: x + rightX * seatSide - forwardX * 0.82,
+      y: 1.5 + headBob,
+      z: z + rightZ * seatSide - forwardZ * 0.82,
+      rotationX: 0.035,
       rotationY: cameraHeading + quickLookAngle,
     },
     rear: {
@@ -2673,8 +2673,8 @@ class BabylonGameSession {
     const bodyDark = makeMaterial(scene, "player-blue-dark", new Color3(0.04, 0.23, 0.3));
     const glass = makeMaterial(scene, "player-glass", new Color3(0.08, 0.14, 0.17));
     const rubber = makeMaterial(scene, "tire", new Color3(0.025, 0.03, 0.03));
-    const dash = makeMaterial(scene, "dashboard", new Color3(0.06, 0.075, 0.08));
-    const cockpitTrim = makeMaterial(scene, "cockpit-trim", new Color3(0.12, 0.14, 0.15));
+    const dash = makeMaterial(scene, "dashboard", new Color3(0.085, 0.095, 0.1));
+    const cockpitTrim = makeMaterial(scene, "cockpit-trim", new Color3(0.14, 0.155, 0.16));
     const instrumentFace = makeMaterial(
       scene,
       "instrument-face",
@@ -2707,55 +2707,55 @@ class BabylonGameSession {
       (side < 0 ? this.leftIndicatorMeshes : this.rightIndicatorMeshes).push(front, rear);
     }
 
-    createBox(scene, "cockpit-hood", { width: 1.66, height: 0.08, depth: 0.72 }, new Vector3(0, 0.86, 1.62), bodyDark, this.playerCockpit);
-    createBox(scene, "cockpit-dash", { width: 1.82, height: 0.3, depth: 0.66 }, new Vector3(0, 1.0, 0.54), dash, this.playerCockpit);
-    createBox(scene, "cockpit-dash-top", { width: 1.78, height: 0.09, depth: 0.4 }, new Vector3(0, 1.18, 0.68), cockpitTrim, this.playerCockpit);
-    createBox(scene, "windshield-sill", { width: 1.86, height: 0.08, depth: 0.11 }, new Vector3(0, 1.24, 0.82), dash, this.playerCockpit);
-    createBox(scene, "windshield-header", { width: 1.82, height: 0.1, depth: 0.14 }, new Vector3(0, 1.77, 0.24), dash, this.playerCockpit);
+    createBox(scene, "cockpit-hood", { width: 1.58, height: 0.055, depth: 0.5 }, new Vector3(0, 0.84, 1.72), bodyDark, this.playerCockpit);
+    createBox(scene, "cockpit-dash", { width: 1.8, height: 0.17, depth: 0.5 }, new Vector3(0, 0.93, 0.64), dash, this.playerCockpit);
+    createBox(scene, "cockpit-dash-top", { width: 1.74, height: 0.065, depth: 0.32 }, new Vector3(0, 1.055, 0.76), cockpitTrim, this.playerCockpit);
+    createBox(scene, "windshield-sill", { width: 1.82, height: 0.055, depth: 0.08 }, new Vector3(0, 1.1, 0.9), dash, this.playerCockpit);
+    createBox(scene, "windshield-header", { width: 1.82, height: 0.045, depth: 0.075 }, new Vector3(0, 1.8, 0.62), dash, this.playerCockpit);
     for (const side of [-1, 1]) {
       const pillar = createBox(
         scene,
         `windshield-pillar-${side}`,
-        { width: 0.1, height: 0.92, depth: 0.13 },
-        new Vector3(side * 0.83, 1.48, 0.36),
+        { width: 0.055, height: 0.72, depth: 0.075 },
+        new Vector3(side * 0.9, 1.42, 0.62),
         dash,
         this.playerCockpit,
       );
-      pillar.rotation.z = -side * 0.1;
+      pillar.rotation.z = -side * 0.075;
       createBox(
         scene,
         `door-top-${side}`,
-        { width: 0.11, height: 0.24, depth: 1.45 },
-        new Vector3(side * 0.88, 1.2, -0.12),
+        { width: 0.075, height: 0.1, depth: 1.2 },
+        new Vector3(side * 0.91, 1.04, -0.02),
         cockpitTrim,
         this.playerCockpit,
       );
     }
     const wheelX = this.options.steeringSide === "left" ? -0.48 : 0.48;
-    createBox(scene, "instrument-binnacle", { width: 0.58, height: 0.24, depth: 0.18 }, new Vector3(wheelX, 1.26, 0.61), cockpitTrim, this.playerCockpit);
+    createBox(scene, "instrument-binnacle", { width: 0.55, height: 0.17, depth: 0.15 }, new Vector3(wheelX, 1.13, 0.7), cockpitTrim, this.playerCockpit);
     for (const gaugeOffset of [-0.14, 0.14]) {
       const gauge = createCylinder(
         scene,
         `instrument-gauge-${gaugeOffset}`,
         { height: 0.035, diameter: 0.17, tessellation: 16 },
-        new Vector3(wheelX + gaugeOffset, 1.27, 0.505),
+        new Vector3(wheelX + gaugeOffset, 1.135, 0.615),
         instrumentFace,
         this.playerCockpit,
       );
       gauge.rotation.x = Math.PI / 2;
     }
-    createBox(scene, "centre-display", { width: 0.32, height: 0.17, depth: 0.06 }, new Vector3(0, 1.22, 0.48), instrumentGlow, this.playerCockpit);
+    createBox(scene, "centre-display", { width: 0.3, height: 0.13, depth: 0.05 }, new Vector3(0, 1.105, 0.6), instrumentGlow, this.playerCockpit);
     this.steeringWheel = MeshBuilder.CreateTorus(
       "steering-wheel",
-      { diameter: 0.52, thickness: 0.065, tessellation: 16 },
+      { diameter: 0.48, thickness: 0.055, tessellation: 16 },
       scene,
     );
-    this.steeringWheel.position.set(wheelX, 1.19, 0.22);
+    this.steeringWheel.position.set(wheelX, 1.11, 0.28);
     this.steeringWheel.rotation.x = Math.PI / 2.65;
     this.steeringWheel.parent = this.playerCockpit;
     setMeshMaterial(this.steeringWheel, rubber);
-    this.steeringWheelSpoke = createBox(scene, "wheel-spoke", { width: 0.4, height: 0.055, depth: 0.055 }, new Vector3(wheelX, 1.19, 0.22), rubber, this.playerCockpit);
-    createCylinder(scene, "steering-column", { height: 0.28, diameter: 0.09, tessellation: 12 }, new Vector3(wheelX, 1.08, 0.38), cockpitTrim, this.playerCockpit).rotation.x = Math.PI / 2.7;
+    this.steeringWheelSpoke = createBox(scene, "wheel-spoke", { width: 0.36, height: 0.05, depth: 0.05 }, new Vector3(wheelX, 1.11, 0.28), rubber, this.playerCockpit);
+    createCylinder(scene, "steering-column", { height: 0.25, diameter: 0.08, tessellation: 12 }, new Vector3(wheelX, 1.015, 0.43), cockpitTrim, this.playerCockpit).rotation.x = Math.PI / 2.7;
   }
 
   private buildTraffic() {
@@ -3757,6 +3757,21 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
           tabIndex={0}
           style={canvasStyle}
         />
+
+        {runtimeState === "ready" && hud.cameraMode === "first" && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              inset: "auto 0 0",
+              height: "24%",
+              background: "linear-gradient(180deg, #202829 0%, #111718 58%, #0c1112 100%)",
+              clipPath: "polygon(0 18%, 6% 0, 94% 0, 100% 18%, 100% 100%, 0 100%)",
+              boxShadow: "inset 0 2px 0 rgba(255,255,255,.07)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
 
         {showBuiltInHud && (
           <>
