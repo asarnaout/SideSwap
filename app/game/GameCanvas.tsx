@@ -15,6 +15,7 @@ import {
   TransformNode,
   UniversalCamera,
   Vector3,
+  VertexData,
   Viewport,
 } from "@babylonjs/core";
 import {
@@ -64,6 +65,8 @@ export interface GameHudSnapshot {
 export const MIN_HORIZONTAL_FOV = (55 * Math.PI) / 180;
 export const MAX_HORIZONTAL_FOV = (100 * Math.PI) / 180;
 export const DEFAULT_HORIZONTAL_FOV = (72 * Math.PI) / 180;
+export const MAX_STEERING_WHEEL_SPIN = 0.95;
+export const COCKPIT_DASH_DRIVER_Z = 0.28;
 
 export function clampHorizontalFieldOfView(value: number): number {
   return clamp(value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV);
@@ -71,7 +74,35 @@ export function clampHorizontalFieldOfView(value: number): number {
 
 export function resolveCockpitPitch(viewportAspectRatio: number): number {
   const wideBlend = clamp((viewportAspectRatio - 1.6) / 0.4, 0, 1);
-  return 0.03 + wideBlend * 0.08;
+  return 0.1 + wideBlend * 0.02;
+}
+
+/** Returns rotation around the wheel's own steering-column axis. */
+export function resolveSteeringWheelSpin(steer: number): number {
+  if (steer === 0) return 0;
+  return -clamp(steer, -1, 1) * MAX_STEERING_WHEEL_SPIN;
+}
+
+export interface CockpitSteeringGeometry {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly mountRotationX: number;
+  readonly wheelDiameter: number;
+  readonly rimThickness: number;
+}
+
+export function resolveCockpitSteeringGeometry(
+  steeringSide: SteeringSide,
+): CockpitSteeringGeometry {
+  return {
+    x: steeringSide === "left" ? -0.47 : 0.47,
+    y: 1.16,
+    z: 0.22,
+    mountRotationX: Math.PI / 2 + 0.2,
+    wheelDiameter: 0.32,
+    rimThickness: 0.027,
+  };
 }
 
 export interface GameRuntimeEvent {
@@ -856,6 +887,51 @@ function createCylinder(
     scene,
   );
   mesh.position.copyFrom(position);
+  mesh.parent = parent ?? null;
+  setMeshMaterial(mesh, material);
+  return mesh;
+}
+
+function createExtrudedPrism(
+  scene: Scene,
+  name: string,
+  width: number,
+  crossSection: readonly Readonly<{ y: number; z: number }>[],
+  material: StandardMaterial,
+  parent?: TransformNode,
+): Mesh {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const halfWidth = width / 2;
+  const pointCount = crossSection.length;
+
+  for (const x of [-halfWidth, halfWidth]) {
+    for (const point of crossSection) {
+      positions.push(x, point.y, point.z);
+    }
+  }
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const next = (index + 1) % pointCount;
+    const left = index;
+    const leftNext = next;
+    const right = pointCount + index;
+    const rightNext = pointCount + next;
+    indices.push(left, right, rightNext, left, rightNext, leftNext);
+  }
+  for (let index = 1; index < pointCount - 1; index += 1) {
+    indices.push(0, index + 1, index);
+    indices.push(pointCount, pointCount + index, pointCount + index + 1);
+  }
+
+  const normals: number[] = [];
+  VertexData.ComputeNormals(positions, indices, normals);
+  const mesh = new Mesh(name, scene);
+  const vertexData = new VertexData();
+  vertexData.positions = positions;
+  vertexData.indices = indices;
+  vertexData.normals = normals;
+  vertexData.applyToMesh(mesh);
   mesh.parent = parent ?? null;
   setMeshMaterial(mesh, material);
   return mesh;
@@ -1893,7 +1969,7 @@ class BabylonGameSession {
     this.player.rotation.y = this.displayedHeading;
     const visualSteer = this.mergedInput().steer;
     if (this.steeringAssembly) {
-      this.steeringAssembly.rotation.z = -visualSteer * 0.72;
+      this.steeringAssembly.rotation.y = resolveSteeringWheelSpin(visualSteer);
     }
   }
 
@@ -2695,8 +2771,24 @@ class BabylonGameSession {
     const bodyDark = makeMaterial(scene, "player-blue-dark", new Color3(0.04, 0.23, 0.3));
     const glass = makeMaterial(scene, "player-glass", new Color3(0.08, 0.14, 0.17));
     const rubber = makeMaterial(scene, "tire", new Color3(0.025, 0.03, 0.03));
-    const dash = makeMaterial(scene, "dashboard", new Color3(0.085, 0.095, 0.1));
-    const cockpitTrim = makeMaterial(scene, "cockpit-trim", new Color3(0.14, 0.155, 0.16));
+    const steeringRubber = makeMaterial(
+      scene,
+      "steering-rubber",
+      new Color3(0.05, 0.055, 0.058),
+      new Color3(0.008, 0.009, 0.01),
+    );
+    const dash = makeMaterial(
+      scene,
+      "dashboard",
+      new Color3(0.115, 0.125, 0.13),
+      new Color3(0.018, 0.02, 0.022),
+    );
+    const cockpitTrim = makeMaterial(
+      scene,
+      "cockpit-trim",
+      new Color3(0.175, 0.185, 0.19),
+      new Color3(0.012, 0.014, 0.015),
+    );
     const instrumentFace = makeMaterial(
       scene,
       "instrument-face",
@@ -2730,48 +2822,130 @@ class BabylonGameSession {
     }
 
     createBox(scene, "cockpit-hood", { width: 1.62, height: 0.045, depth: 0.42 }, new Vector3(0, 0.74, 1.55), bodyDark, this.playerCockpit);
-    createBox(scene, "cockpit-dash-fascia", { width: 1.9, height: 0.32, depth: 0.46 }, new Vector3(0, 0.87, 0.58), dash, this.playerCockpit);
-    createBox(scene, "cockpit-dash-top", { width: 1.86, height: 0.06, depth: 0.42 }, new Vector3(0, 1.0, 0.72), cockpitTrim, this.playerCockpit);
-    createBox(scene, "windshield-sill", { width: 1.9, height: 0.045, depth: 0.08 }, new Vector3(0, 1.03, 0.92), dash, this.playerCockpit);
+    createExtrudedPrism(
+      scene,
+      "cockpit-dash-shell",
+      1.92,
+      [
+        { y: 0.68, z: COCKPIT_DASH_DRIVER_Z },
+        { y: 0.96, z: COCKPIT_DASH_DRIVER_Z },
+        { y: 1.04, z: 0.94 },
+        { y: 0.74, z: 0.94 },
+      ],
+      dash,
+      this.playerCockpit,
+    );
+    createBox(scene, "cockpit-dash-trim", { width: 1.72, height: 0.022, depth: 0.024 }, new Vector3(0, 0.91, 0.255), cockpitTrim, this.playerCockpit);
+    createBox(scene, "windshield-sill", { width: 1.9, height: 0.038, depth: 0.08 }, new Vector3(0, 1.04, 0.94), cockpitTrim, this.playerCockpit);
     for (const side of [-1, 1]) {
       createBox(
         scene,
-        `cockpit-door-shoulder-${side}`,
-        { width: 0.14, height: 0.28, depth: 1.1 },
-        new Vector3(side * 0.94, 0.85, 0.12),
+        `cockpit-door-beltline-${side}`,
+        { width: 0.12, height: 0.11, depth: 1.12 },
+        new Vector3(side * 0.94, 0.82, 0.12),
         cockpitTrim,
         this.playerCockpit,
       );
     }
-    const wheelX = this.options.steeringSide === "left" ? -0.48 : 0.48;
-    createBox(scene, "instrument-binnacle", { width: 0.5, height: 0.18, depth: 0.16 }, new Vector3(wheelX, 1.1, 0.54), cockpitTrim, this.playerCockpit);
-    for (const gaugeOffset of [-0.14, 0.14]) {
-      const gauge = createCylinder(
+    const steeringGeometry = resolveCockpitSteeringGeometry(
+      this.options.steeringSide,
+    );
+    const wheelX = steeringGeometry.x;
+
+    const instrumentHood = MeshBuilder.CreateTorus(
+      "instrument-hood",
+      { diameter: 0.42, thickness: 0.038, tessellation: 28 },
+      scene,
+    );
+    instrumentHood.position.set(wheelX, 1.08, 0.39);
+    instrumentHood.rotation.x = Math.PI / 2;
+    instrumentHood.scaling.z = 0.5;
+    instrumentHood.parent = this.playerCockpit;
+    setMeshMaterial(instrumentHood, cockpitTrim);
+
+    const clusterFace = createCylinder(
+      scene,
+      "instrument-cluster-face",
+      { height: 0.024, diameter: 0.38, tessellation: 28 },
+      new Vector3(wheelX, 1.07, 0.3),
+      instrumentFace,
+      this.playerCockpit,
+    );
+    clusterFace.rotation.x = Math.PI / 2;
+    clusterFace.scaling.z = 0.48;
+
+    for (const gaugeOffset of [-0.11, 0.11]) {
+      const gaugeRing = createCylinder(
         scene,
-        `instrument-gauge-${gaugeOffset}`,
-        { height: 0.025, diameter: 0.13, tessellation: 16 },
-        new Vector3(wheelX + gaugeOffset, 1.12, 0.445),
+        `instrument-gauge-ring-${gaugeOffset}`,
+        { height: 0.02, diameter: 0.108, tessellation: 20 },
+        new Vector3(wheelX + gaugeOffset, 1.075, 0.279),
+        cockpitTrim,
+        this.playerCockpit,
+      );
+      gaugeRing.rotation.x = Math.PI / 2;
+      const gaugeFace = createCylinder(
+        scene,
+        `instrument-gauge-face-${gaugeOffset}`,
+        { height: 0.01, diameter: 0.084, tessellation: 20 },
+        new Vector3(wheelX + gaugeOffset, 1.075, 0.263),
         instrumentFace,
         this.playerCockpit,
       );
-      gauge.rotation.x = Math.PI / 2;
+      gaugeFace.rotation.x = Math.PI / 2;
     }
-    createBox(scene, "centre-display", { width: 0.18, height: 0.08, depth: 0.04 }, new Vector3(0, 0.92, 0.34), instrumentGlow, this.playerCockpit);
+    createBox(scene, "instrument-status", { width: 0.062, height: 0.02, depth: 0.014 }, new Vector3(wheelX, 1.038, 0.252), instrumentGlow, this.playerCockpit);
 
-    this.steeringAssembly = new TransformNode("steering-assembly", scene);
-    this.steeringAssembly.position.set(wheelX, 1.11, 0.42);
-    this.steeringAssembly.rotation.x = Math.PI / 2.65;
-    this.steeringAssembly.parent = this.playerCockpit;
+    for (const x of [-0.06, 0.06]) {
+      createBox(scene, `centre-vent-${x}`, { width: 0.09, height: 0.014, depth: 0.012 }, new Vector3(x, 0.955, 0.254), cockpitTrim, this.playerCockpit);
+    }
+
+    const steeringMount = new TransformNode("steering-mount", scene);
+    steeringMount.position.set(
+      steeringGeometry.x,
+      steeringGeometry.y,
+      steeringGeometry.z,
+    );
+    steeringMount.rotation.x = steeringGeometry.mountRotationX;
+    steeringMount.parent = this.playerCockpit;
+    createCylinder(
+      scene,
+      "steering-column-shroud",
+      {
+        height: 0.13,
+        diameterTop: 0.075,
+        diameterBottom: 0.055,
+        tessellation: 16,
+      },
+      new Vector3(0, 0.075, 0),
+      steeringRubber,
+      steeringMount,
+    );
+
+    this.steeringAssembly = new TransformNode("steering-spin", scene);
+    this.steeringAssembly.parent = steeringMount;
     const steeringWheel = MeshBuilder.CreateTorus(
       "steering-wheel",
-      { diameter: 0.3, thickness: 0.028, tessellation: 20 },
+      {
+        diameter: steeringGeometry.wheelDiameter,
+        thickness: steeringGeometry.rimThickness,
+        tessellation: 28,
+      },
       scene,
     );
     steeringWheel.parent = this.steeringAssembly;
-    setMeshMaterial(steeringWheel, rubber);
-    createBox(scene, "wheel-horizontal-spoke", { width: 0.21, height: 0.028, depth: 0.028 }, Vector3.Zero(), rubber, this.steeringAssembly);
-    createBox(scene, "wheel-lower-spoke", { width: 0.028, height: 0.12, depth: 0.028 }, new Vector3(0, -0.052, 0), rubber, this.steeringAssembly);
-    createCylinder(scene, "steering-hub", { height: 0.055, diameter: 0.09, tessellation: 16 }, Vector3.Zero(), cockpitTrim, this.steeringAssembly);
+    setMeshMaterial(steeringWheel, steeringRubber);
+    createBox(scene, "wheel-horizontal-spoke", { width: 0.24, height: 0.026, depth: 0.032 }, Vector3.Zero(), steeringRubber, this.steeringAssembly);
+    createBox(scene, "wheel-lower-spoke", { width: 0.032, height: 0.026, depth: 0.13 }, new Vector3(0, 0, 0.055), steeringRubber, this.steeringAssembly);
+    const steeringHub = createCylinder(
+      scene,
+      "steering-hub",
+      { height: 0.045, diameter: 0.13, tessellation: 20 },
+      Vector3.Zero(),
+      cockpitTrim,
+      this.steeringAssembly,
+    );
+    steeringHub.scaling.z = 0.56;
   }
 
   private buildTraffic() {

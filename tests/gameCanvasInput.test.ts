@@ -1,15 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AdaptiveInputRouter,
+  COCKPIT_DASH_DRIVER_Z,
   DEFAULT_HORIZONTAL_FOV,
   INPUT_PROMPT_SWITCH_COOLDOWN_MS,
   MAX_HORIZONTAL_FOV,
+  MAX_STEERING_WHEEL_SPIN,
   MIN_HORIZONTAL_FOV,
   TOUCH_CONTROL_DIM_DELAY_MS,
   clampHorizontalFieldOfView,
   isCameraStackActive,
   resolveCockpitPitch,
   resolveCockpitCameraPoses,
+  resolveCockpitSteeringGeometry,
+  resolveSteeringWheelSpin,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
 
@@ -71,7 +75,7 @@ describe("cockpit camera tracking", () => {
     expect(pose.first.x).toBeCloseTo(11.4);
     expect(pose.first.z).toBeCloseTo(-5.46);
     expect(pose.first.y).toBeCloseTo(1.52);
-    expect(pose.first.rotationX).toBeCloseTo(0.11);
+    expect(pose.first.rotationX).toBeCloseTo(0.12);
     expect(pose.first.rotationY).toBeCloseTo(Math.PI / 2 - 0.15);
     expect(pose.rear.x).toBeCloseTo(11.48);
     expect(pose.rear.rotationX).toBeCloseTo(0.04);
@@ -87,9 +91,33 @@ describe("cockpit camera tracking", () => {
   });
 
   it("keeps the road sightline stable across landscape aspect ratios", () => {
-    expect(resolveCockpitPitch(1.6)).toBeCloseTo(0.03);
-    expect(resolveCockpitPitch(2)).toBeCloseTo(0.11);
-    expect(resolveCockpitPitch(2.2)).toBeCloseTo(0.11);
+    expect(resolveCockpitPitch(1.6)).toBeCloseTo(0.1);
+    expect(resolveCockpitPitch(2)).toBeCloseTo(0.12);
+    expect(resolveCockpitPitch(2.2)).toBeCloseTo(0.12);
+  });
+
+  it("spins the steering wheel around its own column axis", () => {
+    expect(resolveSteeringWheelSpin(0)).toBe(0);
+    expect(resolveSteeringWheelSpin(1)).toBe(-MAX_STEERING_WHEEL_SPIN);
+    expect(resolveSteeringWheelSpin(-1)).toBe(MAX_STEERING_WHEEL_SPIN);
+    expect(resolveSteeringWheelSpin(4)).toBe(-MAX_STEERING_WHEEL_SPIN);
+  });
+
+  it("mirrors the cockpit without embedding the wheel behind the dashboard", () => {
+    const left = resolveCockpitSteeringGeometry("left");
+    const right = resolveCockpitSteeringGeometry("right");
+
+    expect(left.x).toBe(-right.x);
+    expect(left.y).toBe(right.y);
+    expect(left.z).toBe(right.z);
+    expect(left.mountRotationX).toBe(right.mountRotationX);
+
+    const rimRadius = left.wheelDiameter / 2 + left.rimThickness / 2;
+    const deepestRimPoint =
+      left.z + Math.abs(Math.cos(left.mountRotationX)) * rimRadius;
+    expect(deepestRimPoint).toBeLessThan(COCKPIT_DASH_DRIVER_Z);
+    expect(Math.cos(left.mountRotationX)).toBeLessThan(0);
+    expect(Math.sin(left.mountRotationX)).toBeGreaterThan(0);
   });
 });
 
