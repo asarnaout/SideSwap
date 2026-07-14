@@ -1573,6 +1573,79 @@ describe("SideSwap content", () => {
     });
   });
 
+  it("keeps circular roundabout islands fully inside the circulating carriageway", () => {
+    for (const [mapId, surfaceId, landmarkId] of [
+      ["milton-keynes-oldbrook", "uk-roundabout", "uk-roundabout-green"],
+      ["calais-coquelles", "fr-roundabout", "fr-roundabout-green"],
+    ] as const) {
+      const map = getMapPack(mapId);
+      const surface = map.geometry.roadSurfaces.find(
+        (candidate) => candidate.id === surfaceId,
+      );
+      const island = map.geometry.landmarks.find(
+        (candidate) => candidate.id === landmarkId,
+      );
+
+      expect(surface, `${mapId}/${surfaceId}`).toBeDefined();
+      expect(island, `${mapId}/${landmarkId}`).toBeDefined();
+      if (!surface || !island) continue;
+
+      const innerKerbRadiusM = Math.min(
+        ...surface.centerline.map((point) => distanceBetween(point, island.center)),
+      ) - surface.widthM / 2;
+      const islandRadiusM = Math.min(island.size.x, island.size.z) / 2;
+      expect(island.size.x).toBe(island.size.z);
+      expect(
+        islandRadiusM,
+        `${mapId} island must leave a visible paved inner-kerb margin`,
+      ).toBeLessThanOrEqual(innerKerbRadiusM - 1);
+    }
+  });
+
+  it("keeps moved parks and street furniture clear of driveable surfaces", () => {
+    const checks = [
+      ["nyc-upper-west-side", "nyc-verdi-green"],
+      ["nyc-upper-west-side", "nyc-subway"],
+      ["tokyo-setagaya", "jp-temple-green"],
+      ["london-south-kensington", "london-exhibition-road-public-space"],
+    ] as const;
+
+    for (const [mapId, landmarkId] of checks) {
+      const map = getMapPack(mapId);
+      const landmark = map.geometry.landmarks.find(
+        (candidate) => candidate.id === landmarkId,
+      );
+      expect(landmark, `${mapId}/${landmarkId}`).toBeDefined();
+      if (!landmark) continue;
+
+      const closestSurfaceClearanceM = Math.min(
+        ...map.geometry.roadSurfaces.flatMap((surface) =>
+          surface.centerline.slice(1).map((end, index) => {
+            const start = surface.centerline[index];
+            const dx = end.x - start.x;
+            const dz = end.z - start.z;
+            const length = Math.hypot(dx, dz);
+            const lateralHalfSpanM =
+              length <= GEOMETRY_EPSILON
+                ? Math.max(landmark.size.x, landmark.size.z) / 2
+                :
+                    (Math.abs(dz / length) * landmark.size.x) / 2 +
+                    (Math.abs(dx / length) * landmark.size.z) / 2;
+            return (
+              distanceToSegment(landmark.center, start, end) -
+              surface.widthM / 2 -
+              lateralHalfSpanM
+            );
+          }),
+        ),
+      );
+      expect(
+        closestSurfaceClearanceM,
+        `${mapId}/${landmarkId} overlaps a road surface`,
+      ).toBeGreaterThanOrEqual(-GEOMETRY_EPSILON);
+    }
+  });
+
   it("keeps the current France curriculum within its supported geometry", () => {
     const priority = getLesson("fr-priority-roundabouts");
     const fasterRoad = getLesson("fr-speed-merging");

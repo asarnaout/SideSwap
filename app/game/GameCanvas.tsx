@@ -85,6 +85,238 @@ export const GUIDANCE_LATERAL_CLEARANCE_M = 0.3;
 export const WORLD_LAYER_MASK = 0x0fffffff;
 export const GUIDANCE_LAYER_MASK = 0x10000000;
 export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
+const ROAD_SURFACE_Y = 0.07;
+const ROAD_JUNCTION_PATCH_Y = ROAD_SURFACE_Y + 0.004;
+const ROAD_POINT_EPSILON_M = 0.08;
+const MAX_ROAD_MITER_RATIO = 3.25;
+
+export interface RoadSurfaceStripGeometry {
+  /** Two vertices per authored centreline point: positive and negative lateral offsets. */
+  readonly positions: readonly number[];
+  readonly indices: readonly number[];
+  readonly closed: boolean;
+}
+
+export interface RoadJunctionSource {
+  readonly id: string;
+  readonly centerline: readonly GameCanvasPoint[];
+  readonly widthM: number;
+}
+
+export interface RoadJunctionPatch {
+  readonly x: number;
+  readonly z: number;
+  readonly radiusM: number;
+}
+
+type RoadDirection = Readonly<{ x: number; z: number }>;
+
+function roadPointDistance(
+  first: GameCanvasPoint,
+  second: GameCanvasPoint,
+): number {
+  return Math.hypot(first.x - second.x, first.z - second.z);
+}
+
+function normalizeRoadDirection(
+  vector: RoadDirection,
+): RoadDirection | null {
+  const length = Math.hypot(vector.x, vector.z);
+  return length > 0.0001
+    ? { x: vector.x / length, z: vector.z / length }
+    : null;
+}
+
+function roadLateral(direction: RoadDirection): RoadDirection {
+  return { x: direction.z, z: -direction.x };
+}
+
+function dotRoadDirections(first: RoadDirection, second: RoadDirection): number {
+  return first.x * second.x + first.z * second.z;
+}
+
+/** Removes authored duplicate points while retaining the fact that a path is closed. */
+function normalizeRoadCenterline(
+  points: readonly GameCanvasPoint[],
+): { readonly points: readonly GameCanvasPoint[]; readonly closed: boolean } {
+  const compact: GameCanvasPoint[] = [];
+  for (const point of points) {
+    if (!compact.length || roadPointDistance(compact.at(-1)!, point) > ROAD_POINT_EPSILON_M) {
+      compact.push(point);
+    }
+  }
+  const closed =
+    compact.length > 2 &&
+    roadPointDistance(compact[0], compact.at(-1)!) <= ROAD_POINT_EPSILON_M;
+  if (closed) compact.pop();
+  return { points: compact, closed };
+}
+
+/**
+ * Smooths only the visual roundabout centreline. The simulation continues to
+ * use its authored lane graph, while the low-poly asphalt reads as a proper
+ * continuous ring instead of an octagon made from separate boxes.
+ */
+export function smoothClosedRoadCenterline(
+  points: readonly GameCanvasPoint[],
+  subdivisions = 4,
+): readonly GameCanvasPoint[] {
+  const normalized = normalizeRoadCenterline(points);
+  const source = normalized.points;
+  if (!normalized.closed || source.length < 3 || subdivisions < 1) return source;
+
+  const result: GameCanvasPoint[] = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const previous = source[(index - 1 + source.length) % source.length];
+    const start = source[index];
+    const end = source[(index + 1) % source.length];
+    const next = source[(index + 2) % source.length];
+    for (let step = 0; step < subdivisions; step += 1) {
+      const t = step / subdivisions;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      result.push({
+        x:
+          0.5 *
+          ((2 * start.x) +
+            (-previous.x + end.x) * t +
+            (2 * previous.x - 5 * start.x + 4 * end.x - next.x) * t2 +
+            (-previous.x + 3 * start.x - 3 * end.x + next.x) * t3),
+        z:
+          0.5 *
+          ((2 * start.z) +
+            (-previous.z + end.z) * t +
+            (2 * previous.z - 5 * start.z + 4 * end.z - next.z) * t2 +
+            (-previous.z + 3 * start.z - 3 * end.z + next.z) * t3),
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * Builds one watertight top surface for a road polyline. Unlike a chain of
+ * boxes, mitered offsets share vertices at every bend so grass cannot show
+ * through chipped joins.
+ */
+export function buildRoadSurfaceStripGeometry(
+  sourcePoints: readonly GameCanvasPoint[],
+  widthM: number,
+  closedOverride?: boolean,
+): RoadSurfaceStripGeometry {
+  const normalized = normalizeRoadCenterline(sourcePoints);
+  const points = normalized.points;
+  const closed = closedOverride ?? normalized.closed;
+  if (points.length < 2 || widthM <= 0) {
+    return { positions: [], indices: [], closed };
+  }
+
+  const directions: RoadDirection[] = [];
+  const segmentCount = closed ? points.length : points.length - 1;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const direction = normalizeRoadDirection({ x: end.x - start.x, z: end.z - start.z });
+    if (!direction) return { positions: [], indices: [], closed };
+    directions.push(direction);
+  }
+
+  const halfWidth = widthM / 2;
+  const positions: number[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    const incoming =
+      index === 0 && !closed
+        ? directions[0]
+        : directions[(index - 1 + directions.length) % directions.length];
+    const outgoing =
+      index === points.length - 1 && !closed
+        ? directions.at(-1)!
+        : directions[index % directions.length];
+    const incomingLateral = roadLateral(incoming);
+    const outgoingLateral = roadLateral(outgoing);
+    const miter = normalizeRoadDirection({
+      x: incomingLateral.x + outgoingLateral.x,
+      z: incomingLateral.z + outgoingLateral.z,
+    });
+    const alignment = miter ? dotRoadDirections(miter, outgoingLateral) : 0;
+    const miterLength =
+      miter && alignment > 0.12
+        ? Math.min(halfWidth / alignment, halfWidth * MAX_ROAD_MITER_RATIO)
+        : halfWidth;
+    const lateral = miter
+      ? { x: miter.x * miterLength, z: miter.z * miterLength }
+      : { x: outgoingLateral.x * halfWidth, z: outgoingLateral.z * halfWidth };
+    const point = points[index];
+    positions.push(
+      point.x + lateral.x,
+      0,
+      point.z + lateral.z,
+      point.x - lateral.x,
+      0,
+      point.z - lateral.z,
+    );
+  }
+
+  const indices: number[] = [];
+  for (let index = 0; index < segmentCount; index += 1) {
+    const next = (index + 1) % points.length;
+    const positive = index * 2;
+    const negative = positive + 1;
+    const nextPositive = next * 2;
+    const nextNegative = nextPositive + 1;
+    indices.push(
+      positive,
+      negative,
+      nextPositive,
+      negative,
+      nextNegative,
+      nextPositive,
+    );
+  }
+  return { positions, indices, closed };
+}
+
+/**
+ * Finds shared authored road nodes so a small asphalt apron can cover the
+ * seam between independently-authored road surfaces (for example a side
+ * street and a roundabout approach).
+ */
+export function collectRoadJunctionPatches(
+  surfaces: readonly RoadJunctionSource[],
+): readonly RoadJunctionPatch[] {
+  const candidates: Array<{
+    x: number;
+    z: number;
+    maxWidthM: number;
+    surfaceIds: Set<string>;
+  }> = [];
+  for (const surface of surfaces) {
+    const normalized = normalizeRoadCenterline(surface.centerline);
+    for (const point of normalized.points) {
+      const existing = candidates.find(
+        (candidate) => Math.hypot(candidate.x - point.x, candidate.z - point.z) <= ROAD_POINT_EPSILON_M,
+      );
+      if (existing) {
+        existing.maxWidthM = Math.max(existing.maxWidthM, surface.widthM);
+        existing.surfaceIds.add(surface.id);
+      } else {
+        candidates.push({
+          x: point.x,
+          z: point.z,
+          maxWidthM: surface.widthM,
+          surfaceIds: new Set([surface.id]),
+        });
+      }
+    }
+  }
+  return candidates
+    .filter((candidate) => candidate.surfaceIds.size > 1)
+    .map((candidate) => ({
+      x: candidate.x,
+      z: candidate.z,
+      radiusM: Math.max(2.7, candidate.maxWidthM / 2 + 0.42),
+    }));
+}
 
 /** Keeps a checkpoint target wholly inside its authored lane. */
 export function resolveCheckpointTargetWidth(laneWidthM: number): number {
@@ -3171,20 +3403,24 @@ class BabylonGameSession {
         surface.surfaceType === "shared_space"
           ? sharedSpace
           : surface.surfaceType === "terminal"
-            ? terminalSurface
+          ? terminalSurface
             : asphalt;
-      for (let index = 0; index < surface.centerline.length - 1; index += 1) {
-        const start = surface.centerline[index];
-        const end = surface.centerline[index + 1];
-        this.createFlatSegment(
-          `road-${surface.id}-${index}`,
-          start,
-          end,
-          surface.widthM,
-          0.07,
-          surfaceMaterial,
-        );
-      }
+      this.createRoadSurfaceMesh(
+        `road-${surface.id}`,
+        surface.centerline,
+        surface.widthM,
+        surfaceMaterial,
+        surface.surfaceType === "roundabout",
+      );
+    }
+    for (const [index, patch] of collectRoadJunctionPatches(roadSurfaces).entries()) {
+      this.createRoadJunctionPatch(
+        `road-junction-${index}`,
+        patch,
+        asphalt,
+      );
+    }
+    for (const surface of roadSurfaces) {
       for (const marking of surface.markings) {
         const material =
           marking.color === "yellow" ? yellowMarkingMaterial : laneMaterial;
@@ -3318,13 +3554,33 @@ class BabylonGameSession {
           );
         }
       } else if (landmark.kind === "park") {
-        createBox(
-          scene,
-          landmark.id,
-          { width: landmark.size.x, height: 0.2, depth: landmark.size.z },
-          new Vector3(landmark.center.x, 0.12, landmark.center.z),
-          material,
-        );
+        const isRoundaboutIsland = landmark.id.includes("roundabout");
+        if (isRoundaboutIsland) {
+          // A central island is circular and stays below the road mesh. The
+          // former raised square park overpainted the inner edge of Calais and
+          // Milton Keynes roundabouts, leaving an implausible green wedge.
+          createCylinder(
+            scene,
+            landmark.id,
+            {
+              height: 0.035,
+              diameter: Math.min(landmark.size.x, landmark.size.z),
+              tessellation: 32,
+            },
+            new Vector3(landmark.center.x, 0.018, landmark.center.z),
+            material,
+          );
+        } else {
+          // Parks sit flush with the terrain so roads retain visual priority
+          // wherever an authored surface passes their footprint.
+          createBox(
+            scene,
+            landmark.id,
+            { width: landmark.size.x, height: 0.02, depth: landmark.size.z },
+            new Vector3(landmark.center.x, 0.01, landmark.center.z),
+            material,
+          );
+        }
         createCylinder(
           scene,
           `${landmark.id}-feature`,
@@ -3792,6 +4048,57 @@ class BabylonGameSession {
       new Vector3(122, 1.69, 87),
       postBoxRed,
     );
+  }
+
+  private createRoadSurfaceMesh(
+    name: string,
+    centerline: readonly GameCanvasPoint[],
+    widthM: number,
+    material: StandardMaterial,
+    smoothClosed = false,
+  ): Mesh | undefined {
+    const renderedCenterline = smoothClosed
+      ? smoothClosedRoadCenterline(centerline)
+      : centerline;
+    const geometry = buildRoadSurfaceStripGeometry(
+      renderedCenterline,
+      widthM,
+      smoothClosed,
+    );
+    if (!geometry.positions.length || !geometry.indices.length) return undefined;
+
+    const positions = geometry.positions.map((value, index) =>
+      index % 3 === 1 ? ROAD_SURFACE_Y : value,
+    );
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, [...geometry.indices], normals);
+    const mesh = new Mesh(name, this.scene);
+    const vertexData = new VertexData();
+    vertexData.positions = positions;
+    vertexData.indices = [...geometry.indices];
+    vertexData.normals = normals;
+    vertexData.applyToMesh(mesh);
+    setMeshMaterial(mesh, material);
+    return mesh;
+  }
+
+  private createRoadJunctionPatch(
+    name: string,
+    patch: RoadJunctionPatch,
+    material: StandardMaterial,
+  ) {
+    const disk = createCylinder(
+      this.scene,
+      name,
+      {
+        height: 0.026,
+        diameter: patch.radiusM * 2,
+        tessellation: 20,
+      },
+      new Vector3(patch.x, ROAD_JUNCTION_PATCH_Y, patch.z),
+      material,
+    );
+    return disk;
   }
 
   private createFlatSegment(

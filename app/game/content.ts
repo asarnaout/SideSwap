@@ -898,10 +898,12 @@ const ukNodes = {
 };
 
 const ukLanes: readonly LaneSegment[] = [
-  lane("uk-rb-n-e", ukNodes.n, ukNodes.e, "left", 30, ["uk-rb-e-s", "uk-exit-east"], "roundabout", [point(25, 25)]),
-  lane("uk-rb-e-s", ukNodes.e, ukNodes.s, "left", 30, ["uk-rb-s-w", "uk-exit-south"], "roundabout", [point(25, -25)]),
-  lane("uk-rb-s-w", ukNodes.s, ukNodes.w, "left", 30, ["uk-rb-w-n", "uk-exit-west"], "roundabout", [point(-25, -25)]),
-  lane("uk-rb-w-n", ukNodes.w, ukNodes.n, "left", 30, ["uk-rb-n-e", "uk-exit-north"], "roundabout", [point(-25, 25)]),
+  // Use short arc segments instead of a diamond. The visual carriageway and
+  // the legal vehicle path now round each corner together.
+  lane("uk-rb-n-e", ukNodes.n, ukNodes.e, "left", 30, ["uk-rb-e-s", "uk-exit-east"], "roundabout", [point(13, 31.4), point(24, 24), point(31.4, 13)]),
+  lane("uk-rb-e-s", ukNodes.e, ukNodes.s, "left", 30, ["uk-rb-s-w", "uk-exit-south"], "roundabout", [point(31.4, -13), point(24, -24), point(13, -31.4)]),
+  lane("uk-rb-s-w", ukNodes.s, ukNodes.w, "left", 30, ["uk-rb-w-n", "uk-exit-west"], "roundabout", [point(-13, -31.4), point(-24, -24), point(-31.4, -13)]),
+  lane("uk-rb-w-n", ukNodes.w, ukNodes.n, "left", 30, ["uk-rb-n-e", "uk-exit-north"], "roundabout", [point(-31.4, 13), point(-24, 24), point(-13, 31.4)]),
   laneTrue("uk-entry-north", ukNodes.no, ukNodes.n, "left", 40, ["uk-rb-n-e"], "entry", [point(1.7, 76)], ["uk-exit-north"]),
   laneTrue("uk-exit-north", ukNodes.n, ukNodes.no, "left", 40, ["uk-dual-n-east"], "exit", [point(-1.7, 76)], ["uk-entry-north"]),
   laneTrue("uk-entry-east", ukNodes.eo, ukNodes.e, "left", 40, ["uk-rb-e-s"], "entry", [point(82, -1.7)], ["uk-exit-east"]),
@@ -930,10 +932,12 @@ const frNodes = {
 };
 
 const frLanes: readonly LaneSegment[] = [
-  lane("fr-rb-n-w", frNodes.n, frNodes.w, "right", 30, ["fr-rb-w-s", "fr-exit-west"], "roundabout", [point(-25, 25)]),
-  lane("fr-rb-w-s", frNodes.w, frNodes.s, "right", 30, ["fr-rb-s-e", "fr-exit-south"], "roundabout", [point(-25, -25)]),
-  lane("fr-rb-s-e", frNodes.s, frNodes.e, "right", 30, ["fr-rb-e-n", "fr-exit-east"], "roundabout", [point(25, -25)]),
-  lane("fr-rb-e-n", frNodes.e, frNodes.n, "right", 30, ["fr-rb-n-w", "fr-exit-north"], "roundabout", [point(25, 25)]),
+  // Match the French counter-clockwise circulation with smooth, driveable
+  // arcs. This also leaves a clean, consistently wide island boundary.
+  lane("fr-rb-n-w", frNodes.n, frNodes.w, "right", 30, ["fr-rb-w-s", "fr-exit-west"], "roundabout", [point(-13, 31.4), point(-24, 24), point(-31.4, 13)]),
+  lane("fr-rb-w-s", frNodes.w, frNodes.s, "right", 30, ["fr-rb-s-e", "fr-exit-south"], "roundabout", [point(-31.4, -13), point(-24, -24), point(-13, -31.4)]),
+  lane("fr-rb-s-e", frNodes.s, frNodes.e, "right", 30, ["fr-rb-e-n", "fr-exit-east"], "roundabout", [point(13, -31.4), point(24, -24), point(31.4, -13)]),
+  lane("fr-rb-e-n", frNodes.e, frNodes.n, "right", 30, ["fr-rb-n-w", "fr-exit-north"], "roundabout", [point(31.4, 13), point(24, 24), point(13, 31.4)]),
   laneTrue("fr-entry-north", frNodes.no, frNodes.n, "right", 50, ["fr-rb-n-w"], "entry", [point(-1.7, 76)], ["fr-exit-north"]),
   laneTrue("fr-exit-north", frNodes.n, frNodes.no, "right", 50, ["fr-north-west"], "exit", [point(1.7, 76)], ["fr-entry-north"]),
   laneTrue("fr-entry-east", frNodes.eo, frNodes.e, "right", 50, ["fr-rb-e-n"], "entry", [point(86, 1.7)], ["fr-exit-east"]),
@@ -1098,8 +1102,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-block-se", center: point(52, -36), size: point(82, 48), heightRange: [20, 44], density: 0.82, material: "stone" },
       ],
       landmarks: [
-        { id: "nyc-verdi-green", kind: "park", center: point(14, 18), size: point(18, 42), color: "#5c8c4b" },
-        { id: "nyc-subway", kind: "station", center: point(-8, -6), size: point(8, 5), color: "#2d2f33" },
+        // Keep scenery adjacent to Broadway rather than letting it sit on the
+        // physical carriageway.
+        { id: "nyc-verdi-green", kind: "park", center: point(16, 20), size: point(10, 30), color: "#5c8c4b" },
+        { id: "nyc-subway", kind: "station", center: point(-14, -6), size: point(8, 5), color: "#2d2f33" },
       ],
     },
     laneGraph: graph(
@@ -1168,7 +1174,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       roadWidth: 9,
       shoulderWidth: 2,
       roadSurfaces: [
-        roadSurface("uk-roundabout", [ukNodes.n.position, point(25, 25), ukNodes.e.position, point(25, -25), ukNodes.s.position, point(-25, -25), ukNodes.w.position, point(-25, 25), ukNodes.n.position], 7.2, ["uk-rb-n-e", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n"], "roundabout"),
+        roadSurface("uk-roundabout", [ukNodes.n.position, point(13, 31.4), point(24, 24), point(31.4, 13), ukNodes.e.position, point(31.4, -13), point(24, -24), point(13, -31.4), ukNodes.s.position, point(-13, -31.4), point(-24, -24), point(-31.4, -13), ukNodes.w.position, point(-31.4, 13), point(-24, 24), point(-13, 31.4), ukNodes.n.position], 7.2, ["uk-rb-n-e", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n"], "roundabout"),
         roadSurface("uk-north-approach", [ukNodes.n.position, ukNodes.no.position], 7.2, ["uk-entry-north", "uk-exit-north"], "standard", [roadMarking("uk-north-centre", "centre_dashed", [ukNodes.n.position, ukNodes.no.position], "white")]),
         roadSurface("uk-east-approach", [ukNodes.e.position, ukNodes.eo.position], 7.2, ["uk-entry-east", "uk-exit-east"], "standard", [roadMarking("uk-east-centre", "centre_dashed", [ukNodes.e.position, ukNodes.eo.position], "white")]),
         roadSurface("uk-south-approach", [ukNodes.s.position, ukNodes.so.position], 7.2, ["uk-entry-south", "uk-exit-south"], "standard", [roadMarking("uk-south-centre", "centre_dashed", [ukNodes.s.position, ukNodes.so.position], "white")]),
@@ -1186,7 +1192,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "uk-retail", center: point(84, -72), size: point(96, 70), heightRange: [6, 14], density: 0.4, material: "concrete" },
       ],
       landmarks: [
-        { id: "uk-roundabout-green", kind: "park", center: point(0, 0), size: point(50, 50), color: "#608b4e" },
+        // The island must sit fully inside the roundabout's inner kerb, not
+        // cover the circulating lane at the cardinal approaches.
+        { id: "uk-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#608b4e" },
         { id: "uk-station-sign", kind: "station", center: point(82, 82), size: point(15, 8), color: "#d64045" },
       ],
     },
@@ -1240,7 +1248,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       roadWidth: 9,
       shoulderWidth: 2,
       roadSurfaces: [
-        roadSurface("fr-roundabout", [frNodes.n.position, point(-25, 25), frNodes.w.position, point(-25, -25), frNodes.s.position, point(25, -25), frNodes.e.position, point(25, 25), frNodes.n.position], 7.2, ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], "roundabout"),
+        roadSurface("fr-roundabout", [frNodes.n.position, point(-13, 31.4), point(-24, 24), point(-31.4, 13), frNodes.w.position, point(-31.4, -13), point(-24, -24), point(-13, -31.4), frNodes.s.position, point(13, -31.4), point(24, -24), point(31.4, -13), frNodes.e.position, point(31.4, 13), point(24, 24), point(13, 31.4), frNodes.n.position], 7.2, ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], "roundabout"),
         roadSurface("fr-north-approach", [frNodes.n.position, frNodes.no.position], 7.2, ["fr-entry-north", "fr-exit-north"], "standard", [roadMarking("fr-north-centre", "centre_dashed", [frNodes.n.position, frNodes.no.position], "white")]),
         roadSurface("fr-east-approach", [frNodes.e.position, frNodes.eo.position], 7.2, ["fr-entry-east", "fr-exit-east"], "standard", [roadMarking("fr-east-centre", "centre_dashed", [frNodes.e.position, frNodes.eo.position], "white")]),
         roadSurface("fr-south-approach", [frNodes.s.position, frNodes.so.position], 7.2, ["fr-entry-south", "fr-exit-south"], "standard", [roadMarking("fr-south-centre", "centre_dashed", [frNodes.s.position, frNodes.so.position], "white")]),
@@ -1250,12 +1258,14 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
       ],
       blocks: [
-        { id: "fr-coquelles", center: point(-82, 70), size: point(100, 72), heightRange: [5, 13], density: 0.45, material: "stucco" },
-        { id: "fr-commercial", center: point(88, -70), size: point(104, 76), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
+        // Keep compact scenery beside the two curved links; neither block may
+        // occupy a driving surface.
+        { id: "fr-coquelles", center: point(-88, 104), size: point(56, 20), heightRange: [5, 13], density: 0.45, material: "stucco" },
+        { id: "fr-commercial", center: point(118, -104), size: point(28, 28), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
       ],
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
-        { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(48, 48), color: "#6d914f" },
+        { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#6d914f" },
       ],
     },
     laneGraph: graph(
@@ -1328,7 +1338,9 @@ export const MAP_PACKS: readonly MapPack[] = [
       landmarks: [
         { id: "jp-gotokuji-station", kind: "station", center: point(-22, 12), size: point(20, 9), color: "#e85e59" },
         { id: "jp-setagaya-line", kind: "railway", center: point(18, -62), size: point(5, 72), color: "#656a70" },
-        { id: "jp-temple-green", kind: "park", center: point(78, 48), size: point(42, 38), color: "#527b4d" },
+        // The former temple garden covered the live junction. Keep it visible
+        // to the east of the street instead of placing it over the asphalt.
+        { id: "jp-temple-green", kind: "park", center: point(106, 48), size: point(24, 28), color: "#527b4d" },
       ],
     },
     laneGraph: graph(

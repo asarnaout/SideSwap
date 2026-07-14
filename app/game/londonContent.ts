@@ -991,8 +991,10 @@ export const LONDON_MAP_PACK: MapPack = {
       {
         id: "london-exhibition-road-public-space",
         kind: "park",
-        center: point(42, 30),
-        size: point(12, 50),
+        // Public-space planting belongs beside Exhibition Road; rendering it
+        // over the shared carriageway made the road appear to be missing.
+        center: point(50, 30),
+        size: point(8, 40),
         color: "#708c66",
       },
     ],

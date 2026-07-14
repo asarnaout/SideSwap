@@ -11,7 +11,9 @@ import {
   PRIMARY_CAMERA_LAYER_MASK,
   TOUCH_CONTROL_DIM_DELAY_MS,
   WORLD_LAYER_MASK,
+  buildRoadSurfaceStripGeometry,
   clampHorizontalFieldOfView,
+  collectRoadJunctionPatches,
   guidanceCueOverlapsCheckpoint,
   isAuthoredCheckpointCrossing,
   isLaneGuidanceDistanceAllowed,
@@ -23,6 +25,7 @@ import {
   resolveCheckpointTargetWidth,
   resolveRouteChevronHalfSpan,
   resolveSteeringWheelSpin,
+  smoothClosedRoadCenterline,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
 
@@ -136,6 +139,81 @@ describe("lane-contained driving guidance", () => {
         { laneId: "adjacent", distanceAlongM: 20 },
       ),
     ).toBe(false);
+  });
+});
+
+describe("continuous road-surface rendering", () => {
+  it("builds one mitered surface through a right-angle bend instead of separate chipped boxes", () => {
+    const geometry = buildRoadSurfaceStripGeometry(
+      [
+        { x: 0, z: 0 },
+        { x: 0, z: 10 },
+        { x: 10, z: 10 },
+      ],
+      6,
+    );
+
+    expect(geometry.closed).toBe(false);
+    expect(geometry.positions).toHaveLength(18);
+    expect(geometry.indices).toHaveLength(12);
+    // The shared corner uses the mitered outer and inner corners of the turn.
+    expect(geometry.positions.slice(6, 12)).toEqual([3, 0, 7, -3, 0, 13]);
+  });
+
+  it("wraps a closed roundabout strip without a final-segment seam", () => {
+    const ring = [
+      { x: -20, z: -20 },
+      { x: 20, z: -20 },
+      { x: 20, z: 20 },
+      { x: -20, z: 20 },
+      { x: -20, z: -20 },
+    ] as const;
+    const geometry = buildRoadSurfaceStripGeometry(ring, 7.2);
+
+    expect(geometry.closed).toBe(true);
+    expect(geometry.positions).toHaveLength(24);
+    expect(geometry.indices).toHaveLength(24);
+    const smoothed = smoothClosedRoadCenterline(ring);
+    expect(smoothed).toHaveLength(16);
+    const smoothGeometry = buildRoadSurfaceStripGeometry(smoothed, 7.2, true);
+    expect(smoothGeometry).toMatchObject({
+      closed: true,
+      indices: expect.any(Array),
+    });
+    expect(smoothGeometry.indices).toHaveLength(96);
+  });
+
+  it("adds one asphalt apron only where independently-authored surfaces share a node", () => {
+    const patches = collectRoadJunctionPatches([
+      {
+        id: "north-south",
+        widthM: 7.2,
+        centerline: [
+          { x: 0, z: -40 },
+          { x: 0, z: 0 },
+          { x: 0, z: 40 },
+        ],
+      },
+      {
+        id: "east-west",
+        widthM: 10,
+        centerline: [
+          { x: -40, z: 0 },
+          { x: 0, z: 0 },
+          { x: 40, z: 0 },
+        ],
+      },
+      {
+        id: "isolated",
+        widthM: 7.2,
+        centerline: [
+          { x: 80, z: 80 },
+          { x: 100, z: 80 },
+        ],
+      },
+    ]);
+
+    expect(patches).toEqual([{ x: 0, z: 0, radiusM: 5.42 }]);
   });
 });
 
