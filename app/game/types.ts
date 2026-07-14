@@ -107,7 +107,7 @@ export interface OfficialRuleReference {
 export interface LanePolicy {
   readonly keepSide: TrafficSide;
   readonly passingSide: TrafficSide;
-  readonly slowLaneSide: TrafficSide;
+  readonly normalTravelLaneSide: TrafficSide;
   readonly turnOnRed: "permitted_after_stop_unless_signed" | "prohibited";
 }
 
@@ -162,6 +162,7 @@ export type LaneRole =
   | "passing"
   | "entry"
   | "exit"
+  | "connector"
   | "roundabout"
   | "one_way"
   | "rail_crossing"
@@ -178,13 +179,40 @@ export interface LaneAnchor {
   readonly distanceAlongM: number;
 }
 
-export type RoadSurfaceMarking =
-  | "none"
-  | "center_line"
-  | "lane_divider"
+/**
+ * A short junction transition inside an otherwise established running lane.
+ * Guidance and spawn/checkpoint validation treat this range as connector
+ * geometry rather than as a legal settled-lane position.
+ */
+export interface LaneConnectorRange {
+  readonly startDistanceAlongM: number;
+  readonly endDistanceAlongM: number;
+  readonly conflictZoneId?: string;
+}
+
+export type RoadSurfaceType =
+  | "standard"
   | "roundabout"
   | "shared_space"
-  | "terminal";
+  | "terminal"
+  | "orientation";
+
+export type RoadMarkingStyle =
+  | "centre_dashed"
+  | "centre_solid"
+  | "lane_dashed"
+  | "lane_solid"
+  | "edge_solid"
+  | "give_way"
+  | "box_junction";
+
+/** A physical road marking independent from the carriageway centreline. */
+export interface RoadMarkingPath {
+  readonly id: string;
+  readonly style: RoadMarkingStyle;
+  readonly points: readonly WorldPoint[];
+  readonly color?: "white" | "yellow";
+}
 
 /** Visual carriageway geometry kept separate from legal lane centrelines. */
 export interface RoadSurface {
@@ -192,7 +220,8 @@ export interface RoadSurface {
   readonly centerline: readonly WorldPoint[];
   readonly widthM: number;
   readonly laneIds: readonly string[];
-  readonly marking: RoadSurfaceMarking;
+  readonly surfaceType: RoadSurfaceType;
+  readonly markings: readonly RoadMarkingPath[];
 }
 
 export interface LaneSegment {
@@ -209,6 +238,7 @@ export interface LaneSegment {
   readonly localSpeedUnit?: SpeedUnit;
   readonly successors: readonly string[];
   readonly adjacentLaneIds?: readonly string[];
+  readonly connectorRanges?: readonly LaneConnectorRange[];
 }
 
 export type TrafficControlType =
@@ -397,6 +427,11 @@ export type CoachTrigger =
   | { readonly type: "start" }
   | { readonly type: "route_progress"; readonly value: number }
   | { readonly type: "checkpoint"; readonly checkpointId: string }
+  | {
+      readonly type: "maneuver_phase";
+      readonly maneuverId: string;
+      readonly phase: ManeuverPhase;
+    }
   | { readonly type: "rule_event"; readonly ruleCode: RuleCode };
 
 export interface CoachPrompt {
@@ -417,6 +452,38 @@ export interface LessonUnlocks {
   readonly lessonIds: readonly LessonId[];
   readonly freeDriveIds: readonly FreeDriveId[];
 }
+
+export type ManeuverPhase =
+  | "approach"
+  | "observe"
+  | "pass"
+  | "establish_clearance"
+  | "return"
+  | "complete";
+
+export interface OvertakeExercise {
+  readonly id: string;
+  readonly kind: "overtake";
+  readonly normalLaneId: string;
+  readonly passingLaneId: string;
+  readonly corridorStart: LaneAnchor;
+  readonly corridorEnd: LaneAnchor;
+  readonly leadVehicleStart: LaneAnchor;
+  readonly leadVehicleSpeedFactor: number;
+  readonly phaseAnchors: Readonly<{
+    approach: LaneAnchor;
+    observe: LaneAnchor;
+    pass: LaneAnchor;
+    return: LaneAnchor;
+    complete: LaneAnchor;
+  }>;
+  readonly predictedClearSeconds: number;
+  readonly returnStandstillGapM: number;
+  readonly returnHeadwaySeconds: number;
+  readonly sourceReferenceIds: readonly string[];
+}
+
+export type LessonManeuver = OvertakeExercise;
 
 export interface LessonDefinition {
   readonly id: LessonId;
@@ -446,6 +513,7 @@ export interface LessonDefinition {
   readonly unlocks: LessonUnlocks;
   readonly profileTransitions?: readonly ProfileTransition[];
   readonly scenarioClock?: ScenarioClock;
+  readonly maneuvers?: readonly LessonManeuver[];
 }
 
 export interface FreeDriveDefinition {

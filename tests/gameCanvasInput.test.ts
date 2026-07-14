@@ -3,19 +3,141 @@ import {
   AdaptiveInputRouter,
   COCKPIT_DASH_DRIVER_Z,
   DEFAULT_HORIZONTAL_FOV,
+  GUIDANCE_LAYER_MASK,
   INPUT_PROMPT_SWITCH_COOLDOWN_MS,
   MAX_HORIZONTAL_FOV,
   MAX_STEERING_WHEEL_SPIN,
   MIN_HORIZONTAL_FOV,
+  PRIMARY_CAMERA_LAYER_MASK,
   TOUCH_CONTROL_DIM_DELAY_MS,
+  WORLD_LAYER_MASK,
   clampHorizontalFieldOfView,
+  guidanceCueOverlapsCheckpoint,
+  isAuthoredCheckpointCrossing,
+  isLaneGuidanceDistanceAllowed,
   isCameraStackActive,
   resolveCockpitPitch,
   resolveCockpitCameraPoses,
   resolveCockpitSteeringGeometry,
+  resolveAuthoritativeRouteIndex,
+  resolveCheckpointTargetWidth,
+  resolveRouteChevronHalfSpan,
   resolveSteeringWheelSpin,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
+
+describe("lane-contained driving guidance", () => {
+  const lane = {
+    id: "travel",
+    widthM: 3.4,
+    centerline: [
+      { x: 0, z: 0 },
+      { x: 0, z: 40 },
+    ],
+  } as const;
+
+  it("caps checkpoint targets and chevrons inside the authored lane", () => {
+    expect(resolveCheckpointTargetWidth(3.4)).toBe(2.4);
+    expect(resolveCheckpointTargetWidth(2.7)).toBeCloseTo(2.1);
+    expect(resolveRouteChevronHalfSpan(2.7) * 2 + 0.24).toBeLessThanOrEqual(
+      2.7 - 0.8,
+    );
+  });
+
+  it("requires a forward checkpoint crossing in the authored lane", () => {
+    expect(
+      isAuthoredCheckpointCrossing({
+        lane,
+        distanceAlongM: 20,
+        previous: { x: 0.4, z: 19 },
+        current: { x: 0.4, z: 21 },
+      }),
+    ).toBe(true);
+    expect(
+      isAuthoredCheckpointCrossing({
+        lane,
+        distanceAlongM: 20,
+        previous: { x: 0.8, z: 19 },
+        current: { x: 0.8, z: 21 },
+      }),
+    ).toBe(false);
+    expect(
+      isAuthoredCheckpointCrossing({
+        lane,
+        distanceAlongM: 20,
+        previous: { x: 3.4, z: 19 },
+        current: { x: 3.4, z: 21 },
+      }),
+    ).toBe(false);
+    expect(
+      isAuthoredCheckpointCrossing({
+        lane,
+        distanceAlongM: 20,
+        previous: { x: 0, z: 21 },
+        current: { x: 0, z: 19 },
+      }),
+    ).toBe(false);
+  });
+
+  it("shows guidance in driving cameras but excludes it from the mirror", () => {
+    expect(PRIMARY_CAMERA_LAYER_MASK & GUIDANCE_LAYER_MASK).toBe(
+      GUIDANCE_LAYER_MASK,
+    );
+    expect(WORLD_LAYER_MASK & GUIDANCE_LAYER_MASK).toBe(0);
+  });
+
+  it("omits navigation cues from explicit junction connector ranges", () => {
+    const connectorLane = {
+      ...lane,
+      connectorRanges: [
+        { startDistanceAlongM: 0, endDistanceAlongM: 1.9 },
+        { startDistanceAlongM: 38.1, endDistanceAlongM: 40 },
+      ],
+    } as const;
+    expect(isLaneGuidanceDistanceAllowed(connectorLane, 0.8)).toBe(false);
+    expect(isLaneGuidanceDistanceAllowed(connectorLane, 20)).toBe(true);
+    expect(isLaneGuidanceDistanceAllowed(connectorLane, 39.2)).toBe(false);
+  });
+
+  it("renders one authoritative route occurrence and yields to overtaking", () => {
+    expect(
+      resolveAuthoritativeRouteIndex(4, {
+        owner: { kind: "route", id: "lesson:route", stepId: "step-2", routeIndex: 2 },
+        status: "ready",
+        blockingReason: null,
+      }),
+    ).toBe(2);
+    expect(
+      resolveAuthoritativeRouteIndex(4, {
+        owner: { kind: "route", id: "lesson:route", stepId: "step-2", routeIndex: 2 },
+        status: "blocked",
+        blockingReason: "off_route",
+      }),
+    ).toBe(2);
+    expect(
+      resolveAuthoritativeRouteIndex(4, {
+        owner: { kind: "overtake", id: "pass", stepId: "observe", routeIndex: null },
+        status: "ready",
+        blockingReason: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not stack a lane cue on the active checkpoint target", () => {
+    expect(
+      guidanceCueOverlapsCheckpoint(
+        { laneId: "travel", distanceAlongM: 20 },
+        { laneId: "travel", distanceAlongM: 21.5 },
+      ),
+    ).toBe(true);
+    expect(
+      guidanceCueOverlapsCheckpoint(
+        { laneId: "travel", distanceAlongM: 20 },
+        { laneId: "adjacent", distanceAlongM: 20 },
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("cockpit camera tracking", () => {
   it("does not mistake Babylon's initially active chase camera for cockpit mode", () => {

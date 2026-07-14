@@ -4,12 +4,15 @@ import type {
   SimulationCheckpoint,
   SimulationCoreConfig,
   SimulationLane,
+  SimulationOvertakeExerciseConfig,
   SimulationPoint,
+  SimulationRouteGuidanceStepConfig,
   SimulationTrafficGate,
   StopLineDefinition,
   TrafficLightDefinition,
   TrafficLightSequence,
 } from "./simulation";
+import type { OvertakeExercise } from "./types";
 import type {
   GameCanvasLane,
   GameCanvasLesson,
@@ -91,7 +94,8 @@ export function resolveSimulationStartPose(
 ): ResolvedSimulationAnchor {
   if (lesson && mapPack) {
     const firstLaneId = lesson.route[0];
-    const spawn = lesson.startSpawnId
+    const usesAuthoredSpawn = Boolean(lesson.startSpawnId);
+    const spawn = usesAuthoredSpawn
       ? mapPack.laneGraph.spawnPoints.find(
           (point) => point.kind === "player" && point.id === lesson.startSpawnId,
         )
@@ -103,14 +107,21 @@ export function resolveSimulationStartPose(
               : point.laneId === firstLaneId),
         );
     if (spawn) {
-      if ("anchor" in spawn && spawn.anchor?.laneId === firstLaneId) {
+      if (
+        "anchor" in spawn &&
+        spawn.anchor &&
+        (usesAuthoredSpawn || !firstLaneId || spawn.anchor.laneId === firstLaneId)
+      ) {
         const anchored = resolveSimulationLaneAnchor(
           mapPack.laneGraph.lanes,
           spawn.anchor,
         );
         if (anchored) return anchored;
       }
-      if (spawn.pose && spawn.laneId === firstLaneId) {
+      if (
+        spawn.pose &&
+        (usesAuthoredSpawn || !firstLaneId || spawn.laneId === firstLaneId)
+      ) {
         return {
           x: spawn.pose.position.x,
           z: spawn.pose.position.z,
@@ -444,6 +455,245 @@ function buildTrafficGates(
   });
 }
 
+function pointInPolygon(
+  point: SimulationPoint,
+  polygon: readonly SimulationPoint[],
+): boolean {
+  let inside = false;
+  for (
+    let index = 0, previous = polygon.length - 1;
+    index < polygon.length;
+    previous = index, index += 1
+  ) {
+    const currentPoint = polygon[index];
+    const previousPoint = polygon[previous];
+    const intersects =
+      currentPoint.z > point.z !== previousPoint.z > point.z &&
+      point.x <
+        ((previousPoint.x - currentPoint.x) * (point.z - currentPoint.z)) /
+          (previousPoint.z - currentPoint.z || Number.EPSILON) +
+          currentPoint.x;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function routeCueDistance(
+  lane: GameCanvasLane,
+  mapPack: GameCanvasMapPack,
+  completionDistance: number,
+): number | null {
+  const length = laneLength(lane);
+  const maximum = Math.max(0, length - 1);
+  const firstCandidate = Math.min(
+    maximum,
+    Math.max(completionDistance, Math.min(7, length / 2)),
+  );
+  const candidateIsSafe = (distance: number): boolean => {
+    if (
+      (lane.connectorRanges ?? []).some(
+        (range) =>
+          distance >= range.startDistanceAlongM - 0.05 &&
+          distance <= range.endDistanceAlongM + 0.05,
+      )
+    ) {
+      return false;
+    }
+    const pose = resolveSimulationLaneAnchor(mapPack.laneGraph.lanes, {
+      laneId: lane.id,
+      distanceAlongM: distance,
+    });
+    if (!pose) return false;
+    return !mapPack.laneGraph.conflictZones.some(
+      (zone) => zone.laneIds.includes(lane.id) && pointInPolygon(pose, zone.polygon),
+    );
+  };
+  for (let distance = firstCandidate; distance <= maximum; distance += 2) {
+    if (candidateIsSafe(distance)) return distance;
+  }
+  return candidateIsSafe(completionDistance) ? completionDistance : null;
+}
+
+function routeGuidanceLabel(lane: GameCanvasLane): string {
+  if (lane.role === "exit") return "TAKE THIS EXIT";
+  if (lane.role === "entry") return "USE THIS ENTRY LANE";
+  if (lane.role === "roundabout") return "FOLLOW ROUNDABOUT LANE";
+  if (lane.role === "passing") return "PASSING LANE";
+  if (lane.role === "normal") return "NORMAL TRAVEL LANE";
+  return "FOLLOW THIS LANE";
+}
+
+function buildRouteGuidance(
+  lesson: GameCanvasLesson,
+  mapPack: GameCanvasMapPack,
+): SimulationRouteGuidanceStepConfig[] {
+  // Free drive deliberately permits arbitrary exploration; its borrowed route
+  // is not an assessed sequence and therefore must not gate progress.
+  if (lesson.kind === "free_drive") return [];
+  const lanes = new Map(mapPack.laneGraph.lanes.map((lane) => [lane.id, lane]));
+  const start = resolveSimulationStartPose(lesson, mapPack, lesson.trafficSide);
+  return lesson.route.map((targetLaneId, routeIndex) => {
+    const fromLaneId = routeIndex > 0 ? lesson.route[routeIndex - 1] : null;
+    const fromLane = fromLaneId ? lanes.get(fromLaneId) : null;
+    const targetLane = lanes.get(targetLaneId);
+    if ((fromLaneId && !fromLane) || !targetLane) {
+      throw new Error(
+        `Route occurrence ${routeIndex} in lesson ${lesson.id} references a missing lane.`,
+      );
+    }
+    if (fromLane && !(fromLane.successors ?? []).includes(targetLane.id)) {
+      throw new Error(
+        `Route occurrence ${routeIndex} in lesson ${lesson.id} is not a legal successor transition (${fromLane.id} -> ${targetLane.id}).`,
+      );
+    }
+    const targetLength = laneLength(targetLane);
+    const startDistance =
+      routeIndex === 0 ? projectDistanceAlongLane(targetLane, start) ?? 0 : 0;
+    const finalCheckpoint =
+      routeIndex === lesson.route.length - 1
+        ? [...lesson.checkpoints]
+            .reverse()
+            .map((checkpointId) =>
+              mapPack.laneGraph.checkpoints.find(
+                (checkpoint) => checkpoint.id === checkpointId,
+              ),
+            )
+            .find(
+              (checkpoint) => checkpoint?.anchor?.laneId === targetLane.id,
+            )
+        : null;
+    const desiredCompletionDistance =
+      Math.max(
+        startDistance + 3,
+        targetLength - 3,
+        finalCheckpoint?.anchor?.distanceAlongM ?? 0,
+      );
+    const completionDistance = Math.min(
+      Math.max(0, targetLength - 0.05),
+      desiredCompletionDistance,
+    );
+    const cueDistance = routeCueDistance(
+      targetLane,
+      mapPack,
+      completionDistance,
+    );
+    return {
+      id: `${lesson.id}:route:${routeIndex}`,
+      routeIndex,
+      fromLaneId: fromLane?.id ?? null,
+      targetLaneId: targetLane.id,
+      completionAnchor: {
+        laneId: targetLane.id,
+        distance: completionDistance,
+      },
+      ...(cueDistance === null
+        ? {}
+        : {
+            cueAnchor: {
+              laneId: targetLane.id,
+              distance: cueDistance,
+            },
+          }),
+      label: routeIndex === 0 ? "KEEP THIS LANE" : routeGuidanceLabel(targetLane),
+      required: true,
+    };
+  });
+}
+
+function buildOvertakeExercises(
+  lesson: GameCanvasLesson,
+  mapPack: GameCanvasMapPack,
+): SimulationOvertakeExerciseConfig[] {
+  const authored = (
+    lesson as GameCanvasLesson & {
+      readonly maneuvers?: readonly OvertakeExercise[];
+    }
+  ).maneuvers ?? [];
+  const lanes = new Map(mapPack.laneGraph.lanes.map((lane) => [lane.id, lane]));
+  const anchor = (value: {
+    readonly laneId: string;
+    readonly distanceAlongM: number;
+  }) => ({
+    laneId: value.laneId,
+    distance: value.distanceAlongM,
+  });
+  return authored.map((maneuver) => {
+    if (maneuver.kind !== "overtake") {
+      throw new Error(
+        `Unsupported maneuver ${maneuver.id} in lesson ${lesson.id}.`,
+      );
+    }
+    if (
+      !lanes.has(maneuver.normalLaneId) ||
+      !lanes.has(maneuver.passingLaneId)
+    ) {
+      throw new Error(
+        `Maneuver ${maneuver.id} in lesson ${lesson.id} references a missing running lane.`,
+      );
+    }
+    const referencedAnchors = [
+      maneuver.corridorStart,
+      maneuver.corridorEnd,
+      maneuver.leadVehicleStart,
+      maneuver.phaseAnchors.approach,
+      maneuver.phaseAnchors.observe,
+      maneuver.phaseAnchors.pass,
+      maneuver.phaseAnchors.return,
+      maneuver.phaseAnchors.complete,
+    ];
+    if (
+      referencedAnchors.some((candidate) => {
+        const lane = lanes.get(candidate.laneId);
+        return (
+          !lane ||
+          !Number.isFinite(candidate.distanceAlongM) ||
+          candidate.distanceAlongM < 0 ||
+          candidate.distanceAlongM > laneLength(lane)
+        );
+      })
+    ) {
+      throw new Error(
+        `Maneuver ${maneuver.id} in lesson ${lesson.id} has an invalid lane anchor.`,
+      );
+    }
+    const anchorsUseExpectedLanes =
+      maneuver.corridorStart.laneId === maneuver.normalLaneId &&
+      maneuver.corridorEnd.laneId === maneuver.normalLaneId &&
+      maneuver.leadVehicleStart.laneId === maneuver.normalLaneId &&
+      maneuver.phaseAnchors.approach.laneId === maneuver.normalLaneId &&
+      maneuver.phaseAnchors.observe.laneId === maneuver.normalLaneId &&
+      maneuver.phaseAnchors.pass.laneId === maneuver.passingLaneId &&
+      maneuver.phaseAnchors.return.laneId === maneuver.passingLaneId &&
+      maneuver.phaseAnchors.complete.laneId === maneuver.normalLaneId;
+    if (!anchorsUseExpectedLanes) {
+      throw new Error(
+        `Maneuver ${maneuver.id} in lesson ${lesson.id} places a phase on the wrong lane.`,
+      );
+    }
+    return {
+      id: maneuver.id,
+      kind: "overtake" as const,
+      normalLaneId: maneuver.normalLaneId,
+      passingLaneId: maneuver.passingLaneId,
+      corridorStart: anchor(maneuver.corridorStart),
+      corridorEnd: anchor(maneuver.corridorEnd),
+      leadVehicleStart: anchor(maneuver.leadVehicleStart),
+      leadVehicleSpeedFactor: maneuver.leadVehicleSpeedFactor,
+      phaseAnchors: {
+        approach: anchor(maneuver.phaseAnchors.approach),
+        observe: anchor(maneuver.phaseAnchors.observe),
+        pass: anchor(maneuver.phaseAnchors.pass),
+        return: anchor(maneuver.phaseAnchors.return),
+        complete: anchor(maneuver.phaseAnchors.complete),
+      },
+      predictedClearSeconds: maneuver.predictedClearSeconds,
+      returnStandstillGapM: maneuver.returnStandstillGapM,
+      returnHeadwaySeconds: maneuver.returnHeadwaySeconds,
+      sourceReferenceIds: maneuver.sourceReferenceIds,
+    };
+  });
+}
+
 export function buildSimulationCoreConfig({
   lesson,
   mapPack,
@@ -490,13 +740,19 @@ export function buildSimulationCoreConfig({
     const anchored = checkpoint.anchor
       ? resolveSimulationLaneAnchor(mapPack.laneGraph.lanes, checkpoint.anchor)
       : null;
-    if (anchored) {
+    const checkpointLane = checkpoint.anchor
+      ? sourceLanesById.get(checkpoint.anchor.laneId)
+      : undefined;
+    if (anchored && checkpoint.anchor && checkpointLane) {
       return [{
         id: checkpoint.id,
         x: anchored.x,
         z: anchored.z,
         heading: anchored.heading,
         radius: 6,
+        laneId: checkpointLane.id,
+        width: checkpointLane.widthM ?? DEFAULT_LANE_WIDTH_M,
+        distance: checkpoint.anchor.distanceAlongM,
       }];
     }
     return checkpoint.pose
@@ -532,6 +788,14 @@ export function buildSimulationCoreConfig({
     minZ: -mapPack.geometry.worldSize.z / 2 - boundsPadding,
     maxZ: mapPack.geometry.worldSize.z / 2 + boundsPadding,
   };
+  const routeLaneIds = new Set(lesson.route);
+  const routeSpeedLimitMps = lanes.reduce(
+    (maximum, lane) =>
+      routeLaneIds.has(lane.id)
+        ? Math.max(maximum, lane.speedLimitMps ?? 0)
+        : maximum,
+    0,
+  );
 
   return {
     trafficSide,
@@ -542,6 +806,8 @@ export function buildSimulationCoreConfig({
     bounds,
     spawn: { x: start.x, z: start.z, heading: start.heading },
     checkpoints,
+    routeGuidance: buildRouteGuidance(lesson, mapPack),
+    maneuvers: buildOvertakeExercises(lesson, mapPack),
     finish:
       lesson.kind !== "free_drive" && routeEnd
         ? { x: routeEnd.x, z: routeEnd.z, radius: 7 }
@@ -565,7 +831,13 @@ export function buildSimulationCoreConfig({
     laneRestrictions: restrictions,
     boxJunctions: buildBoxJunctions(lesson, mapPack),
     npcCount,
-    maxForwardSpeedMps: DEFAULT_MAX_FORWARD_SPEED_MPS,
+    // The vehicle must be capable of reaching each route's posted limit. A
+    // fixed urban cap below the lead vehicle's pace makes an authored pass
+    // physically impossible.
+    maxForwardSpeedMps: Math.max(
+      DEFAULT_MAX_FORWARD_SPEED_MPS,
+      routeSpeedLimitMps,
+    ),
     maxReverseSpeedMps: DEFAULT_MAX_REVERSE_SPEED_MPS,
   };
 }

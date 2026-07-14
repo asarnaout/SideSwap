@@ -7,6 +7,7 @@
 import type {
   Gear,
   LaneRestriction,
+  ManeuverPhase,
   RestrictionWindow,
   RuleCode,
   RuleEvent,
@@ -27,6 +28,8 @@ const NPC_MIN_BUMPER_CLEARANCE_M = 3;
 const NPC_FOLLOW_STANDSTILL_GAP_M =
   PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 4;
 const NPC_LANE_CHANGE_DISTANCE_M = 12;
+const NPC_LANE_CHANGE_SIGNAL_SECONDS = 1.2;
+const NPC_LANE_CHANGE_END_MARGIN_M = 2;
 const PLAYER_TRAFFIC_CLEARANCE_M =
   PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 1.25;
 const NPC_PHYSICAL_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 0.08;
@@ -34,6 +37,11 @@ const NPC_CROSSING_YIELD_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 3;
 const INITIAL_PLAYER_CLEARANCE_AHEAD_M = 20;
 const INITIAL_CROSS_LANE_CLEARANCE_M = 12;
 const SPAWN_PREDICTION_SECONDS = 4;
+const MANEUVER_OBSERVATION_VALID_SECONDS = 8;
+const MANEUVER_ENTRY_STANDSTILL_GAP_M = 6;
+const MANEUVER_ENTRY_HEADWAY_SECONDS = 1.5;
+const ROUTE_ENTRY_WINDOW_M = 3;
+const ROUTE_LANE_EDGE_CLEARANCE_M = 0.3;
 export const RUNTIME_FORWARD_VISIBILITY_DISTANCE_M = 180;
 export const RUNTIME_REAR_VISIBILITY_DISTANCE_M = 115;
 const RUNTIME_FORWARD_HALF_ANGLE_RAD = (58 * Math.PI) / 180;
@@ -41,7 +49,7 @@ const RUNTIME_REAR_HALF_ANGLE_RAD = (42 * Math.PI) / 180;
 const STOPPED_SPEED_MPS = 0.2;
 const MAX_EVENT_HISTORY = 80;
 const DEFAULT_HONK_CAPTION =
-  "A driver is asking you to leave the passing lane when it is safe — never speed up beyond the limit.";
+  "A driver is asking you to leave the passing lane when it is safe — never exceed the posted limit.";
 
 export type SimulationRuleEvent = RuleEvent;
 export type SimulationStatus =
@@ -51,6 +59,7 @@ export type SimulationStatus =
   | "complete"
   | "disposed";
 export type TurnSignal = "off" | "left" | "right";
+export type ObservationDirection = Exclude<TurnSignal, "off">;
 export type LaneRole = "travel" | "passing" | "entry" | "exit";
 export type LaneKind = "road" | "roundabout" | "merge";
 export type NpcDrivingState =
@@ -106,6 +115,123 @@ export interface SimulationBounds {
 export interface SimulationCheckpoint extends SimulationPose {
   readonly id: string;
   readonly radius?: number;
+  /** Authored lane metadata prevents a nearby parallel lane activating it. */
+  readonly laneId?: string;
+  readonly width?: number;
+  /** Distance in metres from the beginning of `laneId`. */
+  readonly distance?: number;
+}
+
+export interface SimulationManeuverAnchor {
+  readonly laneId: string;
+  readonly distance: number;
+}
+
+/**
+ * An occurrence-aware transition derived from an authored lesson route.
+ * `routeIndex` distinguishes repeated visits to the same lane.
+ */
+export interface SimulationRouteGuidanceStepConfig {
+  readonly id: string;
+  readonly routeIndex: number;
+  readonly fromLaneId: string | null;
+  readonly targetLaneId: string;
+  readonly completionAnchor: SimulationManeuverAnchor;
+  readonly cueAnchor?: SimulationManeuverAnchor;
+  readonly label?: string;
+  readonly required?: boolean;
+}
+
+/** Renderer-neutral configuration adapted from an authored overtaking exercise. */
+export interface SimulationOvertakeExerciseConfig {
+  readonly id: string;
+  readonly kind: "overtake";
+  readonly normalLaneId: string;
+  readonly passingLaneId: string;
+  readonly corridorStart: SimulationManeuverAnchor;
+  readonly corridorEnd: SimulationManeuverAnchor;
+  readonly leadVehicleStart: SimulationManeuverAnchor;
+  readonly leadVehicleSpeedFactor?: number;
+  readonly phaseAnchors: Readonly<{
+    approach: SimulationManeuverAnchor;
+    observe: SimulationManeuverAnchor;
+    pass: SimulationManeuverAnchor;
+    return: SimulationManeuverAnchor;
+    complete: SimulationManeuverAnchor;
+  }>;
+  readonly predictedClearSeconds?: number;
+  readonly returnStandstillGapM?: number;
+  readonly returnHeadwaySeconds?: number;
+  readonly sourceReferenceIds?: readonly string[];
+}
+
+export interface SimulationManeuverGateSnapshot extends SimulationPose {
+  readonly label: string;
+  readonly laneId: string;
+  readonly distanceAlongM: number;
+  readonly widthM: number;
+  /** The simulation, not the renderer, is authoritative about availability. */
+  readonly available: boolean;
+}
+
+export type SimulationGuidanceStatus =
+  | "inactive"
+  | "blocked"
+  | "ready"
+  | "complete";
+
+export type SimulationGuidanceBlockingReason =
+  | "awaiting_activation"
+  | "off_route"
+  | "observation_required"
+  | "signal_required"
+  | "target_lane_occupied"
+  | "clearance_required"
+  | "maneuver_requirements";
+
+export interface SimulationGuidanceCueSnapshot extends SimulationPose {
+  readonly id: string;
+  readonly label: string;
+  readonly laneId: string;
+  readonly distanceAlongM: number;
+  readonly widthM: number;
+}
+
+export interface SimulationGuidanceSnapshot {
+  readonly owner: Readonly<{
+    kind: "route" | "overtake";
+    id: string;
+    stepId: string;
+    routeIndex: number | null;
+  }> | null;
+  readonly status: SimulationGuidanceStatus;
+  readonly cue: SimulationGuidanceCueSnapshot | null;
+  readonly blockingReason: SimulationGuidanceBlockingReason | null;
+}
+
+export interface SimulationManeuverSnapshot {
+  readonly id: string;
+  readonly kind: "overtake";
+  readonly phase: ManeuverPhase;
+  readonly normalLaneId: string;
+  readonly passingLaneId: string;
+  readonly leadVehicleId: string;
+  readonly passingSide: ObservationDirection;
+  readonly expectedSignal: ObservationDirection;
+  readonly observed: boolean;
+  readonly passEntryValid: boolean;
+  readonly returnEntryValid: boolean;
+  readonly speedCompliant: boolean;
+  readonly targetLaneClear: boolean;
+  readonly predictedClearSeconds: number;
+  readonly frontGapM: number | null;
+  readonly rearGapM: number | null;
+  /** Bumper-to-bumper clearance ahead of the designated lead vehicle. */
+  readonly clearanceM: number | null;
+  readonly requiredClearanceM: number;
+  readonly safeToReturn: boolean;
+  readonly corridorActive: boolean;
+  readonly gate: SimulationManeuverGateSnapshot | null;
 }
 
 export interface TrafficLightCycle {
@@ -182,6 +308,8 @@ export interface SimulationCoreConfig {
   readonly bounds?: SimulationBounds;
   readonly spawn?: SimulationPose;
   readonly checkpoints?: readonly SimulationCheckpoint[];
+  readonly routeGuidance?: readonly SimulationRouteGuidanceStepConfig[];
+  readonly maneuvers?: readonly SimulationOvertakeExerciseConfig[];
   readonly finish?: (SimulationPoint & { readonly radius?: number }) | null;
   readonly trafficLights?: readonly TrafficLightDefinition[];
   readonly stopLines?: readonly StopLineDefinition[];
@@ -208,6 +336,8 @@ export interface SimulationInput {
   readonly steer?: number;
   /** Current player look direction in world radians, used to hide runtime spawns. */
   readonly viewHeading?: number;
+  /** Edge-triggered mirror/blind-spot observation toward an adjacent lane. */
+  readonly observe?: ObservationDirection;
   /** Edge-triggered actions. Holding them does not repeatedly toggle. */
   readonly toggleGear?: boolean;
   readonly selectDrive?: boolean;
@@ -285,6 +415,8 @@ export interface SimulationSnapshot {
   readonly trafficLights: readonly TrafficLightSnapshot[];
   readonly score: SimulationScoreSnapshot;
   readonly checkpointId: string;
+  readonly reachedCheckpointIds: readonly string[];
+  readonly nextCheckpointId: string | null;
   readonly latestEvent: SimulationRuleEvent | null;
   readonly recentEvents: readonly SimulationRuleEvent[];
   readonly activeIncident: SimulationRuleEvent | null;
@@ -294,6 +426,10 @@ export interface SimulationSnapshot {
     sourceNpcId: string | null;
     caption: string | null;
   }>;
+  /** Single simulation-owned guidance channel shared by route and exercises. */
+  readonly guidance: SimulationGuidanceSnapshot;
+  /** Ordered authored maneuver state for renderer and coaching consumers. */
+  readonly maneuvers: readonly SimulationManeuverSnapshot[];
 }
 
 interface MutablePose {
@@ -340,6 +476,77 @@ interface LaneProjection {
   z: number;
 }
 
+interface NormalizedManeuverAnchor {
+  laneId: string;
+  distance: number;
+}
+
+interface NormalizedRouteGuidanceStep {
+  id: string;
+  routeIndex: number;
+  fromLaneId: string | null;
+  targetLaneId: string;
+  completionDistance: number;
+  cueDistance: number | null;
+  label: string;
+  required: boolean;
+}
+
+interface RouteGuidanceInternal {
+  config: NormalizedRouteGuidanceStep;
+  enteredTarget: boolean;
+  satisfied: boolean;
+}
+
+interface NormalizedOvertakeExercise {
+  id: string;
+  kind: "overtake";
+  normalLaneId: string;
+  passingLaneId: string;
+  corridorStart: NormalizedManeuverAnchor;
+  corridorEnd: NormalizedManeuverAnchor;
+  leadVehicleStart: NormalizedManeuverAnchor;
+  leadVehicleSpeedFactor: number;
+  phaseAnchors: {
+    approach: NormalizedManeuverAnchor;
+    observe: NormalizedManeuverAnchor;
+    pass: NormalizedManeuverAnchor;
+    return: NormalizedManeuverAnchor;
+    complete: NormalizedManeuverAnchor;
+  };
+  predictedClearSeconds: number;
+  returnStandstillGapM: number;
+  returnHeadwaySeconds: number;
+  sourceReferenceIds: string[];
+  passingSide: ObservationDirection;
+  returnSide: ObservationDirection;
+}
+
+interface LaneChangeAssessment {
+  clear: boolean;
+  frontGapM: number | null;
+  rearGapM: number | null;
+  requiredFrontGapM: number;
+  requiredRearGapM: number;
+  blockingVehicleId: string | null;
+}
+
+interface OvertakeManeuverInternal {
+  config: NormalizedOvertakeExercise;
+  phase: ManeuverPhase;
+  leadVehicleId: string;
+  passObservationAtSeconds: number | null;
+  returnObservationAtSeconds: number | null;
+  corridorActive: boolean;
+  passEntryValid: boolean;
+  returnEntryValid: boolean;
+  speedCompliant: boolean;
+  returnedToNormalLane: boolean;
+  returnedSafely: boolean;
+  completionSeconds: number;
+  lastAssessment: LaneChangeAssessment;
+}
+
 interface NpcInternal extends MutablePose {
   id: string;
   laneId: string;
@@ -361,6 +568,8 @@ interface NpcInternal extends MutablePose {
   decisionCooldown: number;
   previousX: number;
   previousZ: number;
+  scriptedManeuverId?: string;
+  scriptedReleased?: boolean;
 }
 
 interface ScoreState {
@@ -770,6 +979,8 @@ export class SimulationCore {
   private readonly trafficGates: NormalizedTrafficGate[];
   private readonly laneRestrictions: LaneRestriction[];
   private readonly boxJunctions: SimulationBoxJunctionDefinition[];
+  private readonly routeGuidanceStates: RouteGuidanceInternal[];
+  private readonly maneuverStates: OvertakeManeuverInternal[];
   private readonly initialSeed: number;
   private readonly initialTrafficSide: TrafficSide;
   private readonly initialSpeedUnit: SpeedUnit;
@@ -783,6 +994,7 @@ export class SimulationCore {
   private signalAutoCancelSeconds = 0;
   private continuousInput: ContinuousInput = { throttle: 0, brake: 0, steer: 0 };
   private viewHeading = 0;
+  private previousObservationAction: ObservationDirection | null = null;
   private previousActions: Record<string, boolean> = {};
   private accumulatorSeconds = 0;
   private trafficDecisionAccumulator = 0;
@@ -811,6 +1023,7 @@ export class SimulationCore {
   };
   private currentCheckpoint: SimulationCheckpoint;
   private reachedCheckpoints = new Set<string>();
+  private readonly routeProgressByCheckpoint = new Map<string, number>();
   private distanceTravelledM = 0;
   private wrongWaySeconds = 0;
   private offRoadSeconds = 0;
@@ -903,6 +1116,28 @@ export class SimulationCore {
       maxForwardSpeedMps: clamp(configuration.maxForwardSpeedMps ?? 22, 5, 50),
       maxReverseSpeedMps: clamp(configuration.maxReverseSpeedMps ?? 7, 2, 15),
     };
+
+    const routeStepIds = new Set<string>();
+    const routeIndices = new Set<number>();
+    this.routeGuidanceStates = [...(configuration.routeGuidance ?? [])]
+      .sort((left, right) => left.routeIndex - right.routeIndex)
+      .flatMap((step) => {
+        if (routeStepIds.has(step.id) || routeIndices.has(step.routeIndex)) return [];
+        const normalized = this.normalizeRouteGuidanceStep(step);
+        if (!normalized) return [];
+        routeStepIds.add(normalized.id);
+        routeIndices.add(normalized.routeIndex);
+        return [{ config: normalized, enteredTarget: false, satisfied: false }];
+      });
+
+    const maneuverIds = new Set<string>();
+    this.maneuverStates = (configuration.maneuvers ?? []).flatMap((maneuver) => {
+      if (maneuverIds.has(maneuver.id)) return [];
+      const normalized = this.normalizeOvertakeExercise(maneuver, trafficSide);
+      if (!normalized) return [];
+      maneuverIds.add(normalized.id);
+      return [this.createManeuverState(normalized)];
+    });
 
     const defaultLights: TrafficLightDefinition[] = [
       {
@@ -1005,6 +1240,166 @@ export class SimulationCore {
     this.reset();
   }
 
+  private normalizeRouteGuidanceStep(
+    step: SimulationRouteGuidanceStepConfig,
+  ): NormalizedRouteGuidanceStep | null {
+    const fromLane = step.fromLaneId
+      ? this.lanesById.get(step.fromLaneId)
+      : null;
+    const targetLane = this.lanesById.get(step.targetLaneId);
+    const isInitialOccurrence = step.routeIndex === 0 && step.fromLaneId === null;
+    const isSuccessorOccurrence = Boolean(
+      fromLane &&
+        step.routeIndex >= 1 &&
+        fromLane.id !== targetLane?.id &&
+        fromLane.successorLaneIds.includes(step.targetLaneId),
+    );
+    if (
+      !targetLane ||
+      !Number.isInteger(step.routeIndex) ||
+      (!isInitialOccurrence && !isSuccessorOccurrence) ||
+      step.completionAnchor.laneId !== targetLane.id ||
+      !Number.isFinite(step.completionAnchor.distance) ||
+      step.completionAnchor.distance < 0 ||
+      step.completionAnchor.distance > targetLane.length
+    ) {
+      return null;
+    }
+    const cue = step.cueAnchor;
+    if (
+      cue &&
+      (cue.laneId !== targetLane.id ||
+        !Number.isFinite(cue.distance) ||
+        cue.distance < 0 ||
+        cue.distance > targetLane.length)
+    ) {
+      return null;
+    }
+    return {
+      id: step.id,
+      routeIndex: step.routeIndex,
+      fromLaneId: fromLane?.id ?? null,
+      targetLaneId: targetLane.id,
+      completionDistance: step.completionAnchor.distance,
+      cueDistance: cue?.distance ?? null,
+      label: step.label?.trim() || "FOLLOW ROUTE",
+      required: step.required ?? true,
+    };
+  }
+
+  private normalizeOvertakeExercise(
+    maneuver: SimulationOvertakeExerciseConfig,
+    trafficSide: TrafficSide,
+  ): NormalizedOvertakeExercise | null {
+    const normalLane = this.lanesById.get(maneuver.normalLaneId);
+    const passingLane = this.lanesById.get(maneuver.passingLaneId);
+    if (!normalLane || !passingLane || normalLane.id === passingLane.id) return null;
+
+    const normalizeAnchor = (
+      anchor: SimulationManeuverAnchor,
+    ): NormalizedManeuverAnchor | null => {
+      const lane = this.lanesById.get(anchor.laneId);
+      if (!lane || !Number.isFinite(anchor.distance)) return null;
+      return {
+        laneId: lane.id,
+        distance: clamp(anchor.distance, 0, lane.length),
+      };
+    };
+    const corridorStart = normalizeAnchor(maneuver.corridorStart);
+    const corridorEnd = normalizeAnchor(maneuver.corridorEnd);
+    const leadVehicleStart = normalizeAnchor(maneuver.leadVehicleStart);
+    const approach = normalizeAnchor(maneuver.phaseAnchors.approach);
+    const observe = normalizeAnchor(maneuver.phaseAnchors.observe);
+    const pass = normalizeAnchor(maneuver.phaseAnchors.pass);
+    const returnAnchor = normalizeAnchor(maneuver.phaseAnchors.return);
+    const complete = normalizeAnchor(maneuver.phaseAnchors.complete);
+    if (
+      !corridorStart ||
+      !corridorEnd ||
+      !leadVehicleStart ||
+      !approach ||
+      !observe ||
+      !pass ||
+      !returnAnchor ||
+      !complete ||
+      leadVehicleStart.laneId !== normalLane.id
+    ) {
+      return null;
+    }
+
+    const startDistance = this.mapAnchorDistanceToLane(corridorStart, normalLane);
+    const endDistance = this.mapAnchorDistanceToLane(corridorEnd, normalLane);
+    if (endDistance <= startDistance + 4) return null;
+
+    const passingSide: ObservationDirection =
+      trafficSide === "left" ? "right" : "left";
+    const sampleDistance = (startDistance + endDistance) / 2;
+    if (
+      this.relativeLaneSide(normalLane, passingLane, sampleDistance) !== passingSide
+    ) {
+      return null;
+    }
+
+    return {
+      id: maneuver.id,
+      kind: "overtake",
+      normalLaneId: normalLane.id,
+      passingLaneId: passingLane.id,
+      corridorStart,
+      corridorEnd,
+      leadVehicleStart,
+      leadVehicleSpeedFactor: clamp(
+        maneuver.leadVehicleSpeedFactor ?? 0.75,
+        0.7,
+        0.8,
+      ),
+      phaseAnchors: {
+        approach,
+        observe,
+        pass,
+        return: returnAnchor,
+        complete,
+      },
+      predictedClearSeconds: clamp(
+        maneuver.predictedClearSeconds ?? SPAWN_PREDICTION_SECONDS,
+        2,
+        6,
+      ),
+      returnStandstillGapM: clamp(maneuver.returnStandstillGapM ?? 6, 4, 14),
+      returnHeadwaySeconds: clamp(maneuver.returnHeadwaySeconds ?? 1.8, 1.5, 3),
+      sourceReferenceIds: [...(maneuver.sourceReferenceIds ?? [])],
+      passingSide,
+      returnSide: passingSide === "left" ? "right" : "left",
+    };
+  }
+
+  private createManeuverState(
+    config: NormalizedOvertakeExercise,
+  ): OvertakeManeuverInternal {
+    return {
+      config,
+      phase: "approach",
+      leadVehicleId: `maneuver-${config.id}-lead`,
+      passObservationAtSeconds: null,
+      returnObservationAtSeconds: null,
+      corridorActive: false,
+      passEntryValid: false,
+      returnEntryValid: false,
+      speedCompliant: true,
+      returnedToNormalLane: false,
+      returnedSafely: false,
+      completionSeconds: 0,
+      lastAssessment: {
+        clear: true,
+        frontGapM: null,
+        rearGapM: null,
+        requiredFrontGapM: 0,
+        requiredRearGapM: 0,
+        blockingVehicleId: null,
+      },
+    };
+  }
+
   /** Advances the simulation and returns the post-step serializable snapshot. */
   step(deltaSeconds: number, input: SimulationInput = {}): SimulationSnapshot {
     if (this.disposed) return this.getSnapshot();
@@ -1064,6 +1459,7 @@ export class SimulationCore {
     this.signalAutoCancelSeconds = 0;
     this.continuousInput = { throttle: 0, brake: 0, steer: 0 };
     this.viewHeading = this.player.heading;
+    this.previousObservationAction = null;
     this.previousActions = {};
     this.accumulatorSeconds = 0;
     this.trafficDecisionAccumulator = 0;
@@ -1087,6 +1483,12 @@ export class SimulationCore {
     this.ruleCooldowns.clear();
     this.currentCheckpoint = this.config.checkpoints[0];
     this.reachedCheckpoints = new Set([this.currentCheckpoint.id]);
+    for (const state of this.routeGuidanceStates) {
+      state.enteredTarget = false;
+      state.satisfied = false;
+    }
+    this.routeProgressByCheckpoint.clear();
+    this.routeProgressByCheckpoint.set(this.currentCheckpoint.id, 0);
     this.distanceTravelledM = 0;
     this.wrongWaySeconds = 0;
     this.offRoadSeconds = 0;
@@ -1099,6 +1501,20 @@ export class SimulationCore {
     this.playerHornSeconds = 0;
     this.stopApproachSpeeds.clear();
     this.restrictedLaneSeconds.clear();
+    for (const state of this.maneuverStates) {
+      const resetState = this.createManeuverState(state.config);
+      state.phase = resetState.phase;
+      state.passObservationAtSeconds = null;
+      state.returnObservationAtSeconds = null;
+      state.corridorActive = false;
+      state.passEntryValid = false;
+      state.returnEntryValid = false;
+      state.speedCompliant = true;
+      state.returnedToNormalLane = false;
+      state.returnedSafely = false;
+      state.completionSeconds = 0;
+      state.lastAssessment = resetState.lastAssessment;
+    }
     this.spawnNpcs();
     this.updateRoadState();
     return this.getSnapshot();
@@ -1108,6 +1524,10 @@ export class SimulationCore {
   setCheckpoint(checkpoint: SimulationCheckpoint): void {
     this.currentCheckpoint = { ...checkpoint };
     this.reachedCheckpoints.add(checkpoint.id);
+    this.routeProgressByCheckpoint.set(
+      checkpoint.id,
+      this.completedRouteGuidanceStepCount(),
+    );
   }
 
   /** Returns to the latest checkpoint without clearing score or event history. */
@@ -1133,7 +1553,11 @@ export class SimulationCore {
   }
 
   completeLesson(): void {
-    if (!this.disposed && this.status !== "incident") {
+    if (
+      !this.disposed &&
+      this.status !== "incident" &&
+      this.requiredGuidanceComplete()
+    ) {
       this.signedSpeedMps = 0;
       this.status = "complete";
       this.clearActiveInput();
@@ -1196,6 +1620,9 @@ export class SimulationCore {
       ...event,
       evidence: { ...event.evidence },
     }));
+    const maneuverSnapshots = this.maneuverStates.map((state) =>
+      this.maneuverSnapshot(state),
+    );
     return {
       tick: this.tick,
       elapsedMs: Math.round(this.elapsedSeconds * 1000),
@@ -1257,6 +1684,13 @@ export class SimulationCore {
       }),
       score,
       checkpointId: this.currentCheckpoint.id,
+      reachedCheckpointIds: this.config.checkpoints
+        .filter((checkpoint) => this.reachedCheckpoints.has(checkpoint.id))
+        .map((checkpoint) => checkpoint.id),
+      nextCheckpointId:
+        this.config.checkpoints.find(
+          (checkpoint) => !this.reachedCheckpoints.has(checkpoint.id),
+        )?.id ?? null,
       latestEvent: this.latestEvent
         ? { ...this.latestEvent, evidence: { ...this.latestEvent.evidence } }
         : null,
@@ -1270,6 +1704,8 @@ export class SimulationCore {
         sourceNpcId: this.honkSeconds > 0 ? this.honkSourceNpcId : null,
         caption: this.honkSeconds > 0 ? DEFAULT_HONK_CAPTION : null,
       },
+      guidance: this.guidanceSnapshot(maneuverSnapshots),
+      maneuvers: maneuverSnapshots,
     };
   }
 
@@ -1302,6 +1738,12 @@ export class SimulationCore {
     this.updateRoadState();
 
     if (this.status !== "running") return;
+    this.updateOvertakeManeuvers(
+      previousProjection,
+      this.roadState.projection,
+      deltaSeconds,
+    );
+    this.updateRouteGuidance(previousProjection, this.roadState.projection);
     this.checkBoxJunctions(oldPlayer);
     this.monitorRestrictedLanes(deltaSeconds);
     this.checkStopLines(previousProjection, this.roadState.projection);
@@ -1310,7 +1752,7 @@ export class SimulationCore {
     if (this.status !== "running") return;
     this.checkCollisions(oldPlayer);
     if (this.status !== "running") return;
-    this.updateCheckpointProgress();
+    this.updateCheckpointProgress(previousProjection, this.roadState.projection);
     this.checkFinish();
   }
 
@@ -1321,6 +1763,12 @@ export class SimulationCore {
       this.previousActions[key] = active;
       return edge;
     };
+
+    const observation = input.observe ?? null;
+    if (observation && observation !== this.previousObservationAction) {
+      this.recordManeuverObservation(observation);
+    }
+    this.previousObservationAction = observation;
 
     if (action("acknowledgeIncident")) this.resumeAfterIncident();
     if (action("reset")) this.resetToCheckpoint();
@@ -1433,7 +1881,52 @@ export class SimulationCore {
 
   private spawnNpcs(): void {
     this.npcs = [];
-    for (let index = 0; index < this.config.npcCount; index += 1) {
+    for (const state of this.maneuverStates) {
+      const lane = this.lanesById.get(state.config.normalLaneId);
+      if (!lane) continue;
+      const distance = this.mapAnchorDistanceToLane(
+        state.config.leadVehicleStart,
+        lane,
+      );
+      const pose = this.pointOnLane(lane, distance);
+      const desiredSpeedMps = lane.speedLimitMps * state.config.leadVehicleSpeedFactor;
+      this.npcs.push({
+        id: state.leadVehicleId,
+        variant: "car",
+        active: true,
+        activatedAtSeconds: 0,
+        transitionCount: 0,
+        laneId: lane.id,
+        distance,
+        // Keep the authored lead present from the first rendered frame, but
+        // stage it at the exercise start until the player reaches the approach.
+        // This avoids a visible runtime spawn without letting a cautious player
+        // lose the exercise vehicle before the maneuver begins.
+        speedMps: 0,
+        desiredSpeedMps,
+        targetSpeedMps: 0,
+        state: "stopping",
+        signal: "off",
+        targetLaneId: undefined,
+        laneChangeProgress: 0,
+        signalSeconds: 0,
+        stoppedSeconds: 0,
+        decisionCooldown: Number.POSITIVE_INFINITY,
+        x: pose.x,
+        z: pose.z,
+        heading: pose.heading,
+        previousX: pose.x,
+        previousZ: pose.z,
+        scriptedManeuverId: state.config.id,
+        scriptedReleased: false,
+      });
+    }
+
+    const ambientNpcCount = Math.max(
+      0,
+      this.config.npcCount - this.maneuverStates.length,
+    );
+    for (let index = 0; index < ambientNpcCount; index += 1) {
       const preferredGate = this.trafficGates[index % this.trafficGates.length];
       const lane = this.lanesById.get(preferredGate.laneId) ?? this.lanes[0];
       const pose = this.pointOnLane(lane, preferredGate.distance);
@@ -1480,9 +1973,18 @@ export class SimulationCore {
   }
 
   private candidateTrafficGates(npc: NpcInternal): NormalizedTrafficGate[] {
+    if (npc.scriptedManeuverId) return [];
     const preferred = npc.preferredGateId;
     return this.trafficGates
       .filter((gate) => !gate.variant || gate.variant === npc.variant)
+      .filter(
+        (gate) =>
+          !this.maneuverStates.some(
+            (state) =>
+              gate.laneId === state.config.normalLaneId &&
+              this.isManeuverCorridorPosition(gate.laneId, gate.distance),
+          ),
+      )
       .slice()
       .sort((left, right) => {
         if (left.id === preferred) return -1;
@@ -1587,13 +2089,19 @@ export class SimulationCore {
     if (distance <= Number.EPSILON) return true;
     const bearing = Math.atan2(dx, dz);
     const forwardAngle = Math.abs(angleDifference(bearing, this.viewHeading));
-    if (forwardAngle <= RUNTIME_FORWARD_HALF_ANGLE_RAD) {
+    if (
+      distance <= RUNTIME_FORWARD_VISIBILITY_DISTANCE_M &&
+      forwardAngle <= RUNTIME_FORWARD_HALF_ANGLE_RAD
+    ) {
       return true;
     }
     const rearAngle = Math.abs(
       angleDifference(bearing, wrapAngle(this.player.heading + Math.PI)),
     );
-    return rearAngle <= RUNTIME_REAR_HALF_ANGLE_RAD;
+    return (
+      distance <= RUNTIME_REAR_VISIBILITY_DISTANCE_M &&
+      rearAngle <= RUNTIME_REAR_HALF_ANGLE_RAD
+    );
   }
 
   private activateNpcAtGate(
@@ -1644,9 +2152,57 @@ export class SimulationCore {
   private activateQueuedNpcs(): void {
     for (const npc of this.npcs) {
       if (npc.active) continue;
+      if (npc.scriptedManeuverId) {
+        const state = this.maneuverStates.find(
+          (candidate) => candidate.config.id === npc.scriptedManeuverId,
+        );
+        const lane = state
+          ? this.lanesById.get(state.config.normalLaneId)
+          : undefined;
+        if (!state || !lane || !this.playerReachedManeuverApproach(state)) {
+          continue;
+        }
+        const gate: NormalizedTrafficGate = {
+          id: `maneuver-${state.config.id}-lead-gate`,
+          laneId: lane.id,
+          distance: this.mapAnchorDistanceToLane(
+            state.config.leadVehicleStart,
+            lane,
+          ),
+          desiredSpeedMps: lane.speedLimitMps * state.config.leadVehicleSpeedFactor,
+          allowInitialSpawn: false,
+        };
+        if (this.isTrafficGateSafe(npc, gate, false)) {
+          this.activateNpcAtGate(npc, gate);
+          npc.speedMps = 0;
+          npc.targetSpeedMps = 0;
+          npc.state = "stopping";
+        }
+        continue;
+      }
       const gate = this.findSafeTrafficGate(npc, false);
       if (gate) this.activateNpcAtGate(npc, gate);
     }
+  }
+
+  private playerReachedManeuverApproach(
+    state: OvertakeManeuverInternal,
+  ): boolean {
+    const projection = this.projectToRoad(this.player.x, this.player.z);
+    const normalLane = this.lanesById.get(state.config.normalLaneId);
+    if (!projection || !normalLane) return false;
+    if (
+      projection.lane.id !== state.config.normalLaneId &&
+      projection.lane.id !== state.config.passingLaneId
+    ) {
+      return false;
+    }
+    const playerDistance = this.mapProjectionDistanceToLane(projection, normalLane);
+    const approachDistance = this.mapAnchorDistanceToLane(
+      state.config.phaseAnchors.approach,
+      normalLane,
+    );
+    return playerDistance >= approachDistance;
   }
 
   private makeTrafficDecisions(): void {
@@ -1656,6 +2212,83 @@ export class SimulationCore {
       const lane = this.lanesById.get(npc.laneId);
       if (!lane) continue;
       npc.decisionCooldown = Math.max(0, npc.decisionCooldown - TRAFFIC_DECISION_SECONDS);
+
+      if (npc.scriptedManeuverId) {
+        const maneuver = this.maneuverStates.find(
+          (candidate) => candidate.config.id === npc.scriptedManeuverId,
+        );
+        const normalLane = maneuver
+          ? this.lanesById.get(maneuver.config.normalLaneId)
+          : undefined;
+        if (maneuver && normalLane && lane.id === normalLane.id) {
+          const projection = this.projectToRoad(this.player.x, this.player.z);
+          const playerDistance = projection
+            ? this.mapProjectionDistanceToLane(projection, normalLane)
+            : null;
+          const playerInExerciseLanes = Boolean(
+            projection &&
+              (projection.lane.id === maneuver.config.normalLaneId ||
+                projection.lane.id === maneuver.config.passingLaneId),
+          );
+
+          if (
+            maneuver.phase !== "complete" &&
+            (!playerInExerciseLanes || playerDistance === null)
+          ) {
+            npc.state = "stopping";
+            npc.targetSpeedMps = 0;
+            continue;
+          }
+
+          if (
+            maneuver.phase !== "complete" &&
+            playerDistance !== null
+          ) {
+            // Release the staged lead at its authored 75% pace as soon as the
+            // player enters the exercise carriageway. If the player then
+            // waits, the lead slows and holds a recoverable head start rather
+            // than disappearing at the far end of the route.
+            if (!npc.scriptedReleased) {
+              npc.scriptedReleased = true;
+              npc.speedMps = npc.desiredSpeedMps;
+            }
+            const leadGapM = this.signedLaneDistance(
+              normalLane,
+              playerDistance,
+              npc.distance,
+            );
+            if (leadGapM > 150) {
+              npc.state = "stopping";
+              npc.targetSpeedMps = 0;
+              continue;
+            }
+            if (leadGapM > 125) {
+              npc.state = "cruising";
+              npc.targetSpeedMps = npc.desiredSpeedMps * 0.45;
+              continue;
+            }
+            npc.state = "cruising";
+            npc.targetSpeedMps = npc.desiredSpeedMps;
+          }
+
+          const corridorEnd = this.mapAnchorDistanceToLane(
+            maneuver.config.corridorEnd,
+            normalLane,
+          );
+          const stoppingDistance = Math.max(
+            24,
+            (npc.speedMps * npc.speedMps) / (2 * 3.5) + 8,
+          );
+          if (
+            maneuver.phase !== "complete" &&
+            npc.distance >= corridorEnd - stoppingDistance
+          ) {
+            npc.state = "stopping";
+            npc.targetSpeedMps = 0;
+            continue;
+          }
+        }
+      }
 
       if (npc.state === "signaling") {
         npc.signalSeconds -= TRAFFIC_DECISION_SECONDS;
@@ -1722,8 +2355,16 @@ export class SimulationCore {
       const adjacent = lane.adjacentLaneId
         ? this.lanesById.get(lane.adjacentLaneId)
         : undefined;
+      const laneChangeDistanceRequired =
+        Math.max(npc.speedMps, npc.desiredSpeedMps) *
+          NPC_LANE_CHANGE_SIGNAL_SECONDS +
+        NPC_LANE_CHANGE_DISTANCE_M +
+        NPC_LANE_CHANGE_END_MARGIN_M;
       if (
         adjacent &&
+        !npc.scriptedManeuverId &&
+        !this.isManeuverCorridorPosition(npc.laneId, npc.distance) &&
+        lane.length - npc.distance > laneChangeDistanceRequired &&
         npc.decisionCooldown <= 0 &&
         npc.state === "cruising" &&
         this.random.next() < 0.025 &&
@@ -1742,7 +2383,7 @@ export class SimulationCore {
             : "left";
         npc.targetLaneId = adjacent.id;
         npc.signal = side;
-        npc.signalSeconds = 1.2;
+        npc.signalSeconds = NPC_LANE_CHANGE_SIGNAL_SECONDS;
         npc.state = "signaling";
         npc.decisionCooldown = 9 + this.random.next() * 7;
       }
@@ -1861,6 +2502,15 @@ export class SimulationCore {
       if (remaining <= available) {
         npc.distance += remaining;
         return true;
+      }
+
+      if (npc.state === "lane-changing" && npc.targetLaneId) {
+        // A lane change should always complete before the source endpoint. If
+        // topology or a prolonged obstruction still carries one to the end,
+        // requeue it from its last rendered pose instead of snapping a partial
+        // lateral interpolation onto the successor centreline.
+        this.deactivateNpc(npc);
+        return false;
       }
 
       remaining -= available;
@@ -2127,6 +2777,7 @@ export class SimulationCore {
       this.speedingSeconds = Math.max(0, this.speedingSeconds - deltaSeconds * 1.5);
     }
     if (this.speedingSeconds >= 2.2) {
+      const maneuver = this.maneuverForProjection(projection);
       this.emitEvent({
         code: "speeding",
         severity: "minor",
@@ -2137,6 +2788,13 @@ export class SimulationCore {
         evidence: {
           speedMps: Math.round(speed * 10) / 10,
           limitMps: Math.round(projection.lane.speedLimitMps * 10) / 10,
+          ...(maneuver
+            ? {
+                maneuverId: maneuver.config.id,
+                maneuverPhase: maneuver.phase,
+                passingSide: maneuver.config.passingSide,
+              }
+            : {}),
         },
       });
       this.speedingSeconds = 0;
@@ -2283,6 +2941,15 @@ export class SimulationCore {
     projection: LaneProjection,
     deltaSeconds: number,
   ): void {
+    if (
+      this.isManeuverCorridorPosition(
+        projection.lane.id,
+        projection.distanceAlong,
+      )
+    ) {
+      this.passingLaneSeconds = 0;
+      return;
+    }
     const speed = Math.abs(this.signedSpeedMps);
     const lane = projection.lane;
     const follower = this.followingNpc(lane, projection.distanceAlong);
@@ -2584,6 +3251,79 @@ export class SimulationCore {
     return { x: final.x, z: final.z, heading: 0 };
   }
 
+  private mapAnchorDistanceToLane(
+    anchor: NormalizedManeuverAnchor,
+    targetLane: NormalizedLane,
+  ): number {
+    const sourceLane = this.lanesById.get(anchor.laneId);
+    if (!sourceLane) return 0;
+    if (sourceLane.id === targetLane.id) {
+      return clamp(anchor.distance, 0, targetLane.length);
+    }
+    return clamp(anchor.distance / sourceLane.length, 0, 1) * targetLane.length;
+  }
+
+  private mapProjectionDistanceToLane(
+    projection: LaneProjection,
+    targetLane: NormalizedLane,
+  ): number {
+    if (projection.lane.id === targetLane.id) return projection.distanceAlong;
+    return clamp(projection.distanceAlong / projection.lane.length, 0, 1) *
+      targetLane.length;
+  }
+
+  private relativeLaneSide(
+    sourceLane: NormalizedLane,
+    targetLane: NormalizedLane,
+    sourceDistance: number,
+  ): ObservationDirection {
+    const sourcePose = this.pointOnLane(sourceLane, sourceDistance);
+    const targetPose = this.pointOnLane(
+      targetLane,
+      clamp(sourceDistance / sourceLane.length, 0, 1) * targetLane.length,
+    );
+    const localRightX = Math.cos(sourcePose.heading);
+    const localRightZ = -Math.sin(sourcePose.heading);
+    const lateral =
+      (targetPose.x - sourcePose.x) * localRightX +
+      (targetPose.z - sourcePose.z) * localRightZ;
+    return lateral >= 0 ? "right" : "left";
+  }
+
+  private isManeuverCorridorPosition(laneId: string, distance: number): boolean {
+    const lane = this.lanesById.get(laneId);
+    if (!lane) return false;
+    return this.maneuverStates.some((state) => {
+      const { config } = state;
+      if (laneId !== config.normalLaneId && laneId !== config.passingLaneId) {
+        return false;
+      }
+      const normalLane = this.lanesById.get(config.normalLaneId);
+      if (!normalLane) return false;
+      const normalDistance = clamp(distance / lane.length, 0, 1) * normalLane.length;
+      const start = this.mapAnchorDistanceToLane(config.corridorStart, normalLane);
+      const end = this.mapAnchorDistanceToLane(config.corridorEnd, normalLane);
+      return normalDistance >= start && normalDistance <= end;
+    });
+  }
+
+  private maneuverForProjection(
+    projection: LaneProjection,
+  ): OvertakeManeuverInternal | null {
+    return (
+      this.maneuverStates.find(
+        (state) =>
+          state.phase !== "complete" &&
+          (projection.lane.id === state.config.normalLaneId ||
+            projection.lane.id === state.config.passingLaneId) &&
+          this.isManeuverCorridorPosition(
+            projection.lane.id,
+            projection.distanceAlong,
+          ),
+      ) ?? null
+    );
+  }
+
   private distanceAhead(lane: NormalizedLane, from: number, to: number): number {
     const direct = to - from;
     if (direct >= 0) return direct;
@@ -2770,11 +3510,905 @@ export class SimulationCore {
   ): boolean {
     const targetDistance = normalizedDistance * targetLane.length;
     return this.npcs.every((npc) => {
-      if (!npc.active || npc.laneId !== targetLane.id) return true;
-      const forward = this.distanceAhead(targetLane, targetDistance, npc.distance);
-      const backward = this.distanceAhead(targetLane, npc.distance, targetDistance);
+      if (!npc.active) return true;
+      const npcDistance = this.npcDistanceOnLane(npc, targetLane);
+      if (npcDistance === null) return true;
+      const forward = this.distanceAhead(targetLane, targetDistance, npcDistance);
+      const backward = this.distanceAhead(targetLane, npcDistance, targetDistance);
       return forward > 16 && backward > 13;
     });
+  }
+
+  private recordManeuverObservation(direction: ObservationDirection): void {
+    const projection = this.roadState.projection;
+    for (const state of this.maneuverStates) {
+      if (state.phase === "complete") continue;
+      const inCorridor =
+        state.corridorActive ||
+        Boolean(
+          projection &&
+            this.isManeuverCorridorPosition(
+              projection.lane.id,
+              projection.distanceAlong,
+            ),
+        );
+      if (!inCorridor) continue;
+      if (
+        (state.phase === "approach" || state.phase === "observe") &&
+        direction === state.config.passingSide
+      ) {
+        state.passObservationAtSeconds = this.elapsedSeconds;
+      } else if (
+        (state.phase === "pass" ||
+          state.phase === "establish_clearance" ||
+          state.phase === "return") &&
+        direction === state.config.returnSide
+      ) {
+        state.returnObservationAtSeconds = this.elapsedSeconds;
+      }
+    }
+  }
+
+  private observationIsCurrent(observedAtSeconds: number | null): boolean {
+    return (
+      observedAtSeconds !== null &&
+      this.elapsedSeconds - observedAtSeconds <= MANEUVER_OBSERVATION_VALID_SECONDS
+    );
+  }
+
+  private npcDistanceOnLane(
+    npc: NpcInternal,
+    targetLane: NormalizedLane,
+  ): number | null {
+    if (npc.laneId === targetLane.id) return npc.distance;
+    if (npc.targetLaneId !== targetLane.id) return null;
+    const sourceLane = this.lanesById.get(npc.laneId);
+    if (!sourceLane) return null;
+    return clamp(npc.distance / sourceLane.length, 0, 1) * targetLane.length;
+  }
+
+  private signedLaneDistance(
+    lane: NormalizedLane,
+    fromDistance: number,
+    toDistance: number,
+  ): number {
+    let difference = toDistance - fromDistance;
+    if (lane.loop && this.areLaneEndpointsContinuous(lane, lane)) {
+      if (difference > lane.length / 2) difference -= lane.length;
+      if (difference < -lane.length / 2) difference += lane.length;
+    }
+    return difference;
+  }
+
+  private assessManeuverLaneChange(
+    state: OvertakeManeuverInternal,
+    sourceProjection: LaneProjection,
+    targetLane: NormalizedLane,
+    standstillGapM: number,
+    headwaySeconds: number,
+  ): LaneChangeAssessment {
+    const targetDistance = this.mapProjectionDistanceToLane(
+      sourceProjection,
+      targetLane,
+    );
+    const playerSpeed = Math.abs(this.signedSpeedMps);
+    const horizon = state.config.predictedClearSeconds;
+    let frontGapM: number | null = null;
+    let rearGapM: number | null = null;
+    let requiredFrontGapM = standstillGapM + playerSpeed * headwaySeconds;
+    let requiredRearGapM = standstillGapM + playerSpeed * headwaySeconds;
+    let blockingVehicleId: string | null = null;
+    let clear = true;
+
+    for (const npc of this.npcs) {
+      if (!npc.active) continue;
+      const npcDistance = this.npcDistanceOnLane(npc, targetLane);
+      if (npcDistance === null) continue;
+      const centreDifference = this.signedLaneDistance(
+        targetLane,
+        targetDistance,
+        npcDistance,
+      );
+      const futureDifference =
+        centreDifference + (npc.speedMps - playerSpeed) * horizon;
+      const physicalLength = PLAYER_RADIUS_METRES + NPC_RADIUS_METRES;
+      if (centreDifference >= 0) {
+        const gap = Math.max(0, centreDifference - physicalLength);
+        const required = standstillGapM + playerSpeed * headwaySeconds;
+        const predictedGap = futureDifference - physicalLength;
+        if (frontGapM === null || gap < frontGapM) frontGapM = gap;
+        requiredFrontGapM = Math.max(requiredFrontGapM, required);
+        if (
+          gap < required ||
+          futureDifference <= 0 ||
+          predictedGap < required
+        ) {
+          clear = false;
+          blockingVehicleId ??= npc.id;
+        }
+      } else {
+        const gap = Math.max(0, -centreDifference - physicalLength);
+        const required = standstillGapM + npc.speedMps * headwaySeconds;
+        const predictedGap = -futureDifference - physicalLength;
+        if (rearGapM === null || gap < rearGapM) rearGapM = gap;
+        requiredRearGapM = Math.max(requiredRearGapM, required);
+        if (
+          gap < required ||
+          futureDifference >= 0 ||
+          predictedGap < required
+        ) {
+          clear = false;
+          blockingVehicleId ??= npc.id;
+        }
+      }
+    }
+
+    return {
+      clear,
+      frontGapM,
+      rearGapM,
+      requiredFrontGapM,
+      requiredRearGapM,
+      blockingVehicleId,
+    };
+  }
+
+  private leadVehicleForManeuver(
+    state: OvertakeManeuverInternal,
+  ): NpcInternal | null {
+    return this.npcs.find((npc) => npc.id === state.leadVehicleId && npc.active) ?? null;
+  }
+
+  private maneuverClearanceM(
+    state: OvertakeManeuverInternal,
+    projection: LaneProjection | null = this.roadState.projection,
+  ): number | null {
+    const lead = this.leadVehicleForManeuver(state);
+    const normalLane = this.lanesById.get(state.config.normalLaneId);
+    if (!lead || !projection || !normalLane || lead.laneId !== normalLane.id) {
+      return null;
+    }
+    const playerDistance = this.mapProjectionDistanceToLane(projection, normalLane);
+    return (
+      playerDistance -
+      lead.distance -
+      (PLAYER_RADIUS_METRES + NPC_RADIUS_METRES)
+    );
+  }
+
+  private requiredManeuverClearanceM(
+    state: OvertakeManeuverInternal,
+  ): number {
+    const lead = this.leadVehicleForManeuver(state);
+    return (
+      state.config.returnStandstillGapM +
+      (lead?.speedMps ?? 0) * state.config.returnHeadwaySeconds
+    );
+  }
+
+  private setManeuverPhase(
+    state: OvertakeManeuverInternal,
+    phase: ManeuverPhase,
+  ): void {
+    if (state.phase === phase) return;
+    state.phase = phase;
+    const messages: Record<ManeuverPhase, string> = {
+      approach: "Approach the slower vehicle with a safe following gap.",
+      observe: "Observe the passing lane, signal, and wait for a safe gap.",
+      pass: "Pass smoothly without exceeding the posted speed limit.",
+      establish_clearance: "Build a safe gap before moving back.",
+      return: "Observe, signal, and return only while the normal lane remains clear.",
+      complete: "Overtake complete — settled safely in the normal travel lane.",
+    };
+    this.showCoach(messages[phase], phase === "complete" ? 4 : 3);
+  }
+
+  private emitManeuverObservationFailure(
+    state: OvertakeManeuverInternal,
+    expectedSide: ObservationDirection,
+    phase: "pass" | "return",
+  ): void {
+    this.emitEvent({
+      code: "observation",
+      severity: "minor",
+      message: `You moved ${expectedSide} without a fresh mirror and blind-spot check.`,
+      correction: `Observe ${expectedSide} before signalling and changing lanes.`,
+      penalty: 6,
+      category: "ruleUse",
+      evidence: {
+        maneuverId: state.config.id,
+        maneuverPhase: phase,
+        expectedObservationSide: expectedSide,
+        observationValidSeconds: MANEUVER_OBSERVATION_VALID_SECONDS,
+        observed: false,
+      },
+      ignoreCooldown: true,
+    });
+  }
+
+  private emitManeuverSignalFailure(
+    state: OvertakeManeuverInternal,
+    expectedSignal: ObservationDirection,
+    phase: "pass" | "return",
+  ): void {
+    this.emitEvent({
+      code: "missing_indicator",
+      severity: "minor",
+      message: `You changed lanes without the correct ${expectedSignal} indicator.`,
+      correction: `Signal ${expectedSignal} before moving, then cancel after the lane change.`,
+      penalty: 4,
+      category: "ruleUse",
+      evidence: {
+        maneuverId: state.config.id,
+        maneuverPhase: phase,
+        expectedSignal,
+        actualSignal: this.signal,
+        passingSide: state.config.passingSide,
+      },
+      ignoreCooldown: true,
+    });
+  }
+
+  private emitUnsafeManeuverGap(
+    state: OvertakeManeuverInternal,
+    assessment: LaneChangeAssessment,
+    phase: "pass" | "return",
+    cutIn: boolean,
+    clearanceM: number | null,
+    requiredClearanceM: number,
+  ): void {
+    this.emitEvent({
+      code: "unsafe_gap",
+      severity: "minor",
+      message: cutIn
+        ? "You returned before establishing safe clearance."
+        : "You entered a lane without a safe predicted gap.",
+      correction: cutIn
+        ? "Stay in the passing lane until the vehicle is safely behind, then observe and signal before returning."
+        : `Wait until the lane remains clear for the next ${state.config.predictedClearSeconds} seconds.`,
+      penalty: 12,
+      category: "safety",
+      evidence: {
+        maneuverId: state.config.id,
+        maneuverPhase: phase,
+        leadVehicleId: state.leadVehicleId,
+        predictedClearSeconds: state.config.predictedClearSeconds,
+        targetLaneClear: assessment.clear,
+        cutIn,
+        ...(assessment.blockingVehicleId
+          ? { blockingVehicleId: assessment.blockingVehicleId }
+          : {}),
+        ...(assessment.frontGapM !== null
+          ? { frontGapM: Math.round(assessment.frontGapM * 10) / 10 }
+          : {}),
+        ...(assessment.rearGapM !== null
+          ? { rearGapM: Math.round(assessment.rearGapM * 10) / 10 }
+          : {}),
+        ...(clearanceM !== null
+          ? { actualClearanceM: Math.round(clearanceM * 10) / 10 }
+          : {}),
+        requiredClearanceM: Math.round(requiredClearanceM * 10) / 10,
+        sourceReferenceIds: state.config.sourceReferenceIds.join(","),
+      },
+      ignoreCooldown: true,
+    });
+  }
+
+  private completedRouteGuidanceStepCount(): number {
+    let count = 0;
+    for (const state of this.routeGuidanceStates) {
+      if (!state.satisfied) break;
+      count += 1;
+    }
+    return count;
+  }
+
+  private routeLaneContainmentTolerance(lane: NormalizedLane): number {
+    return Math.max(
+      0.1,
+      lane.width / 2 - PLAYER_RADIUS_METRES - ROUTE_LANE_EDGE_CLEARANCE_M,
+    );
+  }
+
+  private updateRouteGuidance(
+    previousProjection: LaneProjection | null,
+    currentProjection: LaneProjection | null,
+  ): void {
+    const state = this.routeGuidanceStates.find((candidate) => !candidate.satisfied);
+    if (!state || !previousProjection || !currentProjection) return;
+    const { config } = state;
+    const fromLane = config.fromLaneId
+      ? this.lanesById.get(config.fromLaneId)
+      : null;
+    const targetLane = this.lanesById.get(config.targetLaneId);
+    if (!targetLane) return;
+
+    const fullyInsideTarget =
+      currentProjection.lane.id === targetLane.id &&
+      currentProjection.distance <= this.routeLaneContainmentTolerance(targetLane);
+    const movingLegallyForward =
+      this.signedSpeedMps > STOPPED_SPEED_MPS &&
+      !this.roadState.wrongWay &&
+      !this.roadState.offRoad;
+
+    if (!state.enteredTarget) {
+      const crossedInitialAnchor =
+        fromLane === null &&
+        previousProjection.lane.id === targetLane.id &&
+        currentProjection.lane.id === targetLane.id &&
+        previousProjection.distanceAlong <= config.completionDistance + 0.05 &&
+        currentProjection.distanceAlong >= config.completionDistance - 0.05;
+      const crossedSuccessorBoundary = Boolean(
+        fromLane &&
+          previousProjection.lane.id === fromLane.id &&
+          currentProjection.lane.id === targetLane.id &&
+          previousProjection.distanceAlong >=
+            fromLane.length - ROUTE_ENTRY_WINDOW_M &&
+          currentProjection.distanceAlong <= ROUTE_ENTRY_WINDOW_M,
+      );
+      if (
+        (crossedInitialAnchor || crossedSuccessorBoundary) &&
+        fullyInsideTarget &&
+        movingLegallyForward
+      ) {
+        state.enteredTarget = true;
+      }
+    } else if (currentProjection.lane.id !== targetLane.id) {
+      // Keep the legal entry evidence so a player who drifts or makes a
+      // recoverable lane error can follow the guidance back into the target
+      // lane before its acceptance anchor.
+      return;
+    }
+
+    if (
+      state.enteredTarget &&
+      fullyInsideTarget &&
+      movingLegallyForward &&
+      currentProjection.distanceAlong >= config.completionDistance - 0.05
+    ) {
+      state.satisfied = true;
+      state.enteredTarget = false;
+    }
+  }
+
+  private overtakeGuidanceBlockingReason(
+    maneuver: SimulationManeuverSnapshot,
+  ): SimulationGuidanceBlockingReason | null {
+    if (!maneuver.corridorActive && maneuver.phase === "approach") {
+      return "awaiting_activation";
+    }
+    if (maneuver.phase === "approach") {
+      return maneuver.targetLaneClear ? null : "target_lane_occupied";
+    }
+    if (maneuver.phase === "observe") {
+      if (!maneuver.observed) return "observation_required";
+      if (this.signal !== maneuver.expectedSignal) return "signal_required";
+      return maneuver.targetLaneClear ? null : "target_lane_occupied";
+    }
+    if (maneuver.phase === "pass") {
+      return maneuver.passEntryValid ? null : "maneuver_requirements";
+    }
+    if (maneuver.phase === "establish_clearance") {
+      if (!maneuver.safeToReturn) return "clearance_required";
+      if (!maneuver.observed) return "observation_required";
+      return this.signal === maneuver.expectedSignal ? null : "signal_required";
+    }
+    if (maneuver.returnEntryValid) return null;
+    if (!maneuver.safeToReturn) return "clearance_required";
+    if (!maneuver.observed) return "observation_required";
+    return this.signal === maneuver.expectedSignal
+      ? "maneuver_requirements"
+      : "signal_required";
+  }
+
+  private routeGuidanceSnapshot(): SimulationGuidanceSnapshot | null {
+    const state = this.routeGuidanceStates.find((candidate) => !candidate.satisfied);
+    if (!state) return null;
+    const { config } = state;
+    const projection = this.roadState.projection;
+    const onExpectedLane = Boolean(
+      projection &&
+        ((config.fromLaneId === null &&
+          projection.lane.id === config.targetLaneId) ||
+          projection.lane.id === config.fromLaneId ||
+          (state.enteredTarget && projection.lane.id === config.targetLaneId)),
+    );
+    const ready = onExpectedLane && !this.roadState.wrongWay && !this.roadState.offRoad;
+    const targetLane = this.lanesById.get(config.targetLaneId);
+    let cue: SimulationGuidanceCueSnapshot | null = null;
+    if (targetLane && config.cueDistance !== null) {
+      const cueIsBehind = Boolean(
+        projection &&
+          projection.lane.id === targetLane.id &&
+          projection.distanceAlong > config.cueDistance + 1,
+      );
+      if (!cueIsBehind) {
+        const pose = this.pointOnLane(targetLane, config.cueDistance);
+        cue = {
+          id: `${config.id}:cue`,
+          label: config.label,
+          laneId: targetLane.id,
+          distanceAlongM: config.cueDistance,
+          widthM: targetLane.width,
+          x: pose.x,
+          z: pose.z,
+          heading: pose.heading,
+        };
+      }
+    }
+    return {
+      owner: {
+        kind: "route",
+        id: `${this.config.lessonId}:route`,
+        stepId: config.id,
+        routeIndex: config.routeIndex,
+      },
+      status: ready ? "ready" : "blocked",
+      cue,
+      blockingReason: ready ? null : "off_route",
+    };
+  }
+
+  private guidanceSnapshot(
+    maneuvers: readonly SimulationManeuverSnapshot[],
+  ): SimulationGuidanceSnapshot {
+    const activeManeuver = maneuvers.find(
+      (maneuver) =>
+        maneuver.phase !== "complete" &&
+        (maneuver.corridorActive || maneuver.phase !== "approach"),
+    );
+    if (activeManeuver) {
+      const blockingReason = this.overtakeGuidanceBlockingReason(activeManeuver);
+      const gate = activeManeuver.gate;
+      return {
+        owner: {
+          kind: "overtake",
+          id: activeManeuver.id,
+          stepId: activeManeuver.phase,
+          routeIndex: null,
+        },
+        status: blockingReason === null ? "ready" : "blocked",
+        cue: gate
+          ? {
+              id: `${activeManeuver.id}:${activeManeuver.phase}:cue`,
+              label: gate.label,
+              laneId: gate.laneId,
+              distanceAlongM: gate.distanceAlongM,
+              widthM: gate.widthM,
+              x: gate.x,
+              z: gate.z,
+              heading: gate.heading,
+            }
+          : null,
+        blockingReason,
+      };
+    }
+
+    const route = this.routeGuidanceSnapshot();
+    if (route) return route;
+    const hasGuidance =
+      this.routeGuidanceStates.length > 0 || this.maneuverStates.length > 0;
+    const allManeuversComplete = maneuvers.every(
+      (maneuver) => maneuver.phase === "complete",
+    );
+    return {
+      owner: null,
+      status: hasGuidance && allManeuversComplete ? "complete" : "inactive",
+      cue: null,
+      blockingReason: null,
+    };
+  }
+
+  private requiredGuidanceComplete(): boolean {
+    return (
+      this.routeGuidanceStates.every(
+        (state) => !state.config.required || state.satisfied,
+      ) && this.maneuverStates.every((state) => state.phase === "complete")
+    );
+  }
+
+  private restoreRouteGuidanceProgress(): void {
+    const completedCount = Math.trunc(
+      clamp(
+        this.routeProgressByCheckpoint.get(this.currentCheckpoint.id) ?? 0,
+        0,
+        this.routeGuidanceStates.length,
+      ),
+    );
+    for (const [index, state] of this.routeGuidanceStates.entries()) {
+      state.satisfied = index < completedCount;
+      state.enteredTarget = false;
+    }
+  }
+
+  private updateOvertakeManeuvers(
+    previousProjection: LaneProjection | null,
+    currentProjection: LaneProjection | null,
+    deltaSeconds: number,
+  ): void {
+    for (const state of this.maneuverStates) {
+      const { config } = state;
+      const normalLane = this.lanesById.get(config.normalLaneId);
+      const passingLane = this.lanesById.get(config.passingLaneId);
+      if (!normalLane || !passingLane) continue;
+
+      state.corridorActive = Boolean(
+        currentProjection &&
+          (currentProjection.lane.id === normalLane.id ||
+            currentProjection.lane.id === passingLane.id) &&
+          this.isManeuverCorridorPosition(
+            currentProjection.lane.id,
+            currentProjection.distanceAlong,
+          ),
+      );
+      if (
+        currentProjection &&
+        state.corridorActive &&
+        Math.abs(this.signedSpeedMps) >
+          currentProjection.lane.speedLimitMps +
+            Math.max(0.5, currentProjection.lane.speedLimitMps * 0.03)
+      ) {
+        state.speedCompliant = false;
+      }
+      if (state.phase === "complete" || !currentProjection) continue;
+
+      const currentNormalDistance = this.mapProjectionDistanceToLane(
+        currentProjection,
+        normalLane,
+      );
+      const observeDistance = this.mapAnchorDistanceToLane(
+        config.phaseAnchors.observe,
+        normalLane,
+      );
+      if (
+        state.phase === "approach" &&
+        currentProjection.lane.id === normalLane.id &&
+        currentNormalDistance >= observeDistance
+      ) {
+        this.setManeuverPhase(state, "observe");
+      }
+
+      const transitionInCorridor = Boolean(
+        previousProjection &&
+          (this.isManeuverCorridorPosition(
+            previousProjection.lane.id,
+            previousProjection.distanceAlong,
+          ) ||
+            this.isManeuverCorridorPosition(
+              currentProjection.lane.id,
+              currentProjection.distanceAlong,
+            )),
+      );
+      const enteredPassingLane =
+        transitionInCorridor &&
+        previousProjection?.lane.id === normalLane.id &&
+        currentProjection.lane.id === passingLane.id;
+      if (enteredPassingLane && previousProjection) {
+        const assessment = this.assessManeuverLaneChange(
+          state,
+          previousProjection,
+          passingLane,
+          MANEUVER_ENTRY_STANDSTILL_GAP_M,
+          MANEUVER_ENTRY_HEADWAY_SECONDS,
+        );
+        state.lastAssessment = assessment;
+        const observed = this.observationIsCurrent(
+          state.passObservationAtSeconds,
+        );
+        const signalled = this.signal === config.passingSide;
+        if (!observed) {
+          this.emitManeuverObservationFailure(
+            state,
+            config.passingSide,
+            "pass",
+          );
+        }
+        if (!signalled) {
+          this.emitManeuverSignalFailure(state, config.passingSide, "pass");
+        }
+        if (!assessment.clear) {
+          this.emitUnsafeManeuverGap(
+            state,
+            assessment,
+            "pass",
+            false,
+            null,
+            assessment.requiredRearGapM,
+          );
+        }
+        // Speeding is scored and coached, but it does not silently make the
+        // exercise impossible. The safety-critical lane-change requirements
+        // remain mandatory.
+        state.passEntryValid = observed && signalled && assessment.clear;
+        state.returnEntryValid = false;
+        state.returnObservationAtSeconds = null;
+        state.returnedToNormalLane = false;
+        state.returnedSafely = false;
+        this.setManeuverPhase(state, "pass");
+      }
+
+      const clearanceM = this.maneuverClearanceM(state, currentProjection);
+      const requiredClearanceM = this.requiredManeuverClearanceM(state);
+      if (
+        state.phase === "pass" &&
+        currentProjection.lane.id === passingLane.id &&
+        clearanceM !== null &&
+        clearanceM >= 0
+      ) {
+        this.setManeuverPhase(state, "establish_clearance");
+      }
+
+      if (
+        (state.phase === "pass" || state.phase === "establish_clearance") &&
+        currentProjection.lane.id === passingLane.id
+      ) {
+        const returnAssessment = this.assessManeuverLaneChange(
+          state,
+          currentProjection,
+          normalLane,
+          config.returnStandstillGapM,
+          config.returnHeadwaySeconds,
+        );
+        state.lastAssessment = returnAssessment;
+        if (
+          state.phase === "establish_clearance" &&
+          clearanceM !== null &&
+          clearanceM >= requiredClearanceM &&
+          returnAssessment.clear
+        ) {
+          this.setManeuverPhase(state, "return");
+        }
+      }
+
+      const enteredNormalLane =
+        transitionInCorridor &&
+        previousProjection?.lane.id === passingLane.id &&
+        currentProjection.lane.id === normalLane.id;
+      if (enteredNormalLane && previousProjection) {
+        const returnAssessment = this.assessManeuverLaneChange(
+          state,
+          previousProjection,
+          normalLane,
+          config.returnStandstillGapM,
+          config.returnHeadwaySeconds,
+        );
+        state.lastAssessment = returnAssessment;
+        const observed = this.observationIsCurrent(
+          state.returnObservationAtSeconds,
+        );
+        const physicallySafe =
+          state.phase === "return" &&
+          clearanceM !== null &&
+          clearanceM >= requiredClearanceM &&
+          returnAssessment.clear;
+        if (!observed) {
+          this.emitManeuverObservationFailure(
+            state,
+            config.returnSide,
+            "return",
+          );
+        }
+        if (this.signal !== config.returnSide) {
+          this.emitManeuverSignalFailure(state, config.returnSide, "return");
+        }
+        if (!physicallySafe) {
+          this.emitUnsafeManeuverGap(
+            state,
+            returnAssessment,
+            "return",
+            true,
+            clearanceM,
+            requiredClearanceM,
+          );
+        }
+        state.returnEntryValid =
+          state.passEntryValid &&
+          observed &&
+          this.signal === config.returnSide &&
+          physicallySafe;
+        this.setManeuverPhase(state, "return");
+        state.returnedToNormalLane = true;
+        state.returnedSafely = physicallySafe;
+        state.completionSeconds = 0;
+      }
+
+      if (
+        state.phase === "return" &&
+        state.returnedToNormalLane &&
+        currentProjection.lane.id === normalLane.id
+      ) {
+        const finalAssessment = this.assessManeuverLaneChange(
+          state,
+          currentProjection,
+          normalLane,
+          config.returnStandstillGapM,
+          config.returnHeadwaySeconds,
+        );
+        state.lastAssessment = finalAssessment;
+        if (
+          clearanceM !== null &&
+          clearanceM >= requiredClearanceM &&
+          finalAssessment.clear
+        ) {
+          state.returnedSafely = true;
+        }
+        const completeDistance = this.mapAnchorDistanceToLane(
+          config.phaseAnchors.complete,
+          normalLane,
+        );
+        if (
+          state.passEntryValid &&
+          state.returnEntryValid &&
+          state.returnedSafely &&
+          currentNormalDistance >= completeDistance
+        ) {
+          state.completionSeconds += deltaSeconds;
+          if (state.completionSeconds >= 0.35) {
+            this.setManeuverPhase(state, "complete");
+          }
+        } else {
+          state.completionSeconds = 0;
+        }
+      }
+    }
+  }
+
+  private maneuverSnapshot(
+    state: OvertakeManeuverInternal,
+  ): SimulationManeuverSnapshot {
+    const { config } = state;
+    const projection = this.roadState.projection;
+    const normalLane = this.lanesById.get(config.normalLaneId);
+    const passingLane = this.lanesById.get(config.passingLaneId);
+    const expectsPass = state.phase === "approach" || state.phase === "observe";
+    const expectedSignal = expectsPass ? config.passingSide : config.returnSide;
+    const observed = this.observationIsCurrent(
+      expectsPass
+        ? state.passObservationAtSeconds
+        : state.returnObservationAtSeconds,
+    );
+    const targetLane = expectsPass ? passingLane : normalLane;
+    const assessment =
+      projection && targetLane
+        ? this.assessManeuverLaneChange(
+            state,
+            projection,
+            targetLane,
+            expectsPass
+              ? MANEUVER_ENTRY_STANDSTILL_GAP_M
+              : config.returnStandstillGapM,
+            expectsPass
+              ? MANEUVER_ENTRY_HEADWAY_SECONDS
+              : config.returnHeadwaySeconds,
+          )
+        : state.lastAssessment;
+    const clearanceM = this.maneuverClearanceM(state, projection);
+    const requiredClearanceM = this.requiredManeuverClearanceM(state);
+    const safeToReturn =
+      state.phase === "complete" ||
+      (clearanceM !== null &&
+        clearanceM >= requiredClearanceM &&
+        assessment.clear);
+    const corridorActive = Boolean(
+      projection &&
+        this.isManeuverCorridorPosition(
+          projection.lane.id,
+          projection.distanceAlong,
+        ),
+    );
+    return {
+      id: config.id,
+      kind: "overtake",
+      phase: state.phase,
+      normalLaneId: config.normalLaneId,
+      passingLaneId: config.passingLaneId,
+      leadVehicleId: state.leadVehicleId,
+      passingSide: config.passingSide,
+      expectedSignal,
+      observed,
+      passEntryValid: state.passEntryValid,
+      returnEntryValid: state.returnEntryValid,
+      speedCompliant: state.speedCompliant,
+      targetLaneClear: assessment.clear,
+      predictedClearSeconds: config.predictedClearSeconds,
+      frontGapM: assessment.frontGapM,
+      rearGapM: assessment.rearGapM,
+      clearanceM,
+      requiredClearanceM,
+      safeToReturn,
+      corridorActive,
+      gate: this.maneuverGateSnapshot(
+        state,
+        observed,
+        assessment.clear,
+        safeToReturn,
+      ),
+    };
+  }
+
+  private maneuverGateSnapshot(
+    state: OvertakeManeuverInternal,
+    observed: boolean,
+    targetLaneClear: boolean,
+    safeToReturn: boolean,
+  ): SimulationManeuverGateSnapshot | null {
+    const { config } = state;
+    if (state.phase === "complete") return null;
+    const gateByPhase: Record<
+      Exclude<ManeuverPhase, "complete">,
+      {
+        anchor: NormalizedManeuverAnchor;
+        targetLaneId?: string;
+        label: string;
+        available: boolean;
+      }
+    > = {
+      approach: {
+        anchor: config.phaseAnchors.approach,
+        label: "CHECK RIGHT",
+        available: state.corridorActive && targetLaneClear,
+      },
+      observe: {
+        anchor: config.phaseAnchors.observe,
+        label: "PASS WHEN CLEAR",
+        available:
+          observed && this.signal === config.passingSide && targetLaneClear,
+      },
+      pass: {
+        anchor: config.phaseAnchors.pass,
+        label: "PASS WHEN CLEAR",
+        available: state.passEntryValid,
+      },
+      establish_clearance: {
+        anchor: config.phaseAnchors.return,
+        targetLaneId: config.normalLaneId,
+        label: "RETURN LEFT",
+        available:
+          safeToReturn &&
+          observed &&
+          this.signal === config.returnSide,
+      },
+      return: {
+        anchor: config.phaseAnchors.return,
+        targetLaneId: config.normalLaneId,
+        label: "RETURN LEFT",
+        available:
+          !state.returnedToNormalLane &&
+          safeToReturn &&
+          observed &&
+          this.signal === config.returnSide,
+      },
+    };
+    const gate = gateByPhase[state.phase];
+    if (!gate.available) return null;
+    const lane = this.lanesById.get(gate.targetLaneId ?? gate.anchor.laneId);
+    if (!lane) return null;
+    const projection = this.roadState.projection;
+    if (!projection) return null;
+    const authoredDistance = this.mapAnchorDistanceToLane(gate.anchor, lane);
+    const playerDistance = this.mapProjectionDistanceToLane(projection, lane);
+    // Guidance must never trail the vehicle. Advance stale phase anchors in
+    // stable 10 m increments so the renderer does not churn meshes each tick.
+    const minimumAheadDistance = Math.ceil((playerDistance + 24) / 10) * 10;
+    const corridorEndDistance = this.mapAnchorDistanceToLane(
+      config.corridorEnd,
+      lane,
+    );
+    const distanceAlongM = Math.max(authoredDistance, minimumAheadDistance);
+    if (distanceAlongM > corridorEndDistance - 8 || distanceAlongM > lane.length - 4) {
+      return null;
+    }
+    const pose = this.pointOnLane(lane, distanceAlongM);
+    return {
+      label: gate.label,
+      laneId: lane.id,
+      distanceAlongM,
+      x: pose.x,
+      z: pose.z,
+      heading: pose.heading,
+      widthM: lane.width,
+      available: gate.available,
+    };
   }
 
   private trafficLightTiming(light: NormalizedTrafficLight): {
@@ -2826,30 +4460,58 @@ export class SimulationCore {
     return state === "red" || state === "red_amber" || state === "all_red";
   }
 
-  private updateCheckpointProgress(): void {
-    for (const checkpoint of this.config.checkpoints) {
-      if (this.reachedCheckpoints.has(checkpoint.id)) continue;
-      const radius = checkpoint.radius ?? 4;
-      if (distanceSquared(checkpoint, this.player) <= radius * radius) {
-        this.currentCheckpoint = { ...checkpoint };
-        this.reachedCheckpoints.add(checkpoint.id);
-        const transition = this.config.profileTransitions.find(
-          (candidate) => candidate.checkpointId === checkpoint.id,
-        );
-        if (transition) {
-          this.config.trafficSide = transition.trafficSide;
-          this.config.speedUnit = transition.speedUnit;
-          this.passingLaneSeconds = 0;
-          this.honkSeconds = 0;
-          this.honkSourceNpcId = null;
-          this.showCoach(
-            `Jurisdiction changed: keep ${transition.trafficSide} and read speeds in ${transition.speedUnit === "kmh" ? "km/h" : "mph"}.`,
-            4,
-          );
-        } else {
-          this.showCoach("Checkpoint reached.", 2);
-        }
-      }
+  private updateCheckpointProgress(
+    previousProjection: LaneProjection | null,
+    currentProjection: LaneProjection | null,
+  ): void {
+    const checkpoint = this.config.checkpoints.find(
+      (candidate) => !this.reachedCheckpoints.has(candidate.id),
+    );
+    if (!checkpoint) return;
+    const hasLaneAnchor =
+      Boolean(checkpoint.laneId) &&
+      Number.isFinite(checkpoint.distance) &&
+      Number.isFinite(checkpoint.width);
+    const fullVehicleLaneTolerance = Math.max(
+      0.1,
+      (checkpoint.width ?? 0) / 2 - PLAYER_RADIUS_METRES - 0.3,
+    );
+    const crossedLaneAnchor =
+      hasLaneAnchor &&
+      previousProjection !== null &&
+      currentProjection !== null &&
+      previousProjection.lane.id === checkpoint.laneId &&
+      currentProjection.lane.id === checkpoint.laneId &&
+      currentProjection.distance <= fullVehicleLaneTolerance &&
+      previousProjection.distanceAlong <= (checkpoint.distance ?? 0) + 0.05 &&
+      currentProjection.distanceAlong >= (checkpoint.distance ?? 0) - 0.05;
+    const radius = checkpoint.radius ?? 4;
+    const reached = hasLaneAnchor
+      ? crossedLaneAnchor
+      : distanceSquared(checkpoint, this.player) <= radius * radius;
+    if (!reached) return;
+
+    this.currentCheckpoint = { ...checkpoint };
+    this.reachedCheckpoints.add(checkpoint.id);
+    this.routeProgressByCheckpoint.set(
+      checkpoint.id,
+      this.completedRouteGuidanceStepCount(),
+    );
+    const transition = this.config.profileTransitions.find(
+      (candidate) => candidate.checkpointId === checkpoint.id,
+    );
+    if (transition) {
+      this.config.trafficSide = transition.trafficSide;
+      this.config.speedUnit = transition.speedUnit;
+      this.passingLaneSeconds = 0;
+      this.honkSeconds = 0;
+      this.honkSourceNpcId = null;
+      this.showCoach(
+        `Jurisdiction changed: keep ${transition.trafficSide} and read speeds in ${transition.speedUnit === "kmh" ? "km/h" : "mph"}.`,
+        4,
+      );
+    } else {
+      this.showCoach("Checkpoint reached.", 2);
     }
   }
 
@@ -2863,6 +4525,7 @@ export class SimulationCore {
     ) {
       return;
     }
+    if (!this.requiredGuidanceComplete()) return;
     const radius = finish.radius ?? 5;
     if (distanceSquared(finish, this.player) <= radius * radius) {
       this.completeLesson();
@@ -2880,6 +4543,7 @@ export class SimulationCore {
     this.signal = "off";
     this.signalAutoCancelSeconds = 0;
     this.viewHeading = this.player.heading;
+    this.previousObservationAction = null;
     this.accumulatorSeconds = 0;
     this.wrongWaySeconds = 0;
     this.offRoadSeconds = 0;
@@ -2889,12 +4553,49 @@ export class SimulationCore {
     this.stopApproachSpeeds.clear();
     this.restrictedLaneSeconds.clear();
     this.updateRoadState();
+    this.restoreRouteGuidanceProgress();
+    for (const state of this.maneuverStates) {
+      if (state.phase === "complete") continue;
+      state.phase = "approach";
+      state.passObservationAtSeconds = null;
+      state.returnObservationAtSeconds = null;
+      state.corridorActive = false;
+      state.passEntryValid = false;
+      state.returnEntryValid = false;
+      state.speedCompliant = true;
+      state.returnedToNormalLane = false;
+      state.returnedSafely = false;
+      state.completionSeconds = 0;
+      const lead = this.npcs.find((npc) => npc.id === state.leadVehicleId);
+      const lane = this.lanesById.get(state.config.normalLaneId);
+      if (!lead || !lane) continue;
+      lead.active = true;
+      lead.laneId = lane.id;
+      lead.distance = this.mapAnchorDistanceToLane(
+        state.config.leadVehicleStart,
+        lane,
+      );
+      const pose = this.pointOnLane(lane, lead.distance);
+      lead.x = pose.x;
+      lead.z = pose.z;
+      lead.heading = pose.heading;
+      lead.previousX = pose.x;
+      lead.previousZ = pose.z;
+      lead.speedMps = 0;
+      lead.targetSpeedMps = 0;
+      lead.state = "stopping";
+      lead.signal = "off";
+      lead.targetLaneId = undefined;
+      lead.laneChangeProgress = 0;
+      lead.scriptedReleased = false;
+    }
     this.reflowTrafficAroundPlayer();
   }
 
   private reflowTrafficAroundPlayer(): void {
     for (const npc of this.npcs) {
       if (!npc.active) continue;
+      if (npc.scriptedManeuverId) continue;
       const gate: NormalizedTrafficGate = {
         id: `reflow-${npc.id}`,
         laneId: npc.laneId,

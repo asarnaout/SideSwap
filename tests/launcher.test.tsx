@@ -26,11 +26,23 @@ vi.mock("next/dynamic", () => ({
       lesson,
       onComplete,
     }: {
-      lesson?: { readonly id: string; readonly title: string };
+      lesson?: {
+        readonly id: string;
+        readonly title: string;
+        readonly route?: readonly string[];
+        readonly checkpoints?: readonly string[];
+        readonly startSpawnId?: string;
+      };
       onComplete?: (score: SimulationScoreSnapshot) => void;
     }) {
       return (
-        <section aria-label="Mock driving scene" data-scenario={lesson?.id}>
+        <section
+          aria-label="Mock driving scene"
+          data-scenario={lesson?.id}
+          data-route-count={lesson?.route?.length ?? 0}
+          data-checkpoint-count={lesson?.checkpoints?.length ?? 0}
+          data-start-spawn={lesson?.startSpawnId}
+        >
           <span>{lesson?.title}</span>
           <button type="button" onClick={() => onComplete?.(MOCK_CORE_SCORE)}>
             Finish mock drive
@@ -446,10 +458,11 @@ describe("game-first launcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
     fireEvent.click(screen.getByRole("button", { name: "Drives" }));
     fireEvent.click(screen.getByRole("button", { name: "Start free drive" }));
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "free-uk-london",
-    );
+    const freeDrive = screen.getByRole("region", { name: "Mock driving scene" });
+    expect(freeDrive).toHaveAttribute("data-scenario", "free-uk-london");
+    expect(freeDrive).toHaveAttribute("data-route-count", "0");
+    expect(freeDrive).toHaveAttribute("data-checkpoint-count", "0");
+    expect(freeDrive).toHaveAttribute("data-start-spawn", "london-player");
   });
 
   it("keeps four passport stamps and shows both UK destination paths", async () => {

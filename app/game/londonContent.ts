@@ -11,7 +11,10 @@ import type {
   MapPack,
   MapSpawnPoint,
   OfficialRuleReference,
+  RoadMarkingPath,
+  RoadMarkingStyle,
   RoadSurface,
+  RoadSurfaceType,
   ScenarioClock,
   TrafficControl,
   TrafficControlApproach,
@@ -133,43 +136,184 @@ const roadIdForLane = (id: string): string => {
   return id;
 };
 
-const lane = (
+const CONNECTOR_LENGTH_M = 0.5;
+
+const distanceBetweenPoints = (a: WorldPoint, b: WorldPoint): number =>
+  Math.hypot(a.x - b.x, a.z - b.z);
+
+const conflictZoneForNode = (nodeId: string): string => {
+  if (nodeId === "london-node-queen-gate-cromwell") {
+    return "london-queen-gate-cromwell-conflict";
+  }
+  if (nodeId === "london-node-exhibition-cromwell") {
+    return "london-cromwell-exhibition-conflict";
+  }
+  return `junction-${nodeId}`;
+};
+
+const laneTrue = (
   id: string,
   from: LaneNode,
   to: LaneNode,
   speedLimit: number,
   successors: readonly string[],
-  role: LaneRole = "travel",
-  via: readonly WorldPoint[] = [],
+  role: LaneRole,
+  establishedPath: readonly WorldPoint[],
   adjacentLaneIds?: readonly string[],
   roadId: string = roadIdForLane(id),
   widthM = id.includes("cromwell") || id.includes("queen-gate") ? 3.4 : 3.2,
-): LaneSegment => ({
-  id,
-  roadId,
-  widthM,
-  from: from.id,
-  to: to.id,
-  centerline: [from.position, ...via, to.position],
-  role,
-  trafficSide: "left",
-  speedLimit,
-  successors,
-  ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
-});
+): LaneSegment => {
+  const first = establishedPath[0];
+  const last = establishedPath.at(-1)!;
+  const dominantHorizontal =
+    Math.abs(to.position.x - from.position.x) >=
+    Math.abs(to.position.z - from.position.z);
+  const directionX = Math.sign(to.position.x - from.position.x);
+  const directionZ = Math.sign(to.position.z - from.position.z);
+  const startEstablished =
+    distanceBetweenPoints(from.position, first) <= 2
+      ? first
+      : dominantHorizontal
+        ? point(from.position.x + directionX * CONNECTOR_LENGTH_M, first.z)
+        : point(first.x, from.position.z + directionZ * CONNECTOR_LENGTH_M);
+  const endEstablished =
+    distanceBetweenPoints(to.position, last) <= 2
+      ? last
+      : dominantHorizontal
+        ? point(to.position.x - directionX * CONNECTOR_LENGTH_M, last.z)
+        : point(last.x, to.position.z - directionZ * CONNECTOR_LENGTH_M);
+  const centerline = [
+    from.position,
+    startEstablished,
+    ...establishedPath,
+    endEstablished,
+    to.position,
+  ];
+  const startConnectorLengthM = distanceBetweenPoints(
+    from.position,
+    startEstablished,
+  );
+  const endConnectorLengthM = distanceBetweenPoints(endEstablished, to.position);
+  const totalLengthM = centerline.slice(1).reduce(
+    (total, current, index) =>
+      total + distanceBetweenPoints(centerline[index], current),
+    0,
+  );
+
+  return {
+    id,
+    roadId,
+    widthM,
+    from: from.id,
+    to: to.id,
+    centerline,
+    role,
+    trafficSide: "left",
+    speedLimit,
+    successors,
+    ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
+    connectorRanges: [
+      {
+        startDistanceAlongM: 0,
+        endDistanceAlongM: startConnectorLengthM,
+        ...(conflictZoneForNode(from.id)
+          ? { conflictZoneId: conflictZoneForNode(from.id) }
+          : {}),
+      },
+      {
+        startDistanceAlongM: totalLengthM - endConnectorLengthM,
+        endDistanceAlongM: totalLengthM,
+        ...(conflictZoneForNode(to.id)
+          ? { conflictZoneId: conflictZoneForNode(to.id) }
+          : {}),
+      },
+    ],
+  };
+};
+
+const CONNECTOR_ZONE_RADIUS_M = 2.1;
+
+const connectorConflictZones = (
+  lanes: readonly LaneSegment[],
+  authoredZones: LaneGraph["conflictZones"],
+): LaneGraph["conflictZones"] => {
+  const connectorLaneIds = new Map<string, Set<string>>();
+  const generatedCenters = new Map<string, WorldPoint>();
+  const authoredIds = new Set(authoredZones.map((zone) => zone.id));
+
+  for (const lane of lanes) {
+    for (const range of lane.connectorRanges ?? []) {
+      const conflictZoneId = range.conflictZoneId;
+      if (!conflictZoneId) continue;
+      const laneIds = connectorLaneIds.get(conflictZoneId) ?? new Set<string>();
+      laneIds.add(lane.id);
+      connectorLaneIds.set(conflictZoneId, laneIds);
+      if (!authoredIds.has(conflictZoneId)) {
+        generatedCenters.set(
+          conflictZoneId,
+          range.startDistanceAlongM <= 1e-6
+            ? lane.centerline[0]
+            : lane.centerline.at(-1)!,
+        );
+      }
+    }
+  }
+
+  const authored = authoredZones.map((zone) => ({
+    ...zone,
+    laneIds: [
+      ...new Set([
+        ...zone.laneIds,
+        ...(connectorLaneIds.get(zone.id) ?? []),
+      ]),
+    ],
+  }));
+  const generated = [...generatedCenters].map(([id, center]) => ({
+    id,
+    laneIds: [...(connectorLaneIds.get(id) ?? [])],
+    polygon: [
+      point(center.x - CONNECTOR_ZONE_RADIUS_M, center.z - CONNECTOR_ZONE_RADIUS_M),
+      point(center.x + CONNECTOR_ZONE_RADIUS_M, center.z - CONNECTOR_ZONE_RADIUS_M),
+      point(center.x + CONNECTOR_ZONE_RADIUS_M, center.z + CONNECTOR_ZONE_RADIUS_M),
+      point(center.x - CONNECTOR_ZONE_RADIUS_M, center.z + CONNECTOR_ZONE_RADIUS_M),
+    ],
+  }));
+  return [...authored, ...generated];
+};
 
 const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
   laneId,
   distanceAlongM,
 });
 
+// Distances include the short junction connector before each established
+// running lane. These anchors resolve to the requested lane-true starts at
+// approximately (-121.98, -105.8) and (-109.7, -92).
+const LONDON_QUIET_START_DISTANCE_M = 15.35;
+const LONDON_QUEEN_GATE_START_DISTANCE_M = 13.27;
+
+const roadMarking = (
+  id: string,
+  style: RoadMarkingStyle,
+  points: readonly WorldPoint[],
+  color?: RoadMarkingPath["color"],
+): RoadMarkingPath => ({ id, style, points, ...(color ? { color } : {}) });
+
 const roadSurface = (
   id: string,
   centerline: readonly WorldPoint[],
   widthM: number,
   laneIds: readonly string[],
-  marking: RoadSurface["marking"] = "center_line",
-): RoadSurface => ({ id, centerline, widthM, laneIds, marking });
+  surfaceType: RoadSurfaceType = "standard",
+  markings: readonly RoadMarkingPath[] = [],
+): RoadSurface => ({
+  id,
+  centerline,
+  widthM,
+  laneIds,
+  surfaceType,
+  markings,
+});
 
 const checkpoint = (
   id: string,
@@ -288,7 +432,7 @@ const londonNodes = {
 
 const londonLanes: readonly LaneSegment[] = [
   // A calm local loop west of Queen's Gate. It is used for the first lesson.
-  lane(
+  laneTrue(
     "london-local-west",
     londonNodes.queenGateSouth,
     londonNodes.quietWestSouth,
@@ -297,7 +441,7 @@ const londonLanes: readonly LaneSegment[] = [
     "travel",
     [point(-136, -105.8)],
   ),
-  lane(
+  laneTrue(
     "london-quiet-north",
     londonNodes.quietWestSouth,
     londonNodes.quietWestNorth,
@@ -306,7 +450,7 @@ const londonLanes: readonly LaneSegment[] = [
     "travel",
     [point(-165.8, -68)],
   ),
-  lane(
+  laneTrue(
     "london-cromwell-local-east",
     londonNodes.quietWestNorth,
     londonNodes.queenGateCromwell,
@@ -315,20 +459,50 @@ const londonLanes: readonly LaneSegment[] = [
     "travel",
     [point(-136, -30.2)],
   ),
+  laneTrue(
+    "london-local-east-opposite",
+    londonNodes.quietWestSouth,
+    londonNodes.queenGateSouth,
+    20,
+    ["london-queen-gate-north-1"],
+    "travel",
+    [point(-136, -102.2)],
+    ["london-local-west"],
+  ),
+  laneTrue(
+    "london-quiet-south-opposite",
+    londonNodes.quietWestNorth,
+    londonNodes.quietWestSouth,
+    20,
+    ["london-local-east-opposite"],
+    "travel",
+    [point(-162.2, -68)],
+    ["london-quiet-north"],
+  ),
+  laneTrue(
+    "london-cromwell-local-west-opposite",
+    londonNodes.queenGateCromwell,
+    londonNodes.quietWestNorth,
+    20,
+    ["london-quiet-south-opposite"],
+    "travel",
+    [point(-136, -33.8)],
+    ["london-cromwell-local-east"],
+  ),
 
   // Queen's Gate is modelled in both legal directions, with the left-hand
   // running position visible in each centreline's lateral offset.
-  lane(
+  laneTrue(
     "london-queen-gate-north-1",
     londonNodes.queenGateSouth,
     londonNodes.queenGateCromwell,
     20,
-    ["london-queen-gate-north-2", "london-cromwell-east-1"],
+    ["london-queen-gate-north-2", "london-cromwell-east-1", "london-cromwell-local-west-opposite"],
     "travel",
     [point(-109.7, -68)],
     ["london-queen-gate-south-2"],
   ),
-  lane(
+  laneTrue(
     "london-queen-gate-north-2",
     londonNodes.queenGateCromwell,
     londonNodes.queenGateThurloe,
@@ -338,7 +512,7 @@ const londonLanes: readonly LaneSegment[] = [
     [point(-109.7, 24), point(-109.7, 58)],
     ["london-queen-gate-south-1"],
   ),
-  lane(
+  laneTrue(
     "london-queen-gate-south-1",
     londonNodes.queenGateThurloe,
     londonNodes.queenGateCromwell,
@@ -348,7 +522,7 @@ const londonLanes: readonly LaneSegment[] = [
     [point(-106.3, 58), point(-106.3, 24)],
     ["london-queen-gate-north-2"],
   ),
-  lane(
+  laneTrue(
     "london-queen-gate-south-2",
     londonNodes.queenGateCromwell,
     londonNodes.queenGateSouth,
@@ -361,27 +535,33 @@ const londonLanes: readonly LaneSegment[] = [
 
   // Cromwell Road's eastbound general lane sits beside a signed, timed bus
   // lane. The restriction is active at the fixed Tuesday 08:30 lesson clock.
-  lane(
+  laneTrue(
     "london-cromwell-east-1",
     londonNodes.queenGateCromwell,
     londonNodes.exhibitionCromwell,
     20,
     ["london-cromwell-east-2", "london-exhibition-shared-1"],
     "travel",
-    [point(-66, -32), point(-14, -32)],
-    ["london-cromwell-east-bus"],
+    [point(-66, -30.3), point(-14, -30.3)],
   ),
-  lane(
-    "london-cromwell-east-bus",
-    londonNodes.queenGateCromwell,
-    londonNodes.exhibitionCromwell,
-    20,
-    ["london-cromwell-east-2", "london-exhibition-shared-1"],
-    "travel",
-    [point(-66, -28.6), point(-14, -28.6)],
-    ["london-cromwell-east-1"],
-  ),
-  lane(
+  {
+    id: "london-cromwell-east-bus",
+    roadId: "london-cromwell-west",
+    widthM: 3.4,
+    from: londonNodes.queenGateCromwell.id,
+    to: londonNodes.exhibitionCromwell.id,
+    centerline: [
+      point(-108, -26.9),
+      point(-66, -26.9),
+      point(-14, -26.9),
+      point(42, -26.9),
+    ],
+    role: "travel",
+    trafficSide: "left",
+    speedLimit: 20,
+    successors: [],
+  },
+  laneTrue(
     "london-cromwell-east-2",
     londonNodes.exhibitionCromwell,
     londonNodes.cromwellEast,
@@ -391,7 +571,7 @@ const londonLanes: readonly LaneSegment[] = [
     [point(82, -30.3), point(118, -30.3)],
     ["london-cromwell-west-1"],
   ),
-  lane(
+  laneTrue(
     "london-cromwell-west-1",
     londonNodes.cromwellEast,
     londonNodes.exhibitionCromwell,
@@ -401,19 +581,19 @@ const londonLanes: readonly LaneSegment[] = [
     [point(118, -33.7), point(82, -33.7)],
     ["london-cromwell-east-2"],
   ),
-  lane(
+  laneTrue(
     "london-cromwell-west-2",
     londonNodes.exhibitionCromwell,
     londonNodes.queenGateCromwell,
     20,
     ["london-queen-gate-south-2", "london-queen-gate-north-2"],
     "travel",
-    [point(-14, -35.4), point(-66, -35.4)],
+    [point(-14, -33.7), point(-66, -33.7)],
     ["london-cromwell-east-1"],
   ),
 
   // The eastern and northern streets close the busier museum-quarter loop.
-  lane(
+  laneTrue(
     "london-east-north",
     londonNodes.cromwellEast,
     londonNodes.thurloeEast,
@@ -422,7 +602,7 @@ const londonLanes: readonly LaneSegment[] = [
     "travel",
     [point(148.2, 18), point(148.2, 54)],
   ),
-  lane(
+  laneTrue(
     "london-thurloe-west-1",
     londonNodes.thurloeEast,
     londonNodes.exhibitionThurloe,
@@ -431,7 +611,7 @@ const londonLanes: readonly LaneSegment[] = [
     "one_way",
     [point(100, 80.2)],
   ),
-  lane(
+  laneTrue(
     "london-thurloe-west-2",
     londonNodes.exhibitionThurloe,
     londonNodes.queenGateThurloe,
@@ -443,7 +623,7 @@ const londonLanes: readonly LaneSegment[] = [
 
   // The northern portion of Exhibition Road is a deliberately slow, one-way
   // shared-space exercise with dense pedestrian and cyclist activity.
-  lane(
+  laneTrue(
     "london-exhibition-shared-1",
     londonNodes.exhibitionCromwell,
     londonNodes.exhibitionMid,
@@ -452,7 +632,7 @@ const londonLanes: readonly LaneSegment[] = [
     "one_way",
     [point(40.3, -4)],
   ),
-  lane(
+  laneTrue(
     "london-exhibition-shared-2",
     londonNodes.exhibitionMid,
     londonNodes.exhibitionThurloe,
@@ -570,13 +750,20 @@ const londonLaneGraph: LaneGraph = {
       42,
       76,
       270,
-      ["london-thurloe-west-1", "london-thurloe-west-2"],
+      [
+        "london-thurloe-west-1",
+        "london-thurloe-west-2",
+        "london-exhibition-shared-2",
+      ],
       undefined,
-      [approach("london-thurloe-crosswalk-approach", "london-thurloe-west-1", 99, "crosswalk")],
+      [
+        approach("london-thurloe-crosswalk-approach", "london-thurloe-west-1", 99, "crosswalk"),
+        approach("london-exhibition-crosswalk-approach", "london-exhibition-shared-2", 50, "crosswalk"),
+      ],
       [installation("london-thurloe-crosswalk-marking", 42, 76, 270, "road_marking", "crosswalk", "marking")],
     ),
   ],
-  conflictZones: [
+  conflictZones: connectorConflictZones(londonLanes, [
     {
       id: "london-queen-gate-cromwell-conflict",
       laneIds: [
@@ -607,7 +794,7 @@ const londonLaneGraph: LaneGraph = {
         point(30, -20),
       ],
     },
-  ],
+  ]),
   restrictions: [
     {
       id: "london-cromwell-bus-lane-weekday",
@@ -626,8 +813,18 @@ const londonLaneGraph: LaneGraph = {
     },
   ],
   spawnPoints: [
-    anchoredSpawn("london-player", "player", "london-local-west", 14),
-    anchoredSpawn("london-player-queen-gate", "player", "london-queen-gate-north-1", 12),
+    anchoredSpawn(
+      "london-player",
+      "player",
+      "london-local-west",
+      LONDON_QUIET_START_DISTANCE_M,
+    ),
+    anchoredSpawn(
+      "london-player-queen-gate",
+      "player",
+      "london-queen-gate-north-1",
+      LONDON_QUEEN_GATE_START_DISTANCE_M,
+    ),
     anchoredSpawn("london-car-queen-gate", "vehicle", "london-queen-gate-north-1", 34),
     anchoredSpawn("london-black-cab", "vehicle", "london-thurloe-west-1", 38),
     anchoredSpawn("london-red-bus", "vehicle", "london-cromwell-east-bus", 68),
@@ -653,9 +850,14 @@ const londonLaneGraph: LaneGraph = {
     ),
   ],
   checkpoints: [
-    checkpoint("london-quiet-start", "Queen's Gate start", "london-local-west", 14),
+    checkpoint(
+      "london-quiet-start",
+      "Queen's Gate start",
+      "london-local-west",
+      LONDON_QUIET_START_DISTANCE_M,
+    ),
     checkpoint("london-quiet-crosswalk", "Quiet-street crossing", "london-quiet-north", 36),
-    checkpoint("london-cromwell-signal", "Cromwell Road signal", "london-cromwell-east-1", 82),
+    checkpoint("london-cromwell-signal", "Cromwell Road signal approach", "london-cromwell-east-1", 136),
     checkpoint("london-box-junction", "Box-junction approach", "london-cromwell-east-1", 125),
     checkpoint("london-bus-lane", "Signed bus-lane approach", "london-cromwell-east-1", 44),
     checkpoint("london-shared-space", "Exhibition Road shared space", "london-exhibition-shared-1", 48),
@@ -692,12 +894,20 @@ export const LONDON_MAP_PACK: MapPack = {
     roadWidth: 10,
     shoulderWidth: 1.5,
     roadSurfaces: [
-      roadSurface("london-quiet-loop", [londonNodes.queenGateSouth.position, londonNodes.quietWestSouth.position, londonNodes.quietWestNorth.position, londonNodes.queenGateCromwell.position], 7.2, ["london-local-west", "london-quiet-north", "london-cromwell-local-east"]),
-      roadSurface("london-queen-gate", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position], 7.6, ["london-queen-gate-north-1", "london-queen-gate-north-2", "london-queen-gate-south-1", "london-queen-gate-south-2"]),
-      roadSurface("london-cromwell-west", [londonNodes.queenGateCromwell.position, londonNodes.exhibitionCromwell.position], 11.4, ["london-cromwell-east-1", "london-cromwell-east-bus", "london-cromwell-west-2"], "lane_divider"),
-      roadSurface("london-cromwell-east", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], 7.6, ["london-cromwell-east-2", "london-cromwell-west-1"]),
+      roadSurface("london-quiet-loop", [londonNodes.queenGateSouth.position, londonNodes.quietWestSouth.position, londonNodes.quietWestNorth.position, londonNodes.queenGateCromwell.position], 7.2, ["london-local-west", "london-quiet-north", "london-cromwell-local-east", "london-local-east-opposite", "london-quiet-south-opposite", "london-cromwell-local-west-opposite"], "standard", [
+        roadMarking("london-quiet-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.quietWestSouth.position, londonNodes.quietWestNorth.position, londonNodes.queenGateCromwell.position], "white"),
+      ]),
+      roadSurface("london-queen-gate", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position], 7.6, ["london-queen-gate-north-1", "london-queen-gate-north-2", "london-queen-gate-south-1", "london-queen-gate-south-2"], "standard", [
+        roadMarking("london-queen-gate-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position], "white"),
+      ]),
+      roadSurface("london-cromwell-west", [point(-108, -30.3), point(42, -30.3)], 11.4, ["london-cromwell-east-1", "london-cromwell-east-bus", "london-cromwell-west-2"], "standard", [
+        roadMarking("london-cromwell-bus-divider", "lane_solid", [point(-108, -28.6), point(42, -28.6)], "white"),
+        roadMarking("london-cromwell-centre-west", "centre_dashed", [point(-108, -32), point(42, -32)], "white"),
+        roadMarking("london-cromwell-box", "box_junction", [point(30, -43), point(54, -43), point(54, -21), point(30, -21), point(30, -43)], "yellow"),
+      ]),
+      roadSurface("london-cromwell-east", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], 7.6, ["london-cromwell-east-2", "london-cromwell-west-1"], "standard", [roadMarking("london-cromwell-centre-east", "centre_dashed", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], "white")]),
       roadSurface("london-east-road", [londonNodes.cromwellEast.position, londonNodes.thurloeEast.position], 7.2, ["london-east-north"]),
-      roadSurface("london-thurloe-place", [londonNodes.thurloeEast.position, londonNodes.exhibitionThurloe.position, londonNodes.queenGateThurloe.position], 7.2, ["london-thurloe-west-1", "london-thurloe-west-2"], "lane_divider"),
+      roadSurface("london-thurloe-place", [londonNodes.thurloeEast.position, londonNodes.exhibitionThurloe.position, londonNodes.queenGateThurloe.position], 7.2, ["london-thurloe-west-1", "london-thurloe-west-2"]),
       roadSurface("london-exhibition-road", [londonNodes.exhibitionCromwell.position, londonNodes.exhibitionMid.position, londonNodes.exhibitionThurloe.position], 7, ["london-exhibition-shared-1", "london-exhibition-shared-2"], "shared_space"),
     ],
     blocks: [
@@ -937,9 +1147,9 @@ export const LONDON_LESSONS: readonly LessonDefinition[] = [
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 12, cyclists: 5 },
     checkpoints: [
-      "london-cromwell-signal",
       "london-bus-lane",
       "london-box-junction",
+      "london-cromwell-signal",
       "london-finish",
     ],
     coachPrompts: [

@@ -6,6 +6,7 @@ import {
   Color3,
   Color4,
   DirectionalLight,
+  DynamicTexture,
   Engine,
   HemisphericLight,
   Mesh,
@@ -79,6 +80,63 @@ export const MAX_HORIZONTAL_FOV = (100 * Math.PI) / 180;
 export const DEFAULT_HORIZONTAL_FOV = (72 * Math.PI) / 180;
 export const MAX_STEERING_WHEEL_SPIN = 0.95;
 export const COCKPIT_DASH_DRIVER_Z = 0.28;
+export const PLAYER_GUIDANCE_HALF_WIDTH_M = 0.91;
+export const GUIDANCE_LATERAL_CLEARANCE_M = 0.3;
+export const WORLD_LAYER_MASK = 0x0fffffff;
+export const GUIDANCE_LAYER_MASK = 0x10000000;
+export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
+
+/** Keeps a checkpoint target wholly inside its authored lane. */
+export function resolveCheckpointTargetWidth(laneWidthM: number): number {
+  return Math.max(0, Math.min(2.4, laneWidthM - 0.6));
+}
+
+/** Keeps each chevron, including its stroke, inside the guidance envelope. */
+export function resolveRouteChevronHalfSpan(laneWidthM: number): number {
+  return Math.max(0.32, Math.min(0.72, (laneWidthM - 0.8) / 2 - 0.12));
+}
+
+/**
+ * Resolves the single simulation-owned route occurrence whose chevrons may be
+ * rendered. Overtaking owns the guidance channel while active and suppresses
+ * the normal route stream so two competing lanes are never highlighted.
+ */
+export function resolveAuthoritativeRouteIndex(
+  routeLength: number,
+  guidance: Pick<SimulationSnapshot["guidance"], "owner" | "status" | "blockingReason">,
+): number | null {
+  if (
+    routeLength <= 0 ||
+    guidance.status === "inactive" ||
+    guidance.status === "complete" ||
+    guidance.owner?.kind !== "route"
+  ) {
+    return null;
+  }
+  const authoritativeIndex = guidance.owner.routeIndex;
+  if (
+    authoritativeIndex !== null &&
+    authoritativeIndex >= 0 &&
+    authoritativeIndex < routeLength
+  ) {
+    return authoritativeIndex;
+  }
+  return null;
+}
+
+/** Avoids stacking an amber lane cue directly on the active cyan checkpoint. */
+export function guidanceCueOverlapsCheckpoint(
+  cue: Pick<NonNullable<SimulationSnapshot["guidance"]["cue"]>, "laneId" | "distanceAlongM"> | null,
+  checkpoint: Pick<AuthoredCheckpoint, "laneId" | "distanceAlongM"> | null,
+): boolean {
+  return Boolean(
+    cue &&
+      checkpoint &&
+      checkpoint.laneId === cue.laneId &&
+      checkpoint.distanceAlongM !== null &&
+      Math.abs(checkpoint.distanceAlongM - cue.distanceAlongM) <= 2.5,
+  );
+}
 
 export function clampHorizontalFieldOfView(value: number): number {
   return clamp(value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV);
@@ -165,6 +223,17 @@ export interface GameCanvasLesson {
       | { readonly type: "start" }
       | { readonly type: "route_progress"; readonly value: number }
       | { readonly type: "checkpoint"; readonly checkpointId: string }
+      | {
+          readonly type: "maneuver_phase";
+          readonly maneuverId: string;
+          readonly phase:
+            | "approach"
+            | "observe"
+            | "pass"
+            | "establish_clearance"
+            | "return"
+            | "complete";
+        }
       | { readonly type: "rule_event"; readonly ruleCode: string };
   }[];
   readonly assessedRules?: readonly string[];
@@ -178,6 +247,30 @@ export interface GameCanvasLesson {
     readonly fromCountryId: string;
     readonly toCountryId: string;
     readonly message: string;
+  }[];
+  readonly maneuvers?: readonly {
+    readonly id: string;
+    readonly kind: "overtake";
+    readonly normalLaneId: string;
+    readonly passingLaneId: string;
+    readonly corridorStart: { readonly laneId: string; readonly distanceAlongM: number };
+    readonly corridorEnd: { readonly laneId: string; readonly distanceAlongM: number };
+    readonly leadVehicleStart: {
+      readonly laneId: string;
+      readonly distanceAlongM: number;
+    };
+    readonly leadVehicleSpeedFactor: number;
+    readonly phaseAnchors: Readonly<{
+      approach: { readonly laneId: string; readonly distanceAlongM: number };
+      observe: { readonly laneId: string; readonly distanceAlongM: number };
+      pass: { readonly laneId: string; readonly distanceAlongM: number };
+      return: { readonly laneId: string; readonly distanceAlongM: number };
+      complete: { readonly laneId: string; readonly distanceAlongM: number };
+    }>;
+    readonly predictedClearSeconds: number;
+    readonly returnStandstillGapM: number;
+    readonly returnHeadwaySeconds: number;
+    readonly sourceReferenceIds: readonly string[];
   }[];
 }
 
@@ -197,6 +290,23 @@ export interface GameCanvasLane {
   readonly localSpeedUnit?: "mph" | "kmh" | "km/h";
   readonly successors?: readonly string[];
   readonly adjacentLaneIds?: readonly string[];
+  readonly connectorRanges?: readonly {
+    readonly startDistanceAlongM: number;
+    readonly endDistanceAlongM: number;
+    readonly conflictZoneId?: string;
+  }[];
+}
+
+/** Connector tapers are navigation-free junction geometry, not lane targets. */
+export function isLaneGuidanceDistanceAllowed(
+  lane: GameCanvasLane,
+  distanceAlongM: number,
+): boolean {
+  return !(lane.connectorRanges ?? []).some(
+    (range) =>
+      distanceAlongM >= range.startDistanceAlongM - 0.05 &&
+      distanceAlongM <= range.endDistanceAlongM + 0.05,
+  );
 }
 
 /** Structural map contract; existing MapPack objects can be passed directly. */
@@ -213,13 +323,25 @@ export interface GameCanvasMapPack {
       readonly centerline: readonly GameCanvasPoint[];
       readonly widthM: number;
       readonly laneIds: readonly string[];
-      readonly marking:
-        | "none"
-        | "center_line"
-        | "lane_divider"
+      readonly surfaceType:
+        | "standard"
         | "roundabout"
         | "shared_space"
-        | "terminal";
+        | "terminal"
+        | "orientation";
+      readonly markings: readonly {
+        readonly id: string;
+        readonly style:
+          | "centre_dashed"
+          | "centre_solid"
+          | "lane_dashed"
+          | "lane_solid"
+          | "edge_solid"
+          | "give_way"
+          | "box_junction";
+        readonly points: readonly GameCanvasPoint[];
+        readonly color?: "white" | "yellow";
+      }[];
     }[];
     blocks: readonly {
       readonly id: string;
@@ -504,6 +626,22 @@ interface AuthoredCheckpoint {
   readonly x: number;
   readonly z: number;
   readonly heading: number;
+  readonly laneId: string | null;
+  readonly laneWidthM: number;
+  readonly distanceAlongM: number | null;
+}
+
+interface GuidanceVisual {
+  readonly id: string;
+  readonly meshes: readonly Mesh[];
+  readonly dispose?: () => void;
+}
+
+interface RouteChevronVisual {
+  readonly routeIndex: number;
+  readonly laneId: string;
+  readonly distanceAlongM: number;
+  readonly meshes: readonly Mesh[];
 }
 
 interface TrafficControlMaterials {
@@ -931,6 +1069,84 @@ interface ResolvedLaneAnchor extends GameCanvasPoint {
   readonly distanceOnSegment: number;
 }
 
+interface LanePointProjection {
+  readonly distance: number;
+  readonly distanceAlongM: number;
+  readonly heading: number;
+}
+
+function projectPointToLane(
+  lane: GameCanvasLane,
+  point: GameCanvasPoint,
+): LanePointProjection | null {
+  let accumulated = 0;
+  let best: LanePointProjection | null = null;
+  for (let index = 0; index < lane.centerline.length - 1; index += 1) {
+    const start = lane.centerline[index];
+    const end = lane.centerline[index + 1];
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.001) continue;
+    const amount = clamp(
+      ((point.x - start.x) * dx + (point.z - start.z) * dz) / (length * length),
+      0,
+      1,
+    );
+    const x = start.x + dx * amount;
+    const z = start.z + dz * amount;
+    const distance = Math.hypot(point.x - x, point.z - z);
+    if (!best || distance < best.distance) {
+      best = {
+        distance,
+        distanceAlongM: accumulated + length * amount,
+        heading: Math.atan2(dx, dz),
+      };
+    }
+    accumulated += length;
+  }
+  return best;
+}
+
+export interface CheckpointCrossingInput {
+  readonly lane: GameCanvasLane;
+  readonly distanceAlongM: number;
+  readonly previous: GameCanvasPoint;
+  readonly current: GameCanvasPoint;
+}
+
+/**
+ * Requires a forward crossing while the vehicle centre is inside the authored
+ * lane envelope. Merely approaching from the adjacent lane never activates it.
+ */
+export function isAuthoredCheckpointCrossing({
+  lane,
+  distanceAlongM,
+  previous,
+  current,
+}: CheckpointCrossingInput): boolean {
+  const previousProjection = projectPointToLane(lane, previous);
+  const currentProjection = projectPointToLane(lane, current);
+  if (!previousProjection || !currentProjection) return false;
+  const lateralTolerance = Math.max(
+    0.1,
+    (lane.widthM ?? 3.2) / 2 -
+      PLAYER_GUIDANCE_HALF_WIDTH_M -
+      GUIDANCE_LATERAL_CLEARANCE_M,
+  );
+  if (
+    previousProjection.distance > lateralTolerance ||
+    currentProjection.distance > lateralTolerance
+  ) {
+    return false;
+  }
+  const crossingSlopM = 0.12;
+  return (
+    previousProjection.distanceAlongM < distanceAlongM - crossingSlopM &&
+    currentProjection.distanceAlongM >= distanceAlongM - crossingSlopM
+  );
+}
+
 function resolveLaneAnchor(
   lanes: readonly GameCanvasLane[],
   anchor: { readonly laneId: string; readonly distanceAlongM: number },
@@ -974,14 +1190,24 @@ function scenarioCheckpoints(
       ? resolveLaneAnchor(mapPack.laneGraph.lanes, checkpoint.anchor)
       : null;
     if (anchored) {
+      const lane = mapPack.laneGraph.lanes.find(
+        (candidate) => candidate.id === checkpoint.anchor?.laneId,
+      );
       return [{
         id: checkpoint.id,
         label: checkpoint.label,
         x: anchored.x,
         z: anchored.z,
         heading: anchored.heading,
+        laneId: checkpoint.anchor?.laneId ?? null,
+        laneWidthM: lane?.widthM ?? 3.2,
+        distanceAlongM: checkpoint.anchor?.distanceAlongM ?? null,
       }];
     }
+    const legacyLaneId = checkpoint.laneId ?? null;
+    const legacyLane = legacyLaneId
+      ? mapPack.laneGraph.lanes.find((candidate) => candidate.id === legacyLaneId)
+      : null;
     return checkpoint.pose
       ? [{
           id: checkpoint.id,
@@ -989,6 +1215,9 @@ function scenarioCheckpoints(
           x: checkpoint.pose.position.x,
           z: checkpoint.pose.position.z,
           heading: degreesToRadians(checkpoint.pose.headingDeg),
+          laneId: legacyLaneId,
+          laneWidthM: legacyLane?.widthM ?? 3.2,
+          distanceAlongM: null,
         }]
       : [];
   });
@@ -1145,6 +1374,11 @@ class BabylonGameSession {
   private instruction = "Settle into the correct lane and drive toward the first junction.";
   private readonly routePoints: readonly GameCanvasPoint[];
   private readonly authoredCheckpoints: readonly AuthoredCheckpoint[];
+  private readonly checkpointVisuals: GuidanceVisual[] = [];
+  private readonly routeChevronVisuals: RouteChevronVisual[] = [];
+  private guidanceCueVisual: GuidanceVisual | null = null;
+  private guidanceCueKey: string | null = null;
+  private readonly maneuverPhases = new Map<string, string>();
   private readonly triggeredPrompts = new Set<string>();
   private routeLength = 0;
   private routeProgress = 0;
@@ -1224,7 +1458,19 @@ class BabylonGameSession {
     this.displayedX = start.x;
     this.displayedZ = start.z;
     this.displayedHeading = start.heading;
-    this.checkpointLabel = this.authoredCheckpoints[0]?.label ?? "Start";
+    while (
+      this.checkpointIndex < this.authoredCheckpoints.length &&
+      Math.hypot(
+        start.x - this.authoredCheckpoints[this.checkpointIndex].x,
+        start.z - this.authoredCheckpoints[this.checkpointIndex].z,
+      ) < 2.5
+    ) {
+      this.checkpointLabel = this.authoredCheckpoints[this.checkpointIndex].label;
+      this.checkpointIndex += 1;
+    }
+    this.checkpointLabel =
+      this.authoredCheckpoints[Math.max(0, this.checkpointIndex - 1)]?.label ??
+      "Start";
     const startPrompt = options.lesson?.coachPrompts.find(
       (prompt) => prompt.trigger.type === "start",
     );
@@ -1284,6 +1530,7 @@ class BabylonGameSession {
     this.thirdCamera.minZ = 0.1;
     this.thirdCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
     this.thirdCamera.fov = clampHorizontalFieldOfView(options.fieldOfView);
+    this.thirdCamera.layerMask = PRIMARY_CAMERA_LAYER_MASK;
 
     this.firstCamera = new UniversalCamera(
       "first-person-camera",
@@ -1294,6 +1541,7 @@ class BabylonGameSession {
     this.firstCamera.minZ = 0.04;
     this.firstCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
     this.firstCamera.fov = clampHorizontalFieldOfView(options.fieldOfView);
+    this.firstCamera.layerMask = PRIMARY_CAMERA_LAYER_MASK;
 
     this.rearCamera = new UniversalCamera(
       "rear-view-camera",
@@ -1304,6 +1552,7 @@ class BabylonGameSession {
     this.rearCamera.minZ = 0.08;
     this.rearCamera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
     this.rearCamera.fov = (64 * Math.PI) / 180;
+    this.rearCamera.layerMask = WORLD_LAYER_MASK;
     this.rearCamera.viewport = new Viewport(0.36, 0.845, 0.28, 0.125);
 
     this.setCameraMode(options.cameraMode, false);
@@ -1514,6 +1763,7 @@ class BabylonGameSession {
 
     const interpolation = this.paused ? 1 : this.accumulator / FIXED_STEP;
     this.updatePlayerVisuals(interpolation);
+    this.updateGuidanceVisuals();
     this.updateCamera(frameSeconds);
     this.updateIndicatorLights(frameSeconds);
     this.scene.render();
@@ -1534,6 +1784,12 @@ class BabylonGameSession {
         1,
       ),
       viewHeading: this.playerState.heading + quickLookAngle,
+      observe:
+        input.quickLook <= -0.55
+          ? "left"
+          : input.quickLook >= 0.55 && input.quickLook < 1.5
+            ? "right"
+            : undefined,
     };
     const snapshot = this.simulation.step(dt, simulationInput);
     this.applySimulationSnapshot(snapshot);
@@ -1616,7 +1872,7 @@ class BabylonGameSession {
       }
     }
 
-    this.advanceAuthoredCheckpoints(lesson, state);
+    this.advanceAuthoredCheckpoints(lesson);
     for (const prompt of lesson.coachPrompts) {
       if (
         prompt.trigger.type === "route_progress" &&
@@ -1634,9 +1890,13 @@ class BabylonGameSession {
     const checkpointsComplete =
       this.authoredCheckpoints.length === 0 ||
       this.checkpointIndex >= this.authoredCheckpoints.length;
+    const maneuversComplete = (this.simulationSnapshot.maneuvers ?? []).every(
+      (maneuver) => maneuver.phase === "complete",
+    );
     if (
       this.simulationSnapshot.status !== "complete" &&
       checkpointsComplete &&
+      maneuversComplete &&
       (endpointReached || this.routeProgress >= 0.97)
     ) {
       this.simulation.completeLesson();
@@ -1892,7 +2152,7 @@ class BabylonGameSession {
       }
     }
 
-    this.advanceAuthoredCheckpoints(lesson, state);
+    this.advanceAuthoredCheckpoints(lesson);
     for (const prompt of lesson.coachPrompts) {
       if (
         prompt.trigger.type === "route_progress" &&
@@ -1909,10 +2169,14 @@ class BabylonGameSession {
     const checkpointsComplete =
       this.authoredCheckpoints.length === 0 ||
       this.checkpointIndex >= this.authoredCheckpoints.length;
+    const maneuversComplete = (this.simulationSnapshot.maneuvers ?? []).every(
+      (maneuver) => maneuver.phase === "complete",
+    );
     if (
       !this.completed &&
       lesson.kind !== "free_drive" &&
       checkpointsComplete &&
+      maneuversComplete &&
       (endpointReached || this.routeProgress >= 0.97)
     ) {
       this.completed = true;
@@ -2146,23 +2410,17 @@ class BabylonGameSession {
     return true;
   }
 
-  private advanceAuthoredCheckpoints(
-    lesson: GameCanvasLesson,
-    state: PlayerState,
-  ) {
+  private advanceAuthoredCheckpoints(lesson: GameCanvasLesson) {
+    const reachedCheckpointIds = new Set(
+      this.simulationSnapshot.reachedCheckpointIds,
+    );
     while (this.checkpointIndex < this.authoredCheckpoints.length) {
       const next = this.authoredCheckpoints[this.checkpointIndex];
-      if (Math.hypot(state.x - next.x, state.z - next.z) > 6) break;
+      if (!reachedCheckpointIds.has(next.id)) break;
       this.checkpoint = { x: next.x, z: next.z, heading: next.heading };
-      this.simulation.setCheckpoint({
-        id: next.id,
-        x: next.x,
-        z: next.z,
-        heading: next.heading,
-        radius: 6,
-      });
       this.checkpointLabel = next.label;
       this.checkpointIndex += 1;
+      this.updateGuidanceVisuals();
       this.emit("coaching", `Checkpoint: ${next.label}.`);
       const checkpointPrompt = lesson.coachPrompts.find(
         (prompt) =>
@@ -2537,6 +2795,7 @@ class BabylonGameSession {
     this.activeTrafficSide = snapshot.trafficSide;
     this.applySimulationNpcSnapshots(snapshot);
     this.updateAuthoredSignalVisuals();
+    this.updateManeuverCoaching(snapshot);
 
     const npcHonkActive = snapshot.honk.active;
     if (npcHonkActive && !this.lastSimulationHonkActive) {
@@ -2544,6 +2803,25 @@ class BabylonGameSession {
       this.playHornTone();
     }
     this.lastSimulationHonkActive = npcHonkActive;
+  }
+
+  private updateManeuverCoaching(snapshot: SimulationSnapshot) {
+    for (const maneuver of snapshot.maneuvers ?? []) {
+      const previousPhase = this.maneuverPhases.get(maneuver.id);
+      if (previousPhase === maneuver.phase) continue;
+      this.maneuverPhases.set(maneuver.id, maneuver.phase);
+      const prompt = this.options.lesson?.coachPrompts.find(
+        (candidate) =>
+          candidate.trigger.type === "maneuver_phase" &&
+          candidate.trigger.maneuverId === maneuver.id &&
+          candidate.trigger.phase === maneuver.phase &&
+          !this.triggeredPrompts.has(candidate.id),
+      );
+      if (!prompt) continue;
+      this.triggeredPrompts.add(prompt.id);
+      this.instruction = prompt.message;
+      this.emit("coaching", prompt.message, "info");
+    }
   }
 
   private processSimulationEvents(events: readonly SimulationRuleEvent[]) {
@@ -2827,6 +3105,16 @@ class BabylonGameSession {
 
     const grass = makeMaterial(scene, "scenario-ground", new Color3(0.24, 0.39, 0.25));
     const asphalt = makeMaterial(scene, "scenario-asphalt", new Color3(0.105, 0.13, 0.145));
+    const sharedSpace = makeMaterial(
+      scene,
+      "scenario-shared-space",
+      new Color3(0.25, 0.255, 0.245),
+    );
+    const terminalSurface = makeMaterial(
+      scene,
+      "scenario-terminal-surface",
+      new Color3(0.145, 0.16, 0.17),
+    );
     const routeMaterial = makeMaterial(
       scene,
       "scenario-route",
@@ -2835,6 +3123,11 @@ class BabylonGameSession {
     );
     routeMaterial.alpha = 0.58;
     const laneMaterial = makeMaterial(scene, "scenario-marking", new Color3(0.88, 0.88, 0.79));
+    const yellowMarkingMaterial = makeMaterial(
+      scene,
+      "scenario-yellow-marking",
+      new Color3(0.9, 0.68, 0.08),
+    );
     const dark = makeMaterial(scene, "scenario-fixture", new Color3(0.08, 0.1, 0.1));
     const stopRed = makeMaterial(scene, "scenario-stop", new Color3(0.72, 0.08, 0.06));
     const yieldGold = makeMaterial(scene, "scenario-yield", new Color3(0.92, 0.68, 0.13));
@@ -2863,7 +3156,6 @@ class BabylonGameSession {
     );
     setMeshMaterial(ground, grass);
 
-    const routeLaneIds = new Set(this.options.lesson?.route ?? []);
     const roadSurfaces = mapPack.geometry.roadSurfaces?.length
       ? mapPack.geometry.roadSurfaces
       : mapPack.laneGraph.lanes.map((lane) => ({
@@ -2871,9 +3163,16 @@ class BabylonGameSession {
           centerline: lane.centerline,
           widthM: lane.widthM ?? mapPack.geometry.roadWidth,
           laneIds: [lane.id],
-          marking: "none" as const,
+          surfaceType: "standard" as const,
+          markings: [],
         }));
     for (const surface of roadSurfaces) {
+      const surfaceMaterial =
+        surface.surfaceType === "shared_space"
+          ? sharedSpace
+          : surface.surfaceType === "terminal"
+            ? terminalSurface
+            : asphalt;
       for (let index = 0; index < surface.centerline.length - 1; index += 1) {
         const start = surface.centerline[index];
         const end = surface.centerline[index + 1];
@@ -2883,44 +3182,54 @@ class BabylonGameSession {
           end,
           surface.widthM,
           0.07,
-          asphalt,
+          surfaceMaterial,
         );
-        if (surface.marking !== "shared_space" && surface.marking !== "roundabout") {
-          const edgeOffset = Math.max(0.5, surface.widthM / 2 - 0.2);
-          this.createOffsetFlatSegment(
-            `road-edge-${surface.id}-${index}-left`,
-            start,
-            end,
-            edgeOffset,
-            0.11,
-            0.118,
-            laneMaterial,
-          );
-          this.createOffsetFlatSegment(
-            `road-edge-${surface.id}-${index}-right`,
-            start,
-            end,
-            -edgeOffset,
-            0.11,
-            0.118,
-            laneMaterial,
-          );
-        }
       }
-      if (surface.marking === "center_line" || surface.marking === "lane_divider") {
-        this.createDashedPath(
-          `road-centre-${surface.id}`,
-          surface.centerline,
-          0.11,
+      for (const marking of surface.markings) {
+        const material =
+          marking.color === "yellow" ? yellowMarkingMaterial : laneMaterial;
+        if (
+          marking.style === "centre_dashed" ||
+          marking.style === "lane_dashed" ||
+          marking.style === "give_way"
+        ) {
+          this.createDashedPath(
+            `road-marking-${surface.id}-${marking.id}`,
+            marking.points,
+            marking.style === "give_way" ? 0.24 : 0.11,
+            0.12,
+            material,
+            marking.style === "centre_dashed"
+              ? 3.2
+              : marking.style === "give_way"
+                ? 0.65
+                : 2.2,
+            marking.style === "centre_dashed"
+              ? 4.3
+              : marking.style === "give_way"
+                ? 0.55
+                : 3.4,
+          );
+          continue;
+        }
+        this.createSolidPath(
+          `road-marking-${surface.id}-${marking.id}`,
+          marking.points,
+          marking.style === "box_junction" ? 0.18 : 0.11,
           0.12,
-          laneMaterial,
-          surface.marking === "center_line" ? 3.2 : 2.2,
-          surface.marking === "center_line" ? 4.3 : 3.4,
+          material,
         );
       }
     }
-    for (const lane of mapPack.laneGraph.lanes) {
-      if (routeLaneIds.has(lane.id)) this.createRouteChevrons(lane, routeMaterial);
+    for (const [routeIndex, laneId] of (this.options.lesson?.route ?? []).entries()) {
+      const lane = mapPack.laneGraph.lanes.find((candidate) => candidate.id === laneId);
+      if (!lane || lane.role === "connector") continue;
+      this.createRouteChevrons(
+        lane,
+        routeMaterial,
+        routeIndex,
+        mapPack.laneGraph.conflictZones,
+      );
     }
 
     const random = seededUnit(this.options.lesson?.trafficSeed ?? 47);
@@ -3218,14 +3527,11 @@ class BabylonGameSession {
     }
 
     for (const checkpoint of this.authoredCheckpoints) {
-      const marker = MeshBuilder.CreateTorus(
-        `checkpoint-${checkpoint.id}`,
-        { diameter: 4.5, thickness: 0.16, tessellation: 18 },
-        scene,
+      this.checkpointVisuals.push(
+        this.createCheckpointTarget(checkpoint, checkpointMaterial),
       );
-      marker.position.set(checkpoint.x, 0.22, checkpoint.z);
-      setMeshMaterial(marker, checkpointMaterial);
     }
+    this.updateGuidanceVisuals();
   }
 
   /**
@@ -3495,11 +3801,11 @@ class BabylonGameSession {
     width: number,
     y: number,
     material: StandardMaterial,
-  ) {
+  ): Mesh | undefined {
     const dx = end.x - start.x;
     const dz = end.z - start.z;
     const length = Math.hypot(dx, dz);
-    if (length < 0.01) return;
+    if (length < 0.01) return undefined;
     const segment = createBox(
       this.scene,
       name,
@@ -3508,6 +3814,7 @@ class BabylonGameSession {
       material,
     );
     segment.rotation.y = Math.atan2(dx, dz);
+    return segment;
   }
 
   private createOffsetFlatSegment(
@@ -3574,13 +3881,35 @@ class BabylonGameSession {
     }
   }
 
+  private createSolidPath(
+    name: string,
+    points: readonly GameCanvasPoint[],
+    width: number,
+    y: number,
+    material: StandardMaterial,
+  ) {
+    for (let index = 0; index < points.length - 1; index += 1) {
+      this.createFlatSegment(
+        `${name}-${index}`,
+        points[index],
+        points[index + 1],
+        width,
+        y,
+        material,
+      );
+    }
+  }
+
   private createRouteChevrons(
     lane: GameCanvasLane,
     material: StandardMaterial,
+    routeIndex: number,
+    conflictZones: GameCanvasMapPack["laneGraph"]["conflictZones"],
   ) {
     let travelled = 0;
-    let nextChevronAt = 8;
+    let nextChevronAt = 7;
     let index = 0;
+    const halfSpan = resolveRouteChevronHalfSpan(lane.widthM ?? 3.2);
     for (let segmentIndex = 0; segmentIndex < lane.centerline.length - 1; segmentIndex += 1) {
       const start = lane.centerline[segmentIndex];
       const end = lane.centerline[segmentIndex + 1];
@@ -3596,27 +3925,313 @@ class BabylonGameSession {
         const along = nextChevronAt - travelled;
         const tip = { x: start.x + ux * along, z: start.z + uz * along };
         const back = { x: tip.x - ux * 1.45, z: tip.z - uz * 1.45 };
-        this.createFlatSegment(
+        const inConnectorRange = !isLaneGuidanceDistanceAllowed(
+          lane,
+          nextChevronAt,
+        );
+        const inConflictZone = conflictZones.some(
+          (zone) =>
+            zone.laneIds.includes(lane.id) &&
+            (isPointInPolygon(tip, zone.polygon) || isPointInPolygon(back, zone.polygon)),
+        );
+        if (inConnectorRange || inConflictZone) {
+          nextChevronAt += 12;
+          continue;
+        }
+        const left = this.createFlatSegment(
           `route-chevron-${lane.id}-${index}-left`,
-          { x: back.x + sideX * 0.82, z: back.z + sideZ * 0.82 },
+          { x: back.x + sideX * halfSpan, z: back.z + sideZ * halfSpan },
           tip,
           0.22,
           0.145,
           material,
         );
-        this.createFlatSegment(
+        const right = this.createFlatSegment(
           `route-chevron-${lane.id}-${index}-right`,
-          { x: back.x - sideX * 0.82, z: back.z - sideZ * 0.82 },
+          { x: back.x - sideX * halfSpan, z: back.z - sideZ * halfSpan },
           tip,
           0.22,
           0.145,
           material,
         );
-        nextChevronAt += 18;
+        const meshes = [left, right].filter((mesh): mesh is Mesh => Boolean(mesh));
+        for (const mesh of meshes) mesh.layerMask = GUIDANCE_LAYER_MASK;
+        this.routeChevronVisuals.push({
+          routeIndex,
+          laneId: lane.id,
+          distanceAlongM: nextChevronAt,
+          meshes,
+        });
+        nextChevronAt += 12;
         index += 1;
       }
       travelled += length;
     }
+  }
+
+  private createCheckpointTarget(
+    checkpoint: AuthoredCheckpoint,
+    material: StandardMaterial,
+  ): GuidanceVisual {
+    const meshes: Mesh[] = [];
+    const targetWidth = resolveCheckpointTargetWidth(checkpoint.laneWidthM);
+    const halfWidth = targetWidth / 2;
+    const halfLength = 0.72;
+    const armLength = Math.min(0.42, targetWidth * 0.22);
+    const forward = {
+      x: Math.sin(checkpoint.heading),
+      z: Math.cos(checkpoint.heading),
+    };
+    const side = { x: forward.z, z: -forward.x };
+    const point = (along: number, lateral: number): GameCanvasPoint => ({
+      x: checkpoint.x + forward.x * along + side.x * lateral,
+      z: checkpoint.z + forward.z * along + side.z * lateral,
+    });
+    for (const alongSign of [-1, 1]) {
+      for (const sideSign of [-1, 1]) {
+        const along = alongSign * halfLength;
+        const lateral = sideSign * halfWidth;
+        const alongArm = this.createFlatSegment(
+          `checkpoint-${checkpoint.id}-${alongSign}-${sideSign}-along`,
+          point(along, lateral),
+          point(along - alongSign * armLength, lateral),
+          0.13,
+          0.155,
+          material,
+        );
+        const sideArm = this.createFlatSegment(
+          `checkpoint-${checkpoint.id}-${alongSign}-${sideSign}-side`,
+          point(along, lateral),
+          point(along, lateral - sideSign * armLength),
+          0.13,
+          0.155,
+          material,
+        );
+        if (alongArm) meshes.push(alongArm);
+        if (sideArm) meshes.push(sideArm);
+      }
+    }
+
+    const texture = new DynamicTexture(
+      `checkpoint-${checkpoint.id}-label-texture`,
+      { width: 512, height: 128 },
+      this.scene,
+      false,
+    );
+    texture.hasAlpha = true;
+    const context = texture.getContext() as unknown as CanvasRenderingContext2D;
+    context.clearRect(0, 0, 512, 128);
+    context.fillStyle = "rgba(8, 29, 31, 0.88)";
+    context.beginPath();
+    context.roundRect(10, 12, 492, 104, 24);
+    context.fill();
+    context.fillStyle = "#81fff0";
+    context.font = "700 38px Arial";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("◆  CHECKPOINT", 256, 64);
+    texture.update(false);
+    const labelMaterial = new StandardMaterial(
+      `checkpoint-${checkpoint.id}-label-material`,
+      this.scene,
+    );
+    labelMaterial.diffuseTexture = texture;
+    labelMaterial.opacityTexture = texture;
+    labelMaterial.emissiveTexture = texture;
+    labelMaterial.disableLighting = true;
+    labelMaterial.backFaceCulling = false;
+    const label = MeshBuilder.CreatePlane(
+      `checkpoint-${checkpoint.id}-label`,
+      { width: Math.min(1.75, targetWidth * 0.78), height: 0.44 },
+      this.scene,
+    );
+    label.position.set(
+      checkpoint.x - forward.x * 0.03,
+      0.165,
+      checkpoint.z - forward.z * 0.03,
+    );
+    label.rotation.x = Math.PI / 2;
+    label.rotation.y = checkpoint.heading;
+    setMeshMaterial(label, labelMaterial);
+    meshes.push(label);
+    for (const mesh of meshes) mesh.layerMask = GUIDANCE_LAYER_MASK;
+    return { id: checkpoint.id, meshes };
+  }
+
+  private updateGuidanceVisuals() {
+    for (const [index, visual] of this.checkpointVisuals.entries()) {
+      const enabled =
+        index === this.checkpointIndex &&
+        this.simulationSnapshot.nextCheckpointId === visual.id;
+      for (const mesh of visual.meshes) mesh.setEnabled(enabled);
+    }
+
+    const lesson = this.options.lesson;
+    const mapPack = this.options.mapPack;
+    if (!lesson || !mapPack) {
+      this.updateGuidanceCueVisual();
+      return;
+    }
+    const visibleRouteIndex = resolveAuthoritativeRouteIndex(
+      lesson.route.length,
+      this.simulationSnapshot.guidance,
+    );
+    const currentLaneId =
+      visibleRouteIndex === null ? null : lesson.route[visibleRouteIndex];
+    const currentLane = mapPack.laneGraph.lanes.find(
+      (candidate) => candidate.id === currentLaneId,
+    );
+    const currentProjection = currentLane
+      ? projectPointToLane(currentLane, {
+          x: this.playerState.x,
+          z: this.playerState.z,
+        })
+      : null;
+    for (const visual of this.routeChevronVisuals) {
+      let enabled = visual.routeIndex === visibleRouteIndex;
+      const playerOccupiesVisibleLane = Boolean(
+        currentProjection &&
+          currentLane &&
+          currentProjection.distance <= (currentLane.widthM ?? 3.2) / 2 + 0.5,
+      );
+      if (enabled && playerOccupiesVisibleLane && currentProjection) {
+        enabled =
+          visual.distanceAlongM > currentProjection.distanceAlongM + 2 &&
+          visual.distanceAlongM < currentProjection.distanceAlongM + 58;
+      } else if (enabled) {
+        enabled = visual.distanceAlongM < 42;
+      }
+      for (const mesh of visual.meshes) mesh.setEnabled(enabled);
+    }
+    this.updateGuidanceCueVisual();
+  }
+
+  private updateGuidanceCueVisual() {
+    const guidance = this.simulationSnapshot.guidance;
+    const activeCheckpoint = this.authoredCheckpoints.find(
+      (checkpoint) => checkpoint.id === this.simulationSnapshot.nextCheckpointId,
+    ) ?? null;
+    const cue =
+      guidance.owner?.kind === "route" &&
+      guidanceCueOverlapsCheckpoint(guidance.cue, activeCheckpoint)
+        ? null
+        : guidance.cue;
+    const key = guidance.owner && cue
+      ? `${guidance.owner.kind}:${cue.id}:${cue.label}:${cue.laneId}:${cue.distanceAlongM}:${guidance.status}`
+      : null;
+    if (key !== this.guidanceCueKey) {
+      if (this.guidanceCueVisual) {
+        if (this.guidanceCueVisual.dispose) {
+          this.guidanceCueVisual.dispose();
+        } else {
+          for (const mesh of this.guidanceCueVisual.meshes) mesh.dispose();
+        }
+      }
+      this.guidanceCueVisual =
+        guidance.owner && cue
+          ? this.createGuidanceCueTarget(cue, guidance.owner.kind)
+          : null;
+      this.guidanceCueKey = key;
+    }
+    if (!this.guidanceCueVisual || !cue || !guidance.owner) return;
+    const enabled =
+      guidance.owner.kind === "route" || guidance.status === "ready";
+    for (const mesh of this.guidanceCueVisual.meshes) {
+      mesh.setEnabled(enabled);
+    }
+  }
+
+  private createGuidanceCueTarget(
+    cue: NonNullable<SimulationSnapshot["guidance"]["cue"]>,
+    ownerKind: NonNullable<SimulationSnapshot["guidance"]["owner"]>["kind"],
+  ): GuidanceVisual {
+    const meshes: Mesh[] = [];
+    const width = resolveCheckpointTargetWidth(cue.widthM);
+    const halfWidth = width / 2;
+    const forward = { x: Math.sin(cue.heading), z: Math.cos(cue.heading) };
+    const side = { x: forward.z, z: -forward.x };
+    const point = (along: number, lateral: number): GameCanvasPoint => ({
+      x: cue.x + forward.x * along + side.x * lateral,
+      z: cue.z + forward.z * along + side.z * lateral,
+    });
+    const isRoute = ownerKind === "route";
+    const gateMaterial = makeMaterial(
+      this.scene,
+      `guidance-${cue.id}-material`,
+      isRoute ? new Color3(0.96, 0.64, 0.12) : new Color3(0.12, 0.75, 0.68),
+      isRoute ? new Color3(0.23, 0.12, 0.025) : new Color3(0.025, 0.18, 0.14),
+    );
+    const threshold = this.createFlatSegment(
+      `guidance-${cue.id}-threshold`,
+      point(0, -halfWidth),
+      point(0, halfWidth),
+      0.16,
+      0.16,
+      gateMaterial,
+    );
+    if (threshold) meshes.push(threshold);
+    for (const sideSign of [-1, 1]) {
+      const upright = this.createFlatSegment(
+        `guidance-${cue.id}-edge-${sideSign}`,
+        point(-0.45, sideSign * halfWidth),
+        point(0.45, sideSign * halfWidth),
+        0.16,
+        0.16,
+        gateMaterial,
+      );
+      if (upright) meshes.push(upright);
+    }
+    const texture = new DynamicTexture(
+      `guidance-${cue.id}-texture`,
+      { width: 512, height: 128 },
+      this.scene,
+      false,
+    );
+    texture.hasAlpha = true;
+    const context = texture.getContext() as unknown as CanvasRenderingContext2D;
+    context.clearRect(0, 0, 512, 128);
+    context.fillStyle = "rgba(8, 29, 31, 0.9)";
+    context.fillRect(8, 10, 496, 108);
+    context.fillStyle = isRoute ? "#ffd15b" : "#81fff0";
+    context.font = "700 34px Arial";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(cue.label, 256, 64);
+    texture.update(false);
+    const labelMaterial = new StandardMaterial(
+      `guidance-${cue.id}-label-material`,
+      this.scene,
+    );
+    labelMaterial.diffuseTexture = texture;
+    labelMaterial.opacityTexture = texture;
+    labelMaterial.emissiveTexture = texture;
+    labelMaterial.disableLighting = true;
+    labelMaterial.backFaceCulling = false;
+    const labelMesh = MeshBuilder.CreatePlane(
+      `guidance-${cue.id}-label`,
+      { width: Math.min(2.05, width * 0.9), height: 0.48 },
+      this.scene,
+    );
+    labelMesh.position.set(
+      cue.x - forward.x * 0.44,
+      0.17,
+      cue.z - forward.z * 0.44,
+    );
+    labelMesh.rotation.x = Math.PI / 2;
+    labelMesh.rotation.y = cue.heading;
+    setMeshMaterial(labelMesh, labelMaterial);
+    meshes.push(labelMesh);
+    for (const mesh of meshes) mesh.layerMask = GUIDANCE_LAYER_MASK;
+    return {
+      id: cue.id,
+      meshes,
+      dispose: () => {
+        for (const mesh of meshes) mesh.dispose();
+        labelMaterial.dispose();
+        texture.dispose();
+        gateMaterial.dispose();
+      },
+    };
   }
 
   private createSignalHead(

@@ -396,6 +396,111 @@ describe("deterministic simulation", () => {
     expect(simulation.getSnapshot().queuedNpcCount).toBe(1);
   });
 
+  it("keeps a runtime gate 150 metres directly ahead queued inside camera range", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      minRuntimeSpawnDistanceM: 70,
+      lanes: [
+        {
+          id: "visibility-lane",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 500 }],
+          width: 3.5,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 0, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -10, maxZ: 510 },
+      trafficGates: [
+        {
+          id: "visible-forward-gate",
+          laneId: "visibility-lane",
+          distance: 150,
+          desiredSpeedMps: 10,
+          allowInitialSpawn: false,
+        },
+      ],
+    });
+
+    for (let tick = 0; tick < 60; tick += 1) {
+      simulation.step(1 / 60, { viewHeading: 0 });
+    }
+    expect(simulation.getSnapshot()).toMatchObject({
+      npcs: [],
+      queuedNpcCount: 1,
+    });
+  });
+
+  it("activates an otherwise safe runtime gate about 200 metres ahead", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      minRuntimeSpawnDistanceM: 70,
+      lanes: [
+        {
+          id: "visibility-lane",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 500 }],
+          width: 3.5,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 0, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -10, maxZ: 510 },
+      trafficGates: [
+        {
+          id: "clear-forward-gate",
+          laneId: "visibility-lane",
+          distance: 200,
+          desiredSpeedMps: 10,
+          allowInitialSpawn: false,
+        },
+      ],
+    });
+
+    for (let tick = 0; tick < 12; tick += 1) {
+      simulation.step(1 / 60, { viewHeading: 0 });
+    }
+    expect(simulation.getSnapshot()).toMatchObject({
+      queuedNpcCount: 0,
+      npcs: [{ laneId: "visibility-lane" }],
+    });
+  });
+
+  it("keeps a runtime gate within the rear mirror envelope queued", () => {
+    const simulation = new SimulationCore({
+      npcCount: 1,
+      minRuntimeSpawnDistanceM: 70,
+      lanes: [
+        {
+          id: "visibility-lane",
+          points: [{ x: 0, z: 0 }, { x: 0, z: 500 }],
+          width: 3.5,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 200, heading: 0 },
+      bounds: { minX: -10, maxX: 10, minZ: -10, maxZ: 510 },
+      trafficGates: [
+        {
+          id: "visible-rear-gate",
+          laneId: "visibility-lane",
+          distance: 100,
+          desiredSpeedMps: 10,
+          allowInitialSpawn: false,
+        },
+      ],
+    });
+
+    for (let tick = 0; tick < 60; tick += 1) {
+      simulation.step(1 / 60, { viewHeading: 0 });
+    }
+    expect(simulation.getSnapshot()).toMatchObject({
+      npcs: [],
+      queuedNpcCount: 1,
+    });
+  });
+
   it("keeps a safe gap behind a stationary legal player for sixty seconds", () => {
     const simulation = new SimulationCore({
       seed: 1251,

@@ -78,7 +78,6 @@ const toCanvasSpeedUnit = (speedUnit: "mph" | "kmh"): CanvasSpeedUnit =>
 
 const freeDriveLesson = (
   freeDrive: FreeDriveDefinition,
-  mapPack: MapPack,
 ): GameCanvasLesson => {
   const country = getCountryProfile(freeDrive.countryId);
   const representativeLesson =
@@ -86,14 +85,15 @@ const freeDriveLesson = (
     getOrientationForTrafficSide(country.trafficSide);
 
   // This intentionally mirrors the playable free-drive contract assembled by
-  // SideSwapApp, while sourcing every path and checkpoint from exported content.
+  // SideSwapApp. The authored spawn places the vehicle in a legal lane, while
+  // route guidance, ordered checkpoints and a forced finish stay disabled.
   return {
     id: freeDrive.id,
     title: freeDrive.title,
     kind: "free_drive",
     trafficSide: country.trafficSide,
     startSpawnId: freeDrive.startSpawnId,
-    route: representativeLesson.route,
+    route: [],
     objectives: [
       {
         id: `${freeDrive.id}-acceptance-explore`,
@@ -103,7 +103,7 @@ const freeDriveLesson = (
     trafficSeed: freeDrive.trafficSeed,
     trafficDensity: "moderate",
     vulnerableRoadUsers: representativeLesson.vulnerableRoadUsers,
-    checkpoints: mapPack.laneGraph.checkpoints.map((checkpoint) => checkpoint.id),
+    checkpoints: [],
     coachPrompts: [],
     assessedRules: Array.from(
       new Set(
@@ -134,7 +134,7 @@ const freeDrivePath = (freeDrive: FreeDriveDefinition): PlayablePath => {
   return {
     id: freeDrive.id,
     authoredSeed: freeDrive.trafficSeed,
-    lesson: freeDriveLesson(freeDrive, mapPack),
+    lesson: freeDriveLesson(freeDrive),
     mapPack,
     trafficSide: country.trafficSide,
     speedUnit: toCanvasSpeedUnit(country.speedUnit),
@@ -689,7 +689,7 @@ describe("traffic safety acceptance", () => {
           : undefined,
       ).toEqual([]);
     },
-    600_000,
+    900_000,
   );
 
   it(

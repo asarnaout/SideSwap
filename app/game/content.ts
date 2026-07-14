@@ -23,7 +23,10 @@ import type {
   OfficialRuleReference,
   ResolvedGameSessionConfig,
   RuleCode,
+  RoadMarkingPath,
+  RoadMarkingStyle,
   RoadSurface,
+  RoadSurfaceType,
   ScenarioId,
   ScoringConfig,
   SpeedUnit,
@@ -171,18 +174,151 @@ const lane = (
   ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
 });
 
+const CONNECTOR_LENGTH_M = 0.5;
+
+const distanceBetweenPoints = (a: WorldPoint, b: WorldPoint): number =>
+  Math.hypot(a.x - b.x, a.z - b.z);
+
+const conflictZoneForNode = (nodeId: string): string => {
+  if (nodeId === "nyc-b") return "nyc-conflict-72-bway";
+  if (nodeId === "nyc-h") return "nyc-conflict-79-bway";
+  if (nodeId === "nyc-d") return "nyc-conflict-columbus";
+  if (nodeId.startsWith("uk-") && ["uk-n", "uk-e", "uk-s", "uk-w"].includes(nodeId)) {
+    return "uk-roundabout-conflict";
+  }
+  if (nodeId.startsWith("fr-") && ["fr-n", "fr-e", "fr-s", "fr-w"].includes(nodeId)) {
+    return "fr-roundabout-conflict";
+  }
+  if (nodeId === "fr-eo") return "fr-coquelles-east-split-conflict";
+  if (nodeId === "fr-so") return "fr-coquelles-south-split-conflict";
+  if (nodeId === "jp-f") return "jp-station-conflict";
+  if (nodeId === "jp-d") return "jp-east-curve-junction-conflict";
+  if (nodeId === "jp-e") return "jp-east-neighbourhood-junction-conflict";
+  return `junction-${nodeId}`;
+};
+
+/**
+ * Keeps an authored lateral lane offset all the way to a junction, limiting
+ * any convergence on a shared node to a short, explicit connector-sized
+ * taper. The logical graph nodes remain shared so existing route IDs and
+ * deterministic successor routing stay stable.
+ */
+const laneTrue = (
+  id: string,
+  from: LaneNode,
+  to: LaneNode,
+  trafficSide: TrafficSide,
+  speedLimit: number,
+  successors: readonly string[],
+  role: LaneRole,
+  establishedPath: readonly WorldPoint[],
+  adjacentLaneIds?: readonly string[],
+  roadId: string = roadIdForLane(id),
+  widthM = laneWidthForLane(id),
+  localSpeedUnit?: SpeedUnit,
+): LaneSegment => {
+  const first = establishedPath[0];
+  const last = establishedPath.at(-1)!;
+  const dominantHorizontal =
+    Math.abs(to.position.x - from.position.x) >=
+    Math.abs(to.position.z - from.position.z);
+  const directionX = Math.sign(to.position.x - from.position.x);
+  const directionZ = Math.sign(to.position.z - from.position.z);
+  const startEstablished =
+    distanceBetweenPoints(from.position, first) <= 2
+      ? first
+      : dominantHorizontal
+        ? point(
+            from.position.x + directionX * CONNECTOR_LENGTH_M,
+            first.z,
+          )
+        : point(
+            first.x,
+            from.position.z + directionZ * CONNECTOR_LENGTH_M,
+          );
+  const endEstablished =
+    distanceBetweenPoints(to.position, last) <= 2
+      ? last
+      : dominantHorizontal
+        ? point(to.position.x - directionX * CONNECTOR_LENGTH_M, last.z)
+        : point(last.x, to.position.z - directionZ * CONNECTOR_LENGTH_M);
+  const centerline = [
+    from.position,
+    startEstablished,
+    ...establishedPath,
+    endEstablished,
+    to.position,
+  ];
+  const startConnectorLengthM = distanceBetweenPoints(
+    from.position,
+    startEstablished,
+  );
+  const endConnectorLengthM = distanceBetweenPoints(endEstablished, to.position);
+  const totalLengthM = centerline.slice(1).reduce(
+    (total, current, index) =>
+      total + distanceBetweenPoints(centerline[index], current),
+    0,
+  );
+
+  return {
+    id,
+    roadId,
+    widthM,
+    from: from.id,
+    to: to.id,
+    centerline,
+    role,
+    trafficSide,
+    speedLimit,
+    ...(localSpeedUnit ? { localSpeedUnit } : {}),
+    successors,
+    ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
+    connectorRanges: [
+      {
+        startDistanceAlongM: 0,
+        endDistanceAlongM: startConnectorLengthM,
+        ...(conflictZoneForNode(from.id)
+          ? { conflictZoneId: conflictZoneForNode(from.id) }
+          : {}),
+      },
+      {
+        startDistanceAlongM: totalLengthM - endConnectorLengthM,
+        endDistanceAlongM: totalLengthM,
+        ...(conflictZoneForNode(to.id)
+          ? { conflictZoneId: conflictZoneForNode(to.id) }
+          : {}),
+      },
+    ],
+  };
+};
+
 const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
   laneId,
   distanceAlongM,
 });
+
+const roadMarking = (
+  id: string,
+  style: RoadMarkingStyle,
+  points: readonly WorldPoint[],
+  color?: RoadMarkingPath["color"],
+): RoadMarkingPath => ({ id, style, points, ...(color ? { color } : {}) });
 
 const roadSurface = (
   id: string,
   centerline: readonly WorldPoint[],
   widthM: number,
   laneIds: readonly string[],
-  marking: RoadSurface["marking"] = "center_line",
-): RoadSurface => ({ id, centerline, widthM, laneIds, marking });
+  surfaceType: RoadSurfaceType = "standard",
+  markings: readonly RoadMarkingPath[] = [],
+): RoadSurface => ({
+  id,
+  centerline,
+  widthM,
+  laneIds,
+  surfaceType,
+  markings,
+});
 
 const checkpoint = (
   id: string,
@@ -276,6 +412,61 @@ const control = (
   installations,
 });
 
+const CONNECTOR_ZONE_RADIUS_M = 2.1;
+
+/**
+ * Declares a compact conflict zone around every generic graph junction used
+ * by an explicit connector range. Authored signal/roundabout zones keep their
+ * wider polygons, while their lane membership is augmented automatically.
+ */
+const connectorConflictZones = (
+  lanes: readonly LaneSegment[],
+  authoredZones: LaneGraph["conflictZones"],
+): LaneGraph["conflictZones"] => {
+  const connectorLaneIds = new Map<string, Set<string>>();
+  const generatedCenters = new Map<string, WorldPoint>();
+  const authoredIds = new Set(authoredZones.map((zone) => zone.id));
+
+  for (const lane of lanes) {
+    for (const range of lane.connectorRanges ?? []) {
+      const conflictZoneId = range.conflictZoneId;
+      if (!conflictZoneId) continue;
+      const laneIds = connectorLaneIds.get(conflictZoneId) ?? new Set<string>();
+      laneIds.add(lane.id);
+      connectorLaneIds.set(conflictZoneId, laneIds);
+      if (!authoredIds.has(conflictZoneId)) {
+        generatedCenters.set(
+          conflictZoneId,
+          range.startDistanceAlongM <= 1e-6
+            ? lane.centerline[0]
+            : lane.centerline.at(-1)!,
+        );
+      }
+    }
+  }
+
+  const authored = authoredZones.map((zone) => ({
+    ...zone,
+    laneIds: [
+      ...new Set([
+        ...zone.laneIds,
+        ...(connectorLaneIds.get(zone.id) ?? []),
+      ]),
+    ],
+  }));
+  const generated = [...generatedCenters].map(([id, center]) => ({
+    id,
+    laneIds: [...(connectorLaneIds.get(id) ?? [])],
+    polygon: [
+      point(center.x - CONNECTOR_ZONE_RADIUS_M, center.z - CONNECTOR_ZONE_RADIUS_M),
+      point(center.x + CONNECTOR_ZONE_RADIUS_M, center.z - CONNECTOR_ZONE_RADIUS_M),
+      point(center.x + CONNECTOR_ZONE_RADIUS_M, center.z + CONNECTOR_ZONE_RADIUS_M),
+      point(center.x - CONNECTOR_ZONE_RADIUS_M, center.z + CONNECTOR_ZONE_RADIUS_M),
+    ],
+  }));
+  return [...authored, ...generated];
+};
+
 const graph = (
   nodes: readonly LaneNode[],
   lanes: readonly LaneSegment[],
@@ -287,7 +478,7 @@ const graph = (
   nodes,
   lanes,
   controls,
-  conflictZones,
+  conflictZones: connectorConflictZones(lanes, conflictZones),
   spawnPoints,
   checkpoints,
 });
@@ -310,6 +501,20 @@ const osmSource = (
 });
 
 const US_RULES: readonly OfficialRuleReference[] = [
+  {
+    id: "us-ny-dmv-turns",
+    title: "New York State Driver's Manual — Intersections and Turns",
+    authority: "New York State Department of Motor Vehicles",
+    jurisdiction: "New York, United States",
+    url: "https://dmv.ny.gov/new-york-state-drivers-manual-and-practice-tests/chapter-5-intersections-and-turns",
+    reviewedOn: CONTENT_REVIEWED_ON,
+    appliesTo: [
+      "missing_indicator",
+      "one_way",
+      "unsafe_gap",
+      "observation",
+    ],
+  },
   {
     id: "us-ny-dmv-passing",
     title: "New York State Driver's Manual — Passing",
@@ -347,6 +552,24 @@ const US_RULES: readonly OfficialRuleReference[] = [
 
 const UK_RULES: readonly OfficialRuleReference[] = [
   {
+    id: "uk-highway-code-general",
+    title:
+      "The Highway Code — General rules, techniques and advice for drivers and riders",
+    authority: "UK Department for Transport",
+    jurisdiction: "United Kingdom",
+    url: "https://www.gov.uk/guidance/the-highway-code/general-rules-techniques-and-advice-for-all-drivers-and-riders-103-to-158",
+    reviewedOn: CONTENT_REVIEWED_ON,
+    appliesTo: [
+      "speeding",
+      "missing_indicator",
+      "unsafe_gap",
+      "following_distance",
+      "lane_misuse",
+      "merge",
+      "observation",
+    ],
+  },
+  {
     id: "uk-highway-code-road",
     title: "The Highway Code — Using the road",
     authority: "UK Department for Transport",
@@ -364,6 +587,22 @@ const UK_RULES: readonly OfficialRuleReference[] = [
       "merge",
       "pedestrian_priority",
       "cyclist_clearance",
+      "observation",
+    ],
+  },
+  {
+    id: "uk-highway-code-motorways",
+    title: "The Highway Code — Motorways",
+    authority: "UK Department for Transport",
+    jurisdiction: "United Kingdom",
+    url: "https://www.gov.uk/guidance/the-highway-code/motorways-253-to-273",
+    reviewedOn: CONTENT_REVIEWED_ON,
+    appliesTo: [
+      "speeding",
+      "unsafe_gap",
+      "following_distance",
+      "lane_misuse",
+      "merge",
       "observation",
     ],
   },
@@ -433,7 +672,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
-      slowLaneSide: "right",
+      normalTravelLaneSide: "right",
       turnOnRed: "permitted_after_stop_unless_signed",
     },
     roundaboutPolicy: {
@@ -457,7 +696,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
-      slowLaneSide: "left",
+      normalTravelLaneSide: "left",
       turnOnRed: "prohibited",
     },
     roundaboutPolicy: {
@@ -481,7 +720,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
-      slowLaneSide: "right",
+      normalTravelLaneSide: "right",
       turnOnRed: "prohibited",
     },
     roundaboutPolicy: {
@@ -505,7 +744,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
-      slowLaneSide: "left",
+      normalTravelLaneSide: "left",
       turnOnRed: "prohibited",
     },
     roundaboutPolicy: {
@@ -599,14 +838,14 @@ const orientationNodes = {
 };
 
 const orientationLanes: readonly LaneSegment[] = [
-  lane("yard-r-north", orientationNodes.r0, orientationNodes.r1, "right", 20, ["yard-r-east"]),
-  lane("yard-r-east", orientationNodes.r1, orientationNodes.r2, "right", 20, ["yard-r-south"]),
-  lane("yard-r-south", orientationNodes.r2, orientationNodes.r3, "right", 20, ["yard-r-west"]),
-  lane("yard-r-west", orientationNodes.r3, orientationNodes.r0, "right", 20, ["yard-r-north"]),
-  lane("yard-l-west", orientationNodes.l0, orientationNodes.l1, "left", 20, ["yard-l-south"]),
-  lane("yard-l-south", orientationNodes.l1, orientationNodes.l2, "left", 20, ["yard-l-east"]),
-  lane("yard-l-east", orientationNodes.l2, orientationNodes.l3, "left", 20, ["yard-l-north"]),
-  lane("yard-l-north", orientationNodes.l3, orientationNodes.l0, "left", 20, ["yard-l-west"]),
+  laneTrue("yard-r-north", orientationNodes.r0, orientationNodes.r1, "right", 20, ["yard-r-east"], "travel", [point(0, 30.2)]),
+  laneTrue("yard-r-east", orientationNodes.r1, orientationNodes.r2, "right", 20, ["yard-r-south"], "travel", [point(42.2, 0)]),
+  laneTrue("yard-r-south", orientationNodes.r2, orientationNodes.r3, "right", 20, ["yard-r-west"], "travel", [point(0, -30.2)]),
+  laneTrue("yard-r-west", orientationNodes.r3, orientationNodes.r0, "right", 20, ["yard-r-north"], "travel", [point(-42.2, 0)]),
+  laneTrue("yard-l-west", orientationNodes.l0, orientationNodes.l1, "left", 20, ["yard-l-south"], "travel", [point(-32.2, 0)]),
+  laneTrue("yard-l-south", orientationNodes.l1, orientationNodes.l2, "left", 20, ["yard-l-east"], "travel", [point(0, -20.2)]),
+  laneTrue("yard-l-east", orientationNodes.l2, orientationNodes.l3, "left", 20, ["yard-l-north"], "travel", [point(32.2, 0)]),
+  laneTrue("yard-l-north", orientationNodes.l3, orientationNodes.l0, "left", 20, ["yard-l-west"], "travel", [point(0, 20.2)]),
 ];
 
 const nycNodes = {
@@ -622,18 +861,28 @@ const nycNodes = {
 };
 
 const nycLanes: readonly LaneSegment[] = [
-  lane("nyc-72-east-1", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-2", "nyc-bway-n-1"], "one_way"),
-  lane("nyc-72-east-2", nycNodes.b, nycNodes.c, "right", 25, ["nyc-columbus-n-1"], "one_way"),
-  lane("nyc-bway-n-1", nycNodes.b, nycNodes.e, "right", 25, ["nyc-bway-n-2"], "travel", [point(3.4, -36)], ["nyc-bway-s-2"]),
-  lane("nyc-bway-n-2", nycNodes.e, nycNodes.h, "right", 25, ["nyc-79-west-2", "nyc-bway-s-1"], "travel", [point(3.4, 36)], ["nyc-bway-s-1"]),
-  lane("nyc-columbus-n-1", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-2"]),
-  lane("nyc-columbus-n-2", nycNodes.d, nycNodes.i, "right", 25, ["nyc-79-west-1"]),
-  lane("nyc-79-west-1", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-2", "nyc-bway-s-1"], "one_way"),
-  lane("nyc-79-west-2", nycNodes.h, nycNodes.g, "right", 25, ["nyc-west-end-s-1"], "one_way"),
-  lane("nyc-west-end-s-1", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-2"]),
-  lane("nyc-west-end-s-2", nycNodes.f, nycNodes.a, "right", 25, ["nyc-72-east-1"]),
-  lane("nyc-bway-s-1", nycNodes.h, nycNodes.e, "right", 25, ["nyc-bway-s-2"], "travel", [point(-3.4, 36)], ["nyc-bway-n-2"]),
-  lane("nyc-bway-s-2", nycNodes.e, nycNodes.b, "right", 25, ["nyc-72-east-2"], "travel", [point(-3.4, -36)], ["nyc-bway-n-1"]),
+  // Each NYC block has two genuinely parallel one-way lanes. Intersections
+  // remain explicit graph nodes so free drive can branch onto Broadway.
+  laneTrue("nyc-72-east-1", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-1-after-bway"], "one_way", [point(-52, -73.7)], ["nyc-72-east-2"]),
+  laneTrue("nyc-72-east-2", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-2-after-bway", "nyc-bway-n-1"], "one_way", [point(-52, -70.3)], ["nyc-72-east-1"]),
+  laneTrue("nyc-72-east-1-after-bway", nycNodes.b, nycNodes.c, "right", 25, [], "one_way", [point(52, -73.7)], ["nyc-72-east-2-after-bway"]),
+  laneTrue("nyc-72-east-2-after-bway", nycNodes.b, nycNodes.c, "right", 25, ["nyc-columbus-n-1"], "one_way", [point(52, -70.3)], ["nyc-72-east-1-after-bway"]),
+  laneTrue("nyc-bway-n-1", nycNodes.b, nycNodes.e, "right", 25, ["nyc-bway-n-2"], "travel", [point(1.7, -36)], ["nyc-bway-s-2"]),
+  laneTrue("nyc-bway-n-2", nycNodes.e, nycNodes.h, "right", 25, ["nyc-79-west-1-after-bway"], "travel", [point(1.7, 36)], ["nyc-bway-s-1"]),
+  laneTrue("nyc-columbus-n-1", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-1-after-72"], "one_way", [point(103.3, -36)], ["nyc-columbus-n-2"]),
+  laneTrue("nyc-columbus-n-2", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-2-after-72"], "one_way", [point(106.7, -36)], ["nyc-columbus-n-1"]),
+  laneTrue("nyc-columbus-n-1-after-72", nycNodes.d, nycNodes.i, "right", 25, ["nyc-79-west-2"], "one_way", [point(103.3, 36)], ["nyc-columbus-n-2-after-72"]),
+  laneTrue("nyc-columbus-n-2-after-72", nycNodes.d, nycNodes.i, "right", 25, [], "one_way", [point(106.7, 36)], ["nyc-columbus-n-1-after-72"]),
+  laneTrue("nyc-79-west-1", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-1-after-bway"], "one_way", [point(52, 73.7)], ["nyc-79-west-2"]),
+  laneTrue("nyc-79-west-2", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-2-after-bway", "nyc-bway-s-1"], "one_way", [point(52, 70.3)], ["nyc-79-west-1"]),
+  laneTrue("nyc-79-west-1-after-bway", nycNodes.h, nycNodes.g, "right", 25, [], "one_way", [point(-52, 73.7)], ["nyc-79-west-2-after-bway"]),
+  laneTrue("nyc-79-west-2-after-bway", nycNodes.h, nycNodes.g, "right", 25, ["nyc-west-end-s-2"], "one_way", [point(-52, 70.3)], ["nyc-79-west-1-after-bway"]),
+  laneTrue("nyc-west-end-s-1", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-1-after-79"], "one_way", [point(-106.7, 36)], ["nyc-west-end-s-2"]),
+  laneTrue("nyc-west-end-s-2", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-2-after-79"], "one_way", [point(-103.3, 36)], ["nyc-west-end-s-1"]),
+  laneTrue("nyc-west-end-s-1-after-79", nycNodes.f, nycNodes.a, "right", 25, [], "one_way", [point(-106.7, -36)], ["nyc-west-end-s-2-after-79"]),
+  laneTrue("nyc-west-end-s-2-after-79", nycNodes.f, nycNodes.a, "right", 25, ["nyc-72-east-2"], "one_way", [point(-103.3, -36)], ["nyc-west-end-s-1-after-79"]),
+  laneTrue("nyc-bway-s-1", nycNodes.h, nycNodes.e, "right", 25, ["nyc-bway-s-2"], "travel", [point(-1.7, 36)], ["nyc-bway-n-2"]),
+  laneTrue("nyc-bway-s-2", nycNodes.e, nycNodes.b, "right", 25, ["nyc-72-east-1-after-bway"], "travel", [point(-1.7, -36)], ["nyc-bway-n-1"]),
 ];
 
 const ukNodes = {
@@ -645,7 +894,7 @@ const ukNodes = {
   eo: node("uk-eo", 130, 0),
   so: node("uk-so", 0, -118),
   wo: node("uk-wo", -130, 0),
-  ne: node("uk-ne", 90, 78),
+  ne: node("uk-ne", 700, 118),
 };
 
 const ukLanes: readonly LaneSegment[] = [
@@ -653,19 +902,19 @@ const ukLanes: readonly LaneSegment[] = [
   lane("uk-rb-e-s", ukNodes.e, ukNodes.s, "left", 30, ["uk-rb-s-w", "uk-exit-south"], "roundabout", [point(25, -25)]),
   lane("uk-rb-s-w", ukNodes.s, ukNodes.w, "left", 30, ["uk-rb-w-n", "uk-exit-west"], "roundabout", [point(-25, -25)]),
   lane("uk-rb-w-n", ukNodes.w, ukNodes.n, "left", 30, ["uk-rb-n-e", "uk-exit-north"], "roundabout", [point(-25, 25)]),
-  lane("uk-entry-north", ukNodes.no, ukNodes.n, "left", 40, ["uk-rb-n-e"], "entry", [point(1.7, 76)], ["uk-exit-north"]),
-  lane("uk-exit-north", ukNodes.n, ukNodes.no, "left", 40, ["uk-dual-n-east"], "exit", [point(-1.7, 76)], ["uk-entry-north"]),
-  lane("uk-entry-east", ukNodes.eo, ukNodes.e, "left", 40, ["uk-rb-e-s"], "entry", [point(82, -1.7)], ["uk-exit-east"]),
-  lane("uk-exit-east", ukNodes.e, ukNodes.eo, "left", 40, ["uk-entry-east"], "exit", [point(82, 1.7)], ["uk-entry-east"]),
-  lane("uk-entry-south", ukNodes.so, ukNodes.s, "left", 40, ["uk-rb-s-w"], "entry", [point(-1.7, -76)], ["uk-exit-south"]),
-  lane("uk-exit-south", ukNodes.s, ukNodes.so, "left", 40, ["uk-south-west"], "exit", [point(1.7, -76)], ["uk-entry-south"]),
-  lane("uk-entry-west", ukNodes.wo, ukNodes.w, "left", 40, ["uk-rb-w-n"], "entry", [point(-82, 1.7)], ["uk-exit-west"]),
-  lane("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south"], "exit", [point(-82, -1.7)], ["uk-entry-west"]),
-  lane("uk-dual-n-east", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "travel", [point(48, 98.25)], ["uk-dual-n-east-pass"]),
-  lane("uk-dual-n-east-pass", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "passing", [point(48, 101.75)], ["uk-dual-n-east"]),
-  lane("uk-east-north", ukNodes.ne, ukNodes.eo, "left", 40, ["uk-entry-east"]),
-  lane("uk-south-west", ukNodes.so, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-65, -104)]),
-  lane("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-65, -40)]),
+  laneTrue("uk-entry-north", ukNodes.no, ukNodes.n, "left", 40, ["uk-rb-n-e"], "entry", [point(1.7, 76)], ["uk-exit-north"]),
+  laneTrue("uk-exit-north", ukNodes.n, ukNodes.no, "left", 40, ["uk-dual-n-east"], "exit", [point(-1.7, 76)], ["uk-entry-north"]),
+  laneTrue("uk-entry-east", ukNodes.eo, ukNodes.e, "left", 40, ["uk-rb-e-s"], "entry", [point(82, -1.7)], ["uk-exit-east"]),
+  laneTrue("uk-exit-east", ukNodes.e, ukNodes.eo, "left", 40, ["uk-entry-east"], "exit", [point(82, 1.7)], ["uk-entry-east"]),
+  laneTrue("uk-entry-south", ukNodes.so, ukNodes.s, "left", 40, ["uk-rb-s-w"], "entry", [point(-1.7, -76)], ["uk-exit-south"]),
+  laneTrue("uk-exit-south", ukNodes.s, ukNodes.so, "left", 40, ["uk-south-west"], "exit", [point(1.7, -76)], ["uk-entry-south"]),
+  laneTrue("uk-entry-west", ukNodes.wo, ukNodes.w, "left", 40, ["uk-rb-w-n"], "entry", [point(-82, 1.7)], ["uk-exit-west"]),
+  laneTrue("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south"], "exit", [point(-82, -1.7)], ["uk-entry-west"]),
+  laneTrue("uk-dual-n-east", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "travel", [point(80, 119.75), point(220, 119.75), point(360, 119.75), point(500, 119.75), point(620, 119.75)], ["uk-dual-n-east-pass"]),
+  laneTrue("uk-dual-n-east-pass", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "passing", [point(80, 116.25), point(220, 116.25), point(360, 116.25), point(500, 116.25), point(620, 116.25)], ["uk-dual-n-east"]),
+  laneTrue("uk-east-north", ukNodes.ne, ukNodes.eo, "left", 40, ["uk-entry-east"], "travel", [point(701.7, 117.5), point(701.7, 70), point(701.34, 28.95), point(600.4, -11.65), point(450.1, -31.7), point(299.86, -26.7), point(199.75, -11.68), point(130.25, -1.75)]),
+  laneTrue("uk-south-west", ukNodes.so, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-0.5, -119.7), point(-66.1, -119.3), point(-131.49, -60.82), point(-131.7, -0.5)]),
+  laneTrue("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-128.3, -0.5), point(-128.51, -59.18), point(-64.31, -116.45), point(-0.5, -116.3)]),
 ];
 
 const frNodes = {
@@ -685,18 +934,18 @@ const frLanes: readonly LaneSegment[] = [
   lane("fr-rb-w-s", frNodes.w, frNodes.s, "right", 30, ["fr-rb-s-e", "fr-exit-south"], "roundabout", [point(-25, -25)]),
   lane("fr-rb-s-e", frNodes.s, frNodes.e, "right", 30, ["fr-rb-e-n", "fr-exit-east"], "roundabout", [point(25, -25)]),
   lane("fr-rb-e-n", frNodes.e, frNodes.n, "right", 30, ["fr-rb-n-w", "fr-exit-north"], "roundabout", [point(25, 25)]),
-  lane("fr-entry-north", frNodes.no, frNodes.n, "right", 50, ["fr-rb-n-w"], "entry", [point(-1.7, 76)], ["fr-exit-north"]),
-  lane("fr-exit-north", frNodes.n, frNodes.no, "right", 50, ["fr-north-west"], "exit", [point(1.7, 76)], ["fr-entry-north"]),
-  lane("fr-entry-east", frNodes.eo, frNodes.e, "right", 50, ["fr-rb-e-n"], "entry", [point(86, 1.7)], ["fr-exit-east"]),
-  lane("fr-exit-east", frNodes.e, frNodes.eo, "right", 50, ["fr-east-south"], "exit", [point(86, -1.7)], ["fr-entry-east"]),
-  lane("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry", [point(1.7, -76)], ["fr-exit-south"]),
-  lane("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [point(-1.7, -76)], ["fr-entry-south"]),
-  lane("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry", [point(-86, -1.7)], ["fr-exit-west"]),
-  lane("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
-  lane("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(53, -100.7), point(94, -80.7)], ["fr-south-east-pass"]),
-  lane("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(53, -97.3), point(94, -77.3)], ["fr-south-east"]),
-  lane("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(92, -82)]),
-  lane("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-80, 76)]),
+  laneTrue("fr-entry-north", frNodes.no, frNodes.n, "right", 50, ["fr-rb-n-w"], "entry", [point(-1.7, 76)], ["fr-exit-north"]),
+  laneTrue("fr-exit-north", frNodes.n, frNodes.no, "right", 50, ["fr-north-west"], "exit", [point(1.7, 76)], ["fr-entry-north"]),
+  laneTrue("fr-entry-east", frNodes.eo, frNodes.e, "right", 50, ["fr-rb-e-n"], "entry", [point(86, 1.7)], ["fr-exit-east"]),
+  laneTrue("fr-exit-east", frNodes.e, frNodes.eo, "right", 50, ["fr-east-south"], "exit", [point(86, -1.7)], ["fr-entry-east"]),
+  laneTrue("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry", [point(1.7, -76)], ["fr-exit-south"]),
+  laneTrue("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [point(-1.7, -76)], ["fr-entry-south"]),
+  laneTrue("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry", [point(-86, -1.7)], ["fr-exit-west"]),
+  laneTrue("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
+  laneTrue("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(0.5, -119.7), point(53, -100.7), point(94, -80.7), point(139.25, -1.25)], ["fr-south-east-pass"]),
+  laneTrue("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(-0.5, -116.3), point(53, -97.3), point(94, -77.3), point(136.25, 0.4)], ["fr-south-east"]),
+  laneTrue("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(136.5, -0.95), point(148.31, -42.18), point(148.49, -109.21), point(103.74, -128.32), point(20.2, -128.31), point(1.3, -116.8)]),
+  laneTrue("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-1.23, 119.27), point(-81.1, 77.3), point(-139.05, 1.43)]),
 ];
 
 const jpNodes = {
@@ -713,30 +962,30 @@ const jpNodes = {
 };
 
 const jpLanes: readonly LaneSegment[] = [
-  lane("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
-  lane("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
-  lane("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, [], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
-  lane("jp-south-west-2", jpNodes.c, jpNodes.b, "left", 30, ["jp-south-west-1"], "rail_crossing", [point(21, -73.5)], ["jp-south-east-2"], "jp-south-road", 3),
-  lane("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(100.5, -56), point(106.5, -35)], ["jp-curve-south"]),
-  lane("jp-curve-south", jpNodes.d, jpNodes.c, "left", 30, ["jp-south-west-2"], "travel", [point(109.5, -35), point(103.5, -56)], ["jp-curve-north"], "jp-east-curve", 3),
-  lane("jp-center-west-1", jpNodes.d, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(82, 16.5)], ["jp-center-east-3"]),
-  lane("jp-center-west-2", jpNodes.e, jpNodes.f, "left", 30, ["jp-center-west-3", "jp-narrow-north-2"], "travel", [point(12, 16.5)], ["jp-center-east-2"]),
-  lane("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north"], "travel", [point(-71, 16.5)], ["jp-center-east-1"]),
-  lane("jp-center-east-1", jpNodes.g, jpNodes.f, "left", 30, ["jp-center-east-2", "jp-narrow-south-1"], "travel", [point(-71, 19.5)], ["jp-center-west-3"], "jp-center-road", 3),
-  lane("jp-center-east-2", jpNodes.f, jpNodes.e, "left", 30, ["jp-center-east-3"], "travel", [point(12, 19.5)], ["jp-center-west-2"], "jp-center-road", 3),
-  lane("jp-center-east-3", jpNodes.e, jpNodes.d, "left", 30, ["jp-curve-south"], "travel", [point(82, 19.5)], ["jp-center-west-1"], "jp-center-road", 3),
-  lane("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
-  lane("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
-  lane("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"], "travel", [point(-71, 77.5)], ["jp-north-west-2"]),
-  lane("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
-  lane("jp-north-west-1", jpNodes.j, jpNodes.i, "left", 30, ["jp-north-west-2", "jp-narrow-south-2"], "travel", [point(26, 74.5)], ["jp-north-east-2"], "jp-north-road", 3),
-  lane("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
-  lane("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(83.5, 47)], ["jp-junction-north"]),
-  lane("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1"], "travel", [point(80.5, 47)], ["jp-junction-south"], "jp-junction-road", 3),
-  lane("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
-  lane("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
-  lane("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
-  lane("jp-narrow-south-2", jpNodes.i, jpNodes.f, "left", 20, ["jp-narrow-south-1"], "travel", [point(-28.65, 47)], ["jp-narrow-north-2"], "jp-narrow-road", 2.7),
+  laneTrue("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
+  laneTrue("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
+  laneTrue("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, [], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
+  laneTrue("jp-south-west-2", jpNodes.c, jpNodes.b, "left", 30, ["jp-south-west-1"], "rail_crossing", [point(21, -73.5)], ["jp-south-east-2"], "jp-south-road", 3),
+  laneTrue("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(71.64, -70.27), point(100.78, -54.81), point(106.36, -34.57), point(110.23, -18.1)], ["jp-curve-south"]),
+  laneTrue("jp-curve-south", jpNodes.d, jpNodes.c, "left", 30, ["jp-south-west-2"], "travel", [point(113.54, -18.88), point(109.64, -35.43), point(103.22, -57.19), point(73.24, -73.26)], ["jp-curve-north"], "jp-east-curve", 3),
+  laneTrue("jp-center-west-1", jpNodes.d, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(110.37, -18.7), point(81.1, 16.56), point(54.5, 16.3)], ["jp-center-east-3"]),
+  laneTrue("jp-center-west-2", jpNodes.e, jpNodes.f, "left", 30, ["jp-center-west-3", "jp-narrow-north-2"], "travel", [point(12, 16.5)], ["jp-center-east-2"]),
+  laneTrue("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north"], "travel", [point(-71, 16.5)], ["jp-center-east-1"]),
+  laneTrue("jp-center-east-1", jpNodes.g, jpNodes.f, "left", 30, ["jp-center-east-2", "jp-narrow-south-1"], "travel", [point(-71, 19.5)], ["jp-center-west-3"], "jp-center-road", 3),
+  laneTrue("jp-center-east-2", jpNodes.f, jpNodes.e, "left", 30, ["jp-center-east-3"], "travel", [point(12, 19.5)], ["jp-center-west-2"], "jp-center-road", 3),
+  laneTrue("jp-center-east-3", jpNodes.e, jpNodes.d, "left", 30, ["jp-curve-south"], "travel", [point(54.5, 19.7), point(82.9, 19.45), point(112.99, -16.53)], ["jp-center-west-1"], "jp-center-road", 3),
+  laneTrue("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
+  laneTrue("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
+  laneTrue("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"], "travel", [point(-71, 77.5)], ["jp-north-west-2"]),
+  laneTrue("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
+  laneTrue("jp-north-west-1", jpNodes.j, jpNodes.i, "left", 30, ["jp-north-west-2", "jp-narrow-south-2"], "travel", [point(26, 74.5)], ["jp-north-east-2"], "jp-north-road", 3),
+  laneTrue("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
+  laneTrue("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(83.3, 75.1), point(83.5, 47), point(55.3, 17.1)], ["jp-junction-north"]),
+  laneTrue("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1"], "travel", [point(52.7, 18.9), point(80.5, 47), point(80.7, 76.9)], ["jp-junction-south"], "jp-junction-road", 3),
+  laneTrue("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
+  laneTrue("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
+  laneTrue("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
+  laneTrue("jp-narrow-south-2", jpNodes.i, jpNodes.f, "left", 20, ["jp-narrow-south-1"], "travel", [point(-28.65, 47)], ["jp-narrow-north-2"], "jp-narrow-road", 2.7),
 ];
 
 const transitionNodes = {
@@ -750,14 +999,14 @@ const transitionNodes = {
 };
 
 const transitionLanes: readonly LaneSegment[] = [
-  lane("xf-uk-approach", transitionNodes.uk0, transitionNodes.uk1, "left", 30, ["xf-uk-terminal"], "terminal", [point(-110, -32.25)], ["xf-uk-approach-opposite"]),
-  lane("xf-uk-approach-opposite", transitionNodes.uk1, transitionNodes.uk0, "left", 30, [], "terminal", [point(-110, -35.75)], ["xf-uk-approach"], "xf-uk-road", 3.5),
+  laneTrue("xf-uk-approach", transitionNodes.uk0, transitionNodes.uk1, "left", 30, ["xf-uk-terminal"], "terminal", [point(-110, -32.25)], ["xf-uk-approach-opposite"]),
+  laneTrue("xf-uk-approach-opposite", transitionNodes.uk1, transitionNodes.uk0, "left", 30, [], "terminal", [point(-110, -35.75)], ["xf-uk-approach"], "xf-uk-road", 3.5),
   lane("xf-uk-terminal", transitionNodes.uk1, transitionNodes.uk2, "left", 15, ["xf-shuttle"], "terminal", [point(-48, -20)]),
   lane("xf-shuttle", transitionNodes.uk2, transitionNodes.gate, "left", 10, ["xf-fr-terminal"], "terminal"),
   lane("xf-fr-terminal", transitionNodes.gate, transitionNodes.fr0, "right", 10, ["xf-fr-exit"], "terminal", [], undefined, undefined, undefined, "kmh"),
   lane("xf-fr-exit", transitionNodes.fr0, transitionNodes.fr1, "right", 30, ["xf-fr-road"], "terminal", [point(48, 18)], undefined, undefined, undefined, "kmh"),
-  lane("xf-fr-road", transitionNodes.fr1, transitionNodes.fr2, "right", 50, [], "travel", [point(110, 32.25)], ["xf-fr-road-opposite"], undefined, undefined, "kmh"),
-  lane("xf-fr-road-opposite", transitionNodes.fr2, transitionNodes.fr1, "right", 50, [], "travel", [point(110, 35.75)], ["xf-fr-road"], "xf-fr-road-surface", 3.5, "kmh"),
+  laneTrue("xf-fr-road", transitionNodes.fr1, transitionNodes.fr2, "right", 50, [], "travel", [point(110, 32.25)], ["xf-fr-road-opposite"], undefined, undefined, "kmh"),
+  laneTrue("xf-fr-road-opposite", transitionNodes.fr2, transitionNodes.fr1, "right", 50, [], "travel", [point(110, 35.75)], ["xf-fr-road"], "xf-fr-road-surface", 3.5, "kmh"),
 ];
 
 export const MAP_PACKS: readonly MapPack[] = [
@@ -776,8 +1025,8 @@ export const MAP_PACKS: readonly MapPack[] = [
       roadWidth: 8,
       shoulderWidth: 1.5,
       roadSurfaces: [
-        roadSurface("yard-right-loop", [orientationNodes.r0.position, orientationNodes.r1.position, orientationNodes.r2.position, orientationNodes.r3.position, orientationNodes.r0.position], 8, ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"]),
-        roadSurface("yard-left-loop", [orientationNodes.l0.position, orientationNodes.l1.position, orientationNodes.l2.position, orientationNodes.l3.position, orientationNodes.l0.position], 8, ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"]),
+        roadSurface("yard-right-loop", [orientationNodes.r0.position, orientationNodes.r1.position, orientationNodes.r2.position, orientationNodes.r3.position, orientationNodes.r0.position], 8, ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"], "orientation"),
+        roadSurface("yard-left-loop", [orientationNodes.l0.position, orientationNodes.l1.position, orientationNodes.l2.position, orientationNodes.l3.position, orientationNodes.l0.position], 8, ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"], "orientation"),
       ],
       blocks: [],
       landmarks: [
@@ -803,7 +1052,9 @@ export const MAP_PACKS: readonly MapPack[] = [
       [
         checkpoint("yard-r-start", "Right-side start", "yard-r-north", 10),
         checkpoint("yard-r-turn", "Right-side turn", "yard-r-east", 12),
+        checkpoint("yard-r-stop-line", "Right-side stop line", "yard-r-east", 56),
         checkpoint("yard-l-start", "Left-side start", "yard-l-west", 10),
+        checkpoint("yard-l-stop-line", "Left-side stop line", "yard-l-west", 36),
         checkpoint("yard-l-turn", "Left-side turn", "yard-l-south", 14),
       ],
     ),
@@ -824,11 +1075,21 @@ export const MAP_PACKS: readonly MapPack[] = [
       roadWidth: 11,
       shoulderWidth: 1.5,
       roadSurfaces: [
-        roadSurface("nyc-west-72", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], 10.2, ["nyc-72-east-1", "nyc-72-east-2"]),
-        roadSurface("nyc-west-79", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], 10.2, ["nyc-79-west-1", "nyc-79-west-2"]),
-        roadSurface("nyc-broadway", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], 10.8, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"]),
-        roadSurface("nyc-columbus", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], 7.4, ["nyc-columbus-n-1", "nyc-columbus-n-2"], "lane_divider"),
-        roadSurface("nyc-west-end", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], 7.4, ["nyc-west-end-s-1", "nyc-west-end-s-2"], "lane_divider"),
+        roadSurface("nyc-west-72", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], 10.2, ["nyc-72-east-1", "nyc-72-east-2", "nyc-72-east-1-after-bway", "nyc-72-east-2-after-bway"], "standard", [
+          roadMarking("nyc-west-72-divider", "lane_dashed", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], "white"),
+        ]),
+        roadSurface("nyc-west-79", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], 10.2, ["nyc-79-west-1", "nyc-79-west-2", "nyc-79-west-1-after-bway", "nyc-79-west-2-after-bway"], "standard", [
+          roadMarking("nyc-west-79-divider", "lane_dashed", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], "white"),
+        ]),
+        roadSurface("nyc-broadway", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], 10.8, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"], "standard", [
+          roadMarking("nyc-broadway-centre", "centre_solid", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], "yellow"),
+        ]),
+        roadSurface("nyc-columbus", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], 10.2, ["nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-columbus-n-1-after-72", "nyc-columbus-n-2-after-72"], "standard", [
+          roadMarking("nyc-columbus-divider", "lane_dashed", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], "white"),
+        ]),
+        roadSurface("nyc-west-end", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], 10.2, ["nyc-west-end-s-1", "nyc-west-end-s-2", "nyc-west-end-s-1-after-79", "nyc-west-end-s-2-after-79"], "standard", [
+          roadMarking("nyc-west-end-divider", "lane_dashed", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], "white"),
+        ]),
       ],
       blocks: [
         { id: "nyc-block-nw", center: point(-52, 36), size: point(82, 48), heightRange: [18, 42], density: 0.8, material: "brick" },
@@ -845,45 +1106,50 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(nycNodes),
       nycLanes,
       [
-        control("nyc-signal-72-bway", "signal", 0, -72, 90, ["nyc-72-east-1", "nyc-bway-n-1"], ["nyc-conflict-72-bway"],
+        control("nyc-signal-72-bway", "signal", 0, -72, 90, ["nyc-72-east-1", "nyc-72-east-2", "nyc-bway-n-1"], ["nyc-conflict-72-bway"],
           [
             approach("nyc-72-east-approach", "nyc-72-east-1", 97, "nyc-72-east", ["nyc-conflict-72-bway"]),
+            approach("nyc-72-east-left-lane-approach", "nyc-72-east-2", 97, "nyc-72-east", ["nyc-conflict-72-bway"]),
             approach("nyc-bway-north-approach", "nyc-bway-n-1", 8, "nyc-bway-north", ["nyc-conflict-72-bway"]),
           ],
           [
-            installation("nyc-72-bway-mast", 8.5, -80.5, 90, "mast_arm", "nyc_signal", "primary", ["nyc-72-east-approach"], 270),
+            installation("nyc-72-bway-mast", 8.5, -80.5, 90, "mast_arm", "nyc_signal", "primary", ["nyc-72-east-approach", "nyc-72-east-left-lane-approach"], 270),
             installation("nyc-72-bway-companion", -8.5, -63.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-bway-north-approach"]),
           ]),
-        control("nyc-crosswalk-79", "crosswalk", 0, 72, 270, ["nyc-79-west-1", "nyc-bway-n-2"], ["nyc-conflict-79-bway"],
+        control("nyc-crosswalk-79", "crosswalk", 0, 72, 270, ["nyc-79-west-1", "nyc-79-west-2", "nyc-bway-n-2"], ["nyc-conflict-79-bway"],
           [
             approach("nyc-79-west-crosswalk", "nyc-79-west-1", 97, "crosswalk", ["nyc-conflict-79-bway"]),
+            approach("nyc-79-west-left-lane-crosswalk", "nyc-79-west-2", 97, "crosswalk", ["nyc-conflict-79-bway"]),
             approach("nyc-bway-north-crosswalk", "nyc-bway-n-2", 64, "crosswalk", ["nyc-conflict-79-bway"]),
           ],
           [installation("nyc-79-crosswalk-marking", 0, 72, 270, "road_marking", "crosswalk", "marking")]),
-        control("nyc-signal-columbus", "signal", 105, 0, 0, ["nyc-columbus-n-1"], ["nyc-conflict-columbus"],
-          [approach("nyc-columbus-north-approach", "nyc-columbus-n-1", 64, "nyc-columbus-north", ["nyc-conflict-columbus"])],
+        control("nyc-signal-columbus", "signal", 105, 0, 0, ["nyc-columbus-n-1", "nyc-columbus-n-2"], ["nyc-conflict-columbus"],
           [
-            installation("nyc-columbus-mast", 113.5, -8.5, 0, "mast_arm", "nyc_signal", "primary", ["nyc-columbus-north-approach"], 180),
-            installation("nyc-columbus-companion", 96.5, 8.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-columbus-north-approach"]),
+            approach("nyc-columbus-north-approach", "nyc-columbus-n-1", 64, "nyc-columbus-north", ["nyc-conflict-columbus"]),
+            approach("nyc-columbus-north-right-lane-approach", "nyc-columbus-n-2", 64, "nyc-columbus-north", ["nyc-conflict-columbus"]),
+          ],
+          [
+            installation("nyc-columbus-mast", 113.5, -8.5, 0, "mast_arm", "nyc_signal", "primary", ["nyc-columbus-north-approach", "nyc-columbus-north-right-lane-approach"], 180),
+            installation("nyc-columbus-companion", 96.5, 8.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-columbus-north-approach", "nyc-columbus-north-right-lane-approach"]),
           ]),
       ],
       [
-        { id: "nyc-conflict-72-bway", laneIds: ["nyc-72-east-1", "nyc-bway-n-1"], polygon: [point(-8, -80), point(8, -80), point(8, -64), point(-8, -64)] },
-        { id: "nyc-conflict-79-bway", laneIds: ["nyc-79-west-1", "nyc-bway-n-2"], polygon: [point(-8, 64), point(8, 64), point(8, 80), point(-8, 80)] },
-        { id: "nyc-conflict-columbus", laneIds: ["nyc-columbus-n-1"], polygon: [point(97, -8), point(113, -8), point(113, 8), point(97, 8)] },
+        { id: "nyc-conflict-72-bway", laneIds: ["nyc-72-east-1", "nyc-72-east-2", "nyc-bway-n-1"], polygon: [point(-8, -80), point(8, -80), point(8, -64), point(-8, -64)] },
+        { id: "nyc-conflict-79-bway", laneIds: ["nyc-79-west-1", "nyc-79-west-2", "nyc-bway-n-2"], polygon: [point(-8, 64), point(8, 64), point(8, 80), point(-8, 80)] },
+        { id: "nyc-conflict-columbus", laneIds: ["nyc-columbus-n-1", "nyc-columbus-n-2"], polygon: [point(97, -8), point(113, -8), point(113, 8), point(97, 8)] },
       ],
       [
-        anchoredSpawn("nyc-player", "player", "nyc-72-east-1", 17),
-        anchoredSpawn("nyc-car-1", "vehicle", "nyc-72-east-2", 24),
+        anchoredSpawn("nyc-player", "player", "nyc-72-east-2", 17),
+        anchoredSpawn("nyc-car-1", "vehicle", "nyc-72-east-1", 34),
         anchoredSpawn("nyc-car-2", "vehicle", "nyc-columbus-n-2", 34),
         freeSpawn("nyc-ped-1", "pedestrian", -6, 64, 0),
         freeSpawn("nyc-cyclist-1", "cyclist", -62, 0, 90, "nyc-west-end-s-1"),
       ],
       [
-        checkpoint("nyc-start", "West 72nd start", "nyc-72-east-1", 17),
-        checkpoint("nyc-broadway", "Broadway signal", "nyc-bway-n-1", 24),
-        checkpoint("nyc-79", "West 79th crosswalk", "nyc-79-west-1", 33),
-        checkpoint("nyc-finish", "West End finish", "nyc-west-end-s-2", 42),
+        checkpoint("nyc-start", "West 72nd left-turn lane start", "nyc-72-east-2", 17),
+        checkpoint("nyc-broadway", "Broadway signal", "nyc-72-east-2", 96),
+        checkpoint("nyc-79", "West 79th crosswalk", "nyc-79-west-2", 96),
+        checkpoint("nyc-finish", "West End finish", "nyc-west-end-s-2-after-79", 42),
       ],
     ),
   },
@@ -898,18 +1164,22 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:milton-keynes-oldbrook-2026-07-10",
     ),
     geometry: {
-      worldSize: point(300, 270),
+      worldSize: point(1500, 300),
       roadWidth: 9,
       shoulderWidth: 2,
       roadSurfaces: [
         roadSurface("uk-roundabout", [ukNodes.n.position, point(25, 25), ukNodes.e.position, point(25, -25), ukNodes.s.position, point(-25, -25), ukNodes.w.position, point(-25, 25), ukNodes.n.position], 7.2, ["uk-rb-n-e", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n"], "roundabout"),
-        roadSurface("uk-north-approach", [ukNodes.n.position, ukNodes.no.position], 7.2, ["uk-entry-north", "uk-exit-north"]),
-        roadSurface("uk-east-approach", [ukNodes.e.position, ukNodes.eo.position], 7.2, ["uk-entry-east", "uk-exit-east"]),
-        roadSurface("uk-south-approach", [ukNodes.s.position, ukNodes.so.position], 7.2, ["uk-entry-south", "uk-exit-south"]),
-        roadSurface("uk-west-approach", [ukNodes.w.position, ukNodes.wo.position], 7.2, ["uk-entry-west", "uk-exit-west"]),
-        roadSurface("uk-dual-carriageway", [ukNodes.no.position, point(48, 100), ukNodes.ne.position], 7.4, ["uk-dual-n-east", "uk-dual-n-east-pass"], "lane_divider"),
-        roadSurface("uk-east-link", [ukNodes.ne.position, ukNodes.eo.position], 7.2, ["uk-east-north"]),
-        roadSurface("uk-oldbrook-loop", [ukNodes.so.position, point(-65, -104), ukNodes.wo.position, point(-65, -40), ukNodes.so.position], 7.2, ["uk-south-west", "uk-west-south"]),
+        roadSurface("uk-north-approach", [ukNodes.n.position, ukNodes.no.position], 7.2, ["uk-entry-north", "uk-exit-north"], "standard", [roadMarking("uk-north-centre", "centre_dashed", [ukNodes.n.position, ukNodes.no.position], "white")]),
+        roadSurface("uk-east-approach", [ukNodes.e.position, ukNodes.eo.position], 7.2, ["uk-entry-east", "uk-exit-east"], "standard", [roadMarking("uk-east-centre", "centre_dashed", [ukNodes.e.position, ukNodes.eo.position], "white")]),
+        roadSurface("uk-south-approach", [ukNodes.s.position, ukNodes.so.position], 7.2, ["uk-entry-south", "uk-exit-south"], "standard", [roadMarking("uk-south-centre", "centre_dashed", [ukNodes.s.position, ukNodes.so.position], "white")]),
+        roadSurface("uk-west-approach", [ukNodes.w.position, ukNodes.wo.position], 7.2, ["uk-entry-west", "uk-exit-west"], "standard", [roadMarking("uk-west-centre", "centre_dashed", [ukNodes.w.position, ukNodes.wo.position], "white")]),
+        roadSurface("uk-dual-carriageway", [ukNodes.no.position, point(350, 118), ukNodes.ne.position], 7.4, ["uk-dual-n-east", "uk-dual-n-east-pass"], "standard", [
+          roadMarking("uk-dual-divider", "lane_dashed", [ukNodes.no.position, point(350, 118), ukNodes.ne.position], "white"),
+          roadMarking("uk-dual-left-edge", "edge_solid", [point(0, 121.7), point(350, 121.7), point(700, 121.7)], "white"),
+          roadMarking("uk-dual-right-edge", "edge_solid", [point(0, 114.3), point(350, 114.3), point(700, 114.3)], "white"),
+        ]),
+        roadSurface("uk-east-link", [ukNodes.ne.position, point(700, 70), point(700, 30), point(600, -10), point(450, -30), point(300, -25), point(200, -10), ukNodes.eo.position], 7.2, ["uk-east-north"]),
+        roadSurface("uk-oldbrook-loop", [ukNodes.so.position, point(-65, -118), point(-130, -60), ukNodes.wo.position], 7.2, ["uk-south-west", "uk-west-south"]),
       ],
       blocks: [
         { id: "uk-oldbrook", center: point(-78, 72), size: point(90, 72), heightRange: [5, 12], density: 0.55, material: "brick" },
@@ -930,6 +1200,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         control("uk-yield-north", "yield", 0, 42, 180, ["uk-entry-north"], ["uk-roundabout-conflict"],
           [approach("uk-yield-north-approach", "uk-entry-north", 74, "yield", ["uk-roundabout-conflict"])],
           [installation("uk-yield-north-sign", 7.5, 47, 180, "roadside_pole", "yield_sign", "primary")]),
+        control("uk-yield-east", "yield", 42, 0, 270, ["uk-entry-east"], ["uk-roundabout-conflict"],
+          [approach("uk-yield-east-approach", "uk-entry-east", 86, "yield", ["uk-roundabout-conflict"])],
+          [installation("uk-yield-east-sign", 47, -7.5, 270, "roadside_pole", "yield_sign", "primary")]),
         control("uk-crosswalk-oldbrook", "crosswalk", -102, -102, 45, ["uk-west-south"], undefined,
           [approach("uk-oldbrook-crosswalk-approach", "uk-west-south", 150, "crosswalk")],
           [installation("uk-oldbrook-crosswalk-marking", -102, -102, 45, "road_marking", "crosswalk", "marking")]),
@@ -940,14 +1213,15 @@ export const MAP_PACKS: readonly MapPack[] = [
       [
         anchoredSpawn("uk-player", "player", "uk-entry-south", 22),
         anchoredSpawn("uk-car-1", "vehicle", "uk-rb-w-n", 27),
-        anchoredSpawn("uk-car-2", "vehicle", "uk-dual-n-east", 50),
+        anchoredSpawn("uk-car-2", "vehicle", "uk-dual-n-east", 108),
         freeSpawn("uk-ped-1", "pedestrian", -104, -92, 0),
       ],
       [
         checkpoint("uk-start", "Oldbrook approach", "uk-entry-south", 22),
-        checkpoint("uk-roundabout", "South Grafton Roundabout", "uk-rb-s-w", 13),
+        checkpoint("uk-roundabout", "South Grafton Roundabout approach", "uk-entry-south", 68),
         checkpoint("uk-dual", "Dual carriageway", "uk-dual-n-east", 48),
         checkpoint("uk-finish", "Oldbrook return", "uk-west-south", 48),
+        checkpoint("uk-south-finish", "South approach return", "uk-exit-south", 46),
       ],
     ),
   },
@@ -967,12 +1241,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       shoulderWidth: 2,
       roadSurfaces: [
         roadSurface("fr-roundabout", [frNodes.n.position, point(-25, 25), frNodes.w.position, point(-25, -25), frNodes.s.position, point(25, -25), frNodes.e.position, point(25, 25), frNodes.n.position], 7.2, ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], "roundabout"),
-        roadSurface("fr-north-approach", [frNodes.n.position, frNodes.no.position], 7.2, ["fr-entry-north", "fr-exit-north"]),
-        roadSurface("fr-east-approach", [frNodes.e.position, frNodes.eo.position], 7.2, ["fr-entry-east", "fr-exit-east"]),
-        roadSurface("fr-south-approach", [frNodes.s.position, frNodes.so.position], 7.2, ["fr-entry-south", "fr-exit-south"]),
-        roadSurface("fr-west-approach", [frNodes.w.position, frNodes.wo.position], 7.2, ["fr-entry-west", "fr-exit-west"]),
-        roadSurface("fr-south-east-road", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], 7.4, ["fr-south-east", "fr-south-east-pass"], "lane_divider"),
-        roadSurface("fr-east-south-road", [frNodes.eo.position, point(92, -82), frNodes.so.position], 7.2, ["fr-east-south"]),
+        roadSurface("fr-north-approach", [frNodes.n.position, frNodes.no.position], 7.2, ["fr-entry-north", "fr-exit-north"], "standard", [roadMarking("fr-north-centre", "centre_dashed", [frNodes.n.position, frNodes.no.position], "white")]),
+        roadSurface("fr-east-approach", [frNodes.e.position, frNodes.eo.position], 7.2, ["fr-entry-east", "fr-exit-east"], "standard", [roadMarking("fr-east-centre", "centre_dashed", [frNodes.e.position, frNodes.eo.position], "white")]),
+        roadSurface("fr-south-approach", [frNodes.s.position, frNodes.so.position], 7.2, ["fr-entry-south", "fr-exit-south"], "standard", [roadMarking("fr-south-centre", "centre_dashed", [frNodes.s.position, frNodes.so.position], "white")]),
+        roadSurface("fr-west-approach", [frNodes.w.position, frNodes.wo.position], 7.2, ["fr-entry-west", "fr-exit-west"], "standard", [roadMarking("fr-west-centre", "centre_dashed", [frNodes.w.position, frNodes.wo.position], "white")]),
+        roadSurface("fr-south-east-road", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], 7.4, ["fr-south-east", "fr-south-east-pass"], "standard", [roadMarking("fr-south-east-divider", "lane_dashed", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], "white")]),
+        roadSurface("fr-east-south-road", [frNodes.eo.position, point(150, -42), point(150, -110), point(104, -130), point(20, -130), frNodes.so.position], 7.2, ["fr-east-south"]),
         roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
       ],
       blocks: [
@@ -994,12 +1268,17 @@ export const MAP_PACKS: readonly MapPack[] = [
         control("fr-yield-east", "yield", 42, 0, 270, ["fr-entry-east"], ["fr-roundabout-conflict"],
           [approach("fr-yield-east-approach", "fr-entry-east", 94, "yield", ["fr-roundabout-conflict"])],
           [installation("fr-yield-east-sign", 48, 8, 270, "roadside_pole", "yield_sign", "primary")]),
+        control("fr-yield-west", "yield", -42, 0, 90, ["fr-entry-west"], ["fr-roundabout-conflict"],
+          [approach("fr-yield-west-approach", "fr-entry-west", 94, "yield", ["fr-roundabout-conflict"])],
+          [installation("fr-yield-west-sign", -48, -8, 90, "roadside_pole", "yield_sign", "primary")]),
         control("fr-priority-right", "yield", -74, 72, 225, ["fr-north-west"], undefined,
-          [approach("fr-priority-right-approach", "fr-north-west", 82, "priority")],
+          [approach("fr-priority-right-approach", "fr-north-west", 82, "yield")],
           [installation("fr-priority-right-sign", -70, 65, 225, "roadside_pole", "yield_sign", "warning")]),
       ],
       [
         { id: "fr-roundabout-conflict", laneIds: ["fr-rb-n-w", "fr-rb-w-s", "fr-rb-s-e", "fr-rb-e-n"], polygon: [point(-40, -40), point(40, -40), point(40, 40), point(-40, 40)] },
+        { id: "fr-coquelles-east-split-conflict", laneIds: ["fr-south-east", "fr-south-east-pass", "fr-east-south", "fr-entry-east", "fr-exit-east"], polygon: [point(126, -12), point(150, -12), point(150, 12), point(126, 12)] },
+        { id: "fr-coquelles-south-split-conflict", laneIds: ["fr-south-east", "fr-south-east-pass", "fr-east-south", "fr-entry-south", "fr-exit-south"], polygon: [point(-12, -130), point(12, -130), point(12, -106), point(-12, -106)] },
       ],
       [
         anchoredSpawn("fr-player", "player", "fr-entry-south", 22),
@@ -1009,9 +1288,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       [
         checkpoint("fr-start", "Coquelles start", "fr-entry-south", 22),
-        checkpoint("fr-roundabout", "Roundabout entry", "fr-rb-s-e", 13),
-        checkpoint("fr-priority", "Priority-to-right junction", "fr-north-west", 82),
-        checkpoint("fr-finish", "Terminal road finish", "fr-south-east", 70),
+        checkpoint("fr-roundabout", "Roundabout entry", "fr-entry-south", 68),
+        checkpoint("fr-priority", "Signed local-road yield", "fr-north-west", 82),
+        checkpoint("fr-finish", "Normal travel-lane checkpoint", "fr-south-east", 70),
+        checkpoint("fr-speed-finish", "North approach finish", "fr-exit-north", 60),
+        checkpoint("fr-local-finish", "Coquelles local-road finish", "fr-east-south", 70),
+        checkpoint("fr-roundabout-finish", "South approach finish", "fr-exit-south", 46),
       ],
     ),
   },
@@ -1045,7 +1327,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       landmarks: [
         { id: "jp-gotokuji-station", kind: "station", center: point(-22, 12), size: point(20, 9), color: "#e85e59" },
-        { id: "jp-setagaya-line", kind: "railway", center: point(10, -62), size: point(220, 5), color: "#656a70" },
+        { id: "jp-setagaya-line", kind: "railway", center: point(18, -62), size: point(5, 72), color: "#656a70" },
         { id: "jp-temple-green", kind: "park", center: point(78, 48), size: point(42, 38), color: "#527b4d" },
       ],
     },
@@ -1053,25 +1335,30 @@ export const MAP_PACKS: readonly MapPack[] = [
       Object.values(jpNodes),
       jpLanes,
       [
-        control("jp-rail-signal", "railway_signal", 18, -72, 90, ["jp-south-east-2"], ["jp-rail-conflict"],
-          [approach("jp-rail-eastbound-approach", "jp-south-east-2", 42, "railway", ["jp-rail-conflict"])],
+        control("jp-rail-signal", "railway_signal", 18, -72, 90, ["jp-south-east-2", "jp-south-west-2"], ["jp-rail-conflict"],
+          [
+            approach("jp-rail-eastbound-approach", "jp-south-east-2", 42, "railway", ["jp-rail-conflict"]),
+            approach("jp-rail-westbound-approach", "jp-south-west-2", 48, "railway", ["jp-rail-conflict"]),
+          ],
           [
             installation("jp-rail-east-crossing", 12, -77, 90, "railway_crossing", "japan_railway", "primary"),
             installation("jp-rail-west-crossing", 24, -67, 270, "railway_crossing", "japan_railway", "secondary"),
           ]),
         control("jp-stop-narrow", "stop", -30, 12, 0, ["jp-narrow-north-1"], undefined,
-          [approach("jp-stop-narrow-approach", "jp-narrow-north-1", 84, "stop")],
+          [approach("jp-stop-narrow-approach", "jp-narrow-north-1", 82, "stop")],
           [installation("jp-stop-narrow-sign", -36, 10, 0, "roadside_pole", "stop_sign", "primary")]),
-        control("jp-crosswalk-station", "crosswalk", -30, 18, 90, ["jp-center-west-2", "jp-narrow-north-2"], ["jp-station-conflict"],
+        control("jp-crosswalk-station", "crosswalk", -30, 18, 90, ["jp-center-west-2", "jp-narrow-north-1"], ["jp-station-conflict"],
           [
             approach("jp-station-westbound-crosswalk", "jp-center-west-2", 76, "crosswalk", ["jp-station-conflict"]),
-            approach("jp-station-northbound-crosswalk", "jp-narrow-north-2", 0, "crosswalk", ["jp-station-conflict"]),
+            approach("jp-station-northbound-crosswalk", "jp-narrow-north-1", 82, "crosswalk", ["jp-station-conflict"]),
           ],
           [installation("jp-station-crosswalk-marking", -30, 18, 90, "road_marking", "crosswalk", "marking")]),
       ],
       [
-        { id: "jp-rail-conflict", laneIds: ["jp-south-east-2"], polygon: [point(12, -80), point(24, -80), point(24, -64), point(12, -64)] },
-        { id: "jp-station-conflict", laneIds: ["jp-center-west-2", "jp-narrow-north-2"], polygon: [point(-38, 10), point(-22, 10), point(-22, 26), point(-38, 26)] },
+        { id: "jp-rail-conflict", laneIds: ["jp-south-east-2", "jp-south-west-2"], polygon: [point(12, -80), point(24, -80), point(24, -64), point(12, -64)] },
+        { id: "jp-station-conflict", laneIds: ["jp-center-west-2", "jp-narrow-north-1"], polygon: [point(-38, 10), point(-22, 10), point(-22, 26), point(-38, 26)] },
+        { id: "jp-east-curve-junction-conflict", laneIds: ["jp-curve-north", "jp-curve-south", "jp-center-west-1", "jp-center-east-3"], polygon: [point(104, -26), point(120, -26), point(120, -10), point(104, -10)] },
+        { id: "jp-east-neighbourhood-junction-conflict", laneIds: ["jp-center-west-1", "jp-center-east-3", "jp-junction-south", "jp-junction-north"], polygon: [point(46, 10), point(62, 10), point(62, 26), point(46, 26)] },
       ],
       [
         anchoredSpawn("jp-player", "player", "jp-south-east-1", 18),
@@ -1082,8 +1369,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       [
         checkpoint("jp-start", "Setagaya start", "jp-south-east-1", 18),
         checkpoint("jp-rail", "Setagaya Line crossing", "jp-south-east-2", 38),
-        checkpoint("jp-station", "Gotokuji station street", "jp-center-west-2", 50),
+        checkpoint("jp-rail-clear", "Clear of the Setagaya Line", "jp-south-east-2", 60),
+        checkpoint("jp-stop", "Narrow-street stop line", "jp-narrow-north-1", 82),
+        checkpoint("jp-station", "Gotokuji station crossing", "jp-center-west-2", 76),
         checkpoint("jp-finish", "Neighbourhood finish", "jp-north-east-2", 54),
+        checkpoint("jp-local-finish", "Neighbourhood street finish", "jp-center-west-3", 54),
+        checkpoint("jp-vru-finish", "Patient-space exercise finish", "jp-west-north", 40),
       ],
     ),
   },
@@ -1103,11 +1394,11 @@ export const MAP_PACKS: readonly MapPack[] = [
       roadWidth: 8,
       shoulderWidth: 1.5,
       roadSurfaces: [
-        roadSurface("xf-uk-road", [transitionNodes.uk0.position, transitionNodes.uk1.position], 7.4, ["xf-uk-approach", "xf-uk-approach-opposite"]),
+        roadSurface("xf-uk-road", [transitionNodes.uk0.position, transitionNodes.uk1.position], 7.4, ["xf-uk-approach", "xf-uk-approach-opposite"], "standard", [roadMarking("xf-uk-centre", "centre_dashed", [transitionNodes.uk0.position, transitionNodes.uk1.position], "white")]),
         roadSurface("xf-uk-terminal-road", [transitionNodes.uk1.position, point(-48, -20), transitionNodes.uk2.position], 7.2, ["xf-uk-terminal"], "terminal"),
         roadSurface("xf-shuttle-road", [transitionNodes.uk2.position, transitionNodes.gate.position], 6, ["xf-shuttle"], "terminal"),
         roadSurface("xf-fr-terminal-road", [transitionNodes.gate.position, transitionNodes.fr0.position, point(48, 18), transitionNodes.fr1.position], 7.2, ["xf-fr-terminal", "xf-fr-exit"], "terminal"),
-        roadSurface("xf-fr-road-surface", [transitionNodes.fr1.position, transitionNodes.fr2.position], 7.4, ["xf-fr-road", "xf-fr-road-opposite"]),
+        roadSurface("xf-fr-road-surface", [transitionNodes.fr1.position, transitionNodes.fr2.position], 7.4, ["xf-fr-road", "xf-fr-road-opposite"], "standard", [roadMarking("xf-fr-centre", "centre_dashed", [transitionNodes.fr1.position, transitionNodes.fr2.position], "white")]),
       ],
       blocks: [],
       landmarks: [
@@ -1172,7 +1463,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 101,
     trafficDensity: "none",
     vulnerableRoadUsers: { pedestrians: 0, cyclists: 0 },
-    checkpoints: ["yard-r-start", "yard-r-turn"],
+    checkpoints: ["yard-r-start", "yard-r-turn", "yard-r-stop-line"],
     coachPrompts: [
       prompt("right-start", { type: "start" }, "Keep the centre line on your left; your lane belongs on the right.", "us-nyc-traffic-rules"),
       prompt("right-stop", { type: "route_progress", value: 0.25 }, "Brake to a complete stop, check both ways, then continue.", "us-nyc-traffic-rules"),
@@ -1201,7 +1492,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 102,
     trafficDensity: "none",
     vulnerableRoadUsers: { pedestrians: 0, cyclists: 0 },
-    checkpoints: ["yard-l-start", "yard-l-turn"],
+    checkpoints: ["yard-l-start", "yard-l-stop-line", "yard-l-turn"],
     coachPrompts: [
       prompt("left-start", { type: "start" }, "Keep the centre line on your right; your lane belongs on the left.", "uk-highway-code-road"),
       prompt("left-stop", { type: "route_progress", value: 0.25 }, "Brake to a complete stop and look carefully before moving.", "uk-highway-code-road"),
@@ -1224,9 +1515,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     difficulty: 1,
     estimatedMinutes: [5, 7],
     startSpawnId: "nyc-player",
-    route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
+    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
     objectives: [
-      { id: "us-correct-side", label: "Stay right on two-way streets", ruleCode: "wrong_way" },
+      { id: "us-correct-side", label: "Keep right on two-way roads and read one-way lane signs separately", ruleCode: "wrong_way" },
       { id: "us-one-way", label: "Follow one-way street arrows", ruleCode: "one_way" },
       { id: "us-indicate", label: "Signal every turn", ruleCode: "missing_indicator" },
     ],
@@ -1235,11 +1526,11 @@ export const LESSONS: readonly LessonDefinition[] = [
     vulnerableRoadUsers: { pedestrians: 6, cyclists: 2 },
     checkpoints: ["nyc-start", "nyc-broadway", "nyc-finish"],
     coachPrompts: [
-      prompt("us-grid-start", { type: "start" }, "Use the right lane, and check the one-way arrow before every turn.", "us-nyc-traffic-rules"),
+      prompt("us-grid-start", { type: "start" }, "This route uses the left lane because each upcoming turn is left. That lane choice does not change the city's right-side traffic rule.", "us-ny-dmv-turns"),
       prompt("us-grid-arrow", { type: "route_progress", value: 0.48 }, "This cross street is one-way. Turn only in the signed direction.", "us-nyc-traffic-rules"),
     ],
     assessedRules: ["wrong_way", "one_way", "missing_indicator", "speeding"],
-    sourceReferenceIds: ["us-nyc-traffic-rules"],
+    sourceReferenceIds: ["us-ny-dmv-turns", "us-nyc-traffic-rules"],
     prerequisites: ["orientation-right"],
     unlocks: { lessonIds: ["us-signals-crosswalks"], freeDriveIds: ["free-us"] },
   },
@@ -1255,7 +1546,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     difficulty: 2,
     estimatedMinutes: [6, 8],
     startSpawnId: "nyc-player",
-    route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
+    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
     objectives: [
       { id: "us-red", label: "Stop before a red-light conflict zone", ruleCode: "red_light" },
       { id: "us-crosswalk", label: "Yield to pedestrians in crosswalks", ruleCode: "pedestrian_priority" },
@@ -1277,8 +1568,8 @@ export const LESSONS: readonly LessonDefinition[] = [
   {
     id: "us-lane-choice",
     kind: "guided",
-    title: "Lane Choice & Courtesy",
-    summary: "Change lanes with observation and avoid holding the passing lane when a safe return is available.",
+    title: "One-Way Lane Choice",
+    summary: "Choose a useful lane before each turn, observe carefully and avoid unnecessary weaving on the city grid.",
     mapId: "nyc-upper-west-side",
     countryId: "us",
     destinationId: "us-nyc",
@@ -1286,10 +1577,10 @@ export const LESSONS: readonly LessonDefinition[] = [
     difficulty: 3,
     estimatedMinutes: [6, 8],
     startSpawnId: "nyc-player",
-    route: ["nyc-72-east-1", "nyc-72-east-2", "nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-79-west-1", "nyc-79-west-2", "nyc-west-end-s-1", "nyc-west-end-s-2"],
+    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
     objectives: [
-      { id: "us-observe", label: "Mirror, signal and check before changing lanes", ruleCode: "observation" },
-      { id: "us-passing", label: "Return from the passing lane when safe", ruleCode: "lane_misuse" },
+      { id: "us-observe", label: "Mirror, signal and scan before every turn", ruleCode: "observation" },
+      { id: "us-position", label: "Choose the appropriate lane before each turn", ruleCode: "one_way" },
       { id: "us-distance", label: "Maintain a safe following gap", ruleCode: "following_distance" },
     ],
     trafficSeed: 1103,
@@ -1297,11 +1588,11 @@ export const LESSONS: readonly LessonDefinition[] = [
     vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
     checkpoints: ["nyc-start", "nyc-broadway", "nyc-79", "nyc-finish"],
     coachPrompts: [
-      prompt("us-lane-check", { type: "route_progress", value: 0.2 }, "Check mirrors and your blind spot, signal, then move only when the gap is safe.", "us-ny-dmv-passing"),
-      prompt("us-honk", { type: "rule_event", ruleCode: "lane_misuse" }, "The honk is about lane use, not permission to speed. Return right when it is safe.", "us-ny-dmv-passing"),
+      prompt("us-lane-check", { type: "route_progress", value: 0.2 }, "You are already in the left-turn lane. Hold it predictably, check mirrors and signal before the turn instead of weaving for a temporary gap.", "us-ny-dmv-turns"),
+      prompt("us-weaving", { type: "rule_event", ruleCode: "one_way" }, "Read the one-way signs early and hold a predictable lane instead of weaving between gaps.", "us-nyc-traffic-rules"),
     ],
-    assessedRules: ["observation", "lane_misuse", "following_distance", "missing_indicator"],
-    sourceReferenceIds: ["us-ny-dmv-passing", "us-nyc-traffic-rules"],
+    assessedRules: ["observation", "one_way", "following_distance", "missing_indicator"],
+    sourceReferenceIds: ["us-ny-dmv-turns", "us-nyc-traffic-rules"],
     prerequisites: ["us-signals-crosswalks"],
     unlocks: { lessonIds: [], freeDriveIds: [] },
   },
@@ -1357,7 +1648,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1202,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 2 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-finish"],
+    checkpoints: ["uk-start", "uk-roundabout", "uk-south-finish"],
     coachPrompts: [
       prompt("uk-rb-approach", { type: "checkpoint", checkpointId: "uk-roundabout" }, "Look right and wait for a safe gap before joining clockwise traffic.", "uk-highway-code-road"),
       prompt("uk-rb-exit", { type: "route_progress", value: 0.55 }, "Signal left after the exit before yours, then leave into the left lane.", "uk-highway-code-road"),
@@ -1371,7 +1662,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     id: "uk-dual-carriageway",
     kind: "guided",
     title: "Dual Carriageway Courtesy",
-    summary: "Merge safely, use the right lane only to overtake and return left when clear.",
+    summary: "Observe, pass a slower lead vehicle in the passing lane and return to the normal travel lane when safely clear.",
     mapId: "milton-keynes-oldbrook",
     countryId: "uk",
     destinationId: "uk-milton-keynes",
@@ -1382,21 +1673,47 @@ export const LESSONS: readonly LessonDefinition[] = [
     route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-exit-north", "uk-dual-n-east", "uk-east-north", "uk-entry-east", "uk-rb-e-s", "uk-exit-south"],
     objectives: [
       { id: "uk-merge", label: "Merge into a safe gap", ruleCode: "merge" },
-      { id: "uk-passing", label: "Use the right lane for overtaking", ruleCode: "lane_misuse" },
-      { id: "uk-return", label: "Return left when safely clear", ruleCode: "observation" },
+      { id: "uk-passing", label: "Use the right passing lane only for overtaking", ruleCode: "lane_misuse" },
+      { id: "uk-return", label: "Return to the normal travel lane when safely clear", ruleCode: "observation" },
     ],
     trafficSeed: 1203,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-dual", "uk-finish"],
+    checkpoints: ["uk-start", "uk-roundabout", "uk-dual", "uk-south-finish"],
     coachPrompts: [
-      prompt("uk-dual-merge", { type: "checkpoint", checkpointId: "uk-dual" }, "Build speed, check right and merge into a safe gap without forcing traffic to brake.", "uk-highway-code-road"),
-      prompt("uk-dual-honk", { type: "rule_event", ruleCode: "lane_misuse" }, "The right lane is for overtaking. A honk does not permit speeding; return left when safe.", "uk-highway-code-road"),
+      prompt("uk-dual-merge", { type: "checkpoint", checkpointId: "uk-dual" }, "Match the posted limit smoothly, check right and enter only when the passing lane is clear.", "uk-highway-code-general"),
+      prompt("uk-dual-observe", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "observe" }, "CHECK RIGHT — mirror, signal and use a quick look before leaving the normal travel lane.", "uk-highway-code-general"),
+      prompt("uk-dual-pass", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "pass" }, "PASS WHEN CLEAR — remain within the limit and leave a safe gap around the lead vehicle.", "uk-highway-code-road"),
+      prompt("uk-dual-return", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "return" }, "RETURN LEFT — signal and re-establish the normal travel lane only after you can see a safe clearance.", "uk-highway-code-motorways"),
+      prompt("uk-dual-honk", { type: "rule_event", ruleCode: "lane_misuse" }, "The right lane is the passing lane. A honk does not permit speeding; return to the normal travel lane when safe.", "uk-highway-code-motorways"),
     ],
     assessedRules: ["merge", "lane_misuse", "observation", "following_distance", "speeding"],
-    sourceReferenceIds: ["uk-highway-code-road"],
+    sourceReferenceIds: ["uk-highway-code-general", "uk-highway-code-road", "uk-highway-code-motorways"],
     prerequisites: ["uk-roundabouts"],
     unlocks: { lessonIds: ["uk-fr-side-swap"], freeDriveIds: [] },
+    maneuvers: [
+      {
+        id: "uk-mk-guided-overtake",
+        kind: "overtake",
+        normalLaneId: "uk-dual-n-east",
+        passingLaneId: "uk-dual-n-east-pass",
+        corridorStart: anchor("uk-dual-n-east", 10),
+        corridorEnd: anchor("uk-dual-n-east", 680),
+        leadVehicleStart: anchor("uk-dual-n-east", 108),
+        leadVehicleSpeedFactor: 0.75,
+        phaseAnchors: {
+          approach: anchor("uk-dual-n-east", 28),
+          observe: anchor("uk-dual-n-east", 60),
+          pass: anchor("uk-dual-n-east-pass", 190),
+          return: anchor("uk-dual-n-east-pass", 540),
+          complete: anchor("uk-dual-n-east", 650),
+        },
+        predictedClearSeconds: 4,
+        returnStandstillGapM: 4,
+        returnHeadwaySeconds: 1.8,
+        sourceReferenceIds: ["uk-highway-code-general", "uk-highway-code-road", "uk-highway-code-motorways"],
+      },
+    ],
   },
   {
     id: "fr-right-side-basics",
@@ -1419,7 +1736,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1301,
     trafficDensity: "light",
     vulnerableRoadUsers: { pedestrians: 3, cyclists: 3 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish"],
     coachPrompts: [
       prompt("fr-start-coach", { type: "start" }, "Keep right. Your speedometer and signs now use kilometres per hour.", "fr-eu-road-rules"),
       prompt("fr-turn-coach", { type: "route_progress", value: 0.5 }, "After the turn, deliberately settle back onto the right side.", "fr-eu-road-rules"),
@@ -1433,7 +1750,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     id: "fr-priority-roundabouts",
     kind: "guided",
     title: "Priority & Roundabouts",
-    summary: "Recognise priority-to-the-right junctions and counterclockwise roundabouts.",
+    summary: "Read signed yields and travel counterclockwise through French roundabouts.",
     mapId: "calais-coquelles",
     countryId: "fr",
     destinationId: "fr-calais",
@@ -1443,19 +1760,19 @@ export const LESSONS: readonly LessonDefinition[] = [
     startSpawnId: "fr-player",
     route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
-      { id: "fr-priority", label: "Yield at an unsigned priority-to-right junction", ruleCode: "priority_to_right" },
+      { id: "fr-priority", label: "Obey the signed local-road yield", ruleCode: "unsafe_gap" },
       { id: "fr-yield", label: "Yield before entering the roundabout", ruleCode: "roundabout_yield" },
       { id: "fr-circle", label: "Circulate counterclockwise", ruleCode: "wrong_way" },
     ],
     trafficSeed: 1302,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 4 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-roundabout-finish"],
     coachPrompts: [
       prompt("fr-rb", { type: "checkpoint", checkpointId: "fr-roundabout" }, "Give way to traffic already circulating from your left, then travel counterclockwise.", "fr-eu-road-rules"),
-      prompt("fr-priority-coach", { type: "checkpoint", checkpointId: "fr-priority" }, "No sign cancels it here: slow and check for traffic approaching from the right.", "fr-eu-road-rules"),
+      prompt("fr-priority-coach", { type: "checkpoint", checkpointId: "fr-priority" }, "The roadside sign controls this junction. Slow, observe both directions and yield before entering the conflict area.", "fr-eu-road-rules"),
     ],
-    assessedRules: ["priority_to_right", "roundabout_yield", "wrong_way", "unsafe_gap"],
+    assessedRules: ["roundabout_yield", "wrong_way", "unsafe_gap", "observation"],
     sourceReferenceIds: ["fr-eu-road-rules"],
     prerequisites: ["fr-right-side-basics"],
     unlocks: { lessonIds: ["fr-speed-merging"], freeDriveIds: [] },
@@ -1463,8 +1780,8 @@ export const LESSONS: readonly LessonDefinition[] = [
   {
     id: "fr-speed-merging",
     kind: "guided",
-    title: "Autoroute Approach",
-    summary: "Build speed in km/h, merge with observation and keep right except to pass.",
+    title: "Faster-Road Lane Discipline",
+    summary: "Read km/h limits, maintain a safe gap and stay in the normal right-hand travel lane.",
     mapId: "calais-coquelles",
     countryId: "fr",
     destinationId: "fr-calais",
@@ -1474,19 +1791,19 @@ export const LESSONS: readonly LessonDefinition[] = [
     startSpawnId: "fr-player",
     route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
     objectives: [
-      { id: "fr-merge", label: "Merge without forcing traffic to brake", ruleCode: "merge" },
-      { id: "fr-pass", label: "Use the left lane only to pass", ruleCode: "lane_misuse" },
+      { id: "fr-lane-discipline", label: "Use the normal right-hand lane when not passing", ruleCode: "lane_misuse" },
+      { id: "fr-speed", label: "Stay within the posted km/h limit", ruleCode: "speeding" },
       { id: "fr-gap", label: "Maintain a safe following gap", ruleCode: "following_distance" },
     ],
     trafficSeed: 1303,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-finish", "fr-speed-finish"],
     coachPrompts: [
-      prompt("fr-merge-coach", { type: "route_progress", value: 0.45 }, "Use the slip road to match traffic speed, observe left and enter a safe gap.", "fr-eu-road-rules"),
-      prompt("fr-pass-coach", { type: "rule_event", ruleCode: "lane_misuse" }, "Keep right when not passing. The left lane is not a fast-lane speed exemption.", "fr-eu-road-rules"),
+      prompt("fr-normal-lane-coach", { type: "checkpoint", checkpointId: "fr-finish" }, "Stay in the normal right-hand travel lane. Use the left lane only when a real pass is necessary and safe.", "fr-eu-road-rules"),
+      prompt("fr-pass-coach", { type: "rule_event", ruleCode: "lane_misuse" }, "Keep right when not passing. The passing lane never exempts you from the speed limit.", "fr-eu-road-rules"),
     ],
-    assessedRules: ["merge", "lane_misuse", "following_distance", "observation", "speeding"],
+    assessedRules: ["lane_misuse", "following_distance", "observation", "speeding"],
     sourceReferenceIds: ["fr-eu-road-rules"],
     prerequisites: ["fr-priority-roundabouts"],
     unlocks: { lessonIds: ["uk-fr-side-swap"], freeDriveIds: [] },
@@ -1512,10 +1829,10 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1401,
     trafficDensity: "light",
     vulnerableRoadUsers: { pedestrians: 7, cyclists: 5 },
-    checkpoints: ["jp-start", "jp-station", "jp-finish"],
+    checkpoints: ["jp-start", "jp-stop", "jp-station", "jp-local-finish"],
     coachPrompts: [
       prompt("jp-start-coach", { type: "start" }, "Keep left and leave extra space for people emerging from narrow side streets.", "jp-jaf-traffic-rules"),
-      prompt("jp-stop-coach", { type: "route_progress", value: 0.38 }, "Stop at the marking even when the street appears quiet.", "jp-jaf-traffic-rules"),
+      prompt("jp-stop-coach", { type: "checkpoint", checkpointId: "jp-stop" }, "Stop at the marking even when the street appears quiet.", "jp-jaf-traffic-rules"),
     ],
     assessedRules: ["wrong_way", "speeding", "incomplete_stop", "observation"],
     sourceReferenceIds: ["jp-jaf-traffic-rules"],
@@ -1537,16 +1854,16 @@ export const LESSONS: readonly LessonDefinition[] = [
     route: ["jp-south-east-1", "jp-narrow-north-1", "jp-narrow-north-2", "jp-north-east-2", "jp-junction-south", "jp-center-west-2", "jp-center-west-3", "jp-west-north"],
     objectives: [
       { id: "jp-ped", label: "Yield at the station crosswalk", ruleCode: "pedestrian_priority" },
-      { id: "jp-bike", label: "Pass cyclists only with safe clearance", ruleCode: "cyclist_clearance" },
+      { id: "jp-bike", label: "Wait behind cyclists where the narrow street leaves no safe passing room", ruleCode: "cyclist_clearance" },
       { id: "jp-follow", label: "Keep a patient following distance", ruleCode: "following_distance" },
     ],
     trafficSeed: 1402,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 12, cyclists: 8 },
-    checkpoints: ["jp-start", "jp-station", "jp-finish"],
+    checkpoints: ["jp-start", "jp-stop", "jp-station", "jp-vru-finish"],
     coachPrompts: [
       prompt("jp-station-ped", { type: "checkpoint", checkpointId: "jp-station" }, "Cover the brake and let people finish crossing before you move.", "jp-jaf-traffic-rules"),
-      prompt("jp-cycle-space", { type: "route_progress", value: 0.65 }, "Wait behind the cyclist until there is enough room to pass without crowding them.", "jp-jaf-traffic-rules"),
+      prompt("jp-cycle-space", { type: "route_progress", value: 0.65 }, "Do not squeeze past on this 2.7-metre street. Wait behind the cyclist until they leave the narrow section.", "jp-jaf-traffic-rules"),
     ],
     assessedRules: ["pedestrian_priority", "cyclist_clearance", "following_distance", "observation"],
     sourceReferenceIds: ["jp-jaf-traffic-rules"],
@@ -1574,9 +1891,10 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1403,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 9, cyclists: 6 },
-    checkpoints: ["jp-start", "jp-rail", "jp-station", "jp-finish"],
+    checkpoints: ["jp-start", "jp-rail", "jp-rail-clear", "jp-station", "jp-finish"],
     coachPrompts: [
       prompt("jp-rail-coach", { type: "checkpoint", checkpointId: "jp-rail" }, "Stop before the tracks, check both directions and enter only if you can clear the crossing.", "jp-jaf-traffic-rules"),
+      prompt("jp-rail-clear-coach", { type: "checkpoint", checkpointId: "jp-rail-clear" }, "Keep moving until the whole vehicle is clear of the tracks, then rebuild your following gap.", "jp-jaf-traffic-rules"),
       prompt("jp-rail-block", { type: "rule_event", ruleCode: "railway_crossing" }, "Never queue on the tracks. Wait before the crossing until your exit is open.", "jp-jaf-traffic-rules"),
     ],
     assessedRules: ["railway_crossing", "unsafe_gap", "observation", "following_distance"],
@@ -1607,7 +1925,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     coachPrompts: [
       prompt("xf-start", { type: "start" }, "You are still in the UK: keep left through the Folkestone approach.", "uk-highway-code-road"),
       prompt("xf-swap", { type: "checkpoint", checkpointId: "xf-shuttle" }, "The shuttle is the transition. Follow the lane arrows; French traffic rules begin at the exit.", "fr-eu-road-rules"),
-      prompt("xf-fr", { type: "checkpoint", checkpointId: "xf-fr-start" }, "Reset your road position now: keep right, read km/h signs and look left at the first roundabout.", "fr-eu-road-rules"),
+      prompt("xf-fr", { type: "checkpoint", checkpointId: "xf-fr-start" }, "Reset your road position now: keep right, read km/h signs and follow the marked terminal exit.", "fr-eu-road-rules"),
     ],
     assessedRules: ["wrong_way", "border_transition", "observation", "speeding"],
     sourceReferenceIds: ["uk-highway-code-road", "fr-eu-road-rules"],

@@ -394,7 +394,10 @@ export default function SideSwapApp() {
         kind: "free_drive",
         trafficSide: driveCountry.trafficSide,
         startSpawnId: activeFreeDrive.startSpawnId,
-        route: activeLesson.route,
+        // Free drive is intentionally unstructured: the authored spawn still
+        // places the car in the correct legal lane, but no lesson route is
+        // borrowed or rendered as a mandatory path.
+        route: [],
         objectives: [
           {
             id: `${activeFreeDrive.id}-explore`,
@@ -404,9 +407,10 @@ export default function SideSwapApp() {
         trafficSeed: activeFreeDrive.trafficSeed,
         trafficDensity: "moderate",
         vulnerableRoadUsers: activeLesson.vulnerableRoadUsers,
-        checkpoints: runtimeMap.laneGraph.checkpoints.map(
-          (checkpoint) => checkpoint.id,
-        ),
+        // Free drive has no authored finish sequence. Requiring every map
+        // checkpoint here made unrelated, off-route targets appear in turn and
+        // implied that the player was following a scored lesson.
+        checkpoints: [],
         coachPrompts: [
           {
             id: `${activeFreeDrive.id}-start`,

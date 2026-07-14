@@ -203,14 +203,56 @@ describe("London flagship content", () => {
     if (quietStart?.kind === "player") {
       expect(quietStart.anchor).toEqual({
         laneId: "london-local-west",
-        distanceAlongM: 14,
+        distanceAlongM: 15.35,
       });
     }
     if (queenGateStart?.kind === "player") {
       expect(queenGateStart.anchor).toEqual({
         laneId: "london-queen-gate-north-1",
-        distanceAlongM: 12,
+        distanceAlongM: 13.27,
       });
     }
+  });
+
+  it("orders the Cromwell box decision before the signal approach", () => {
+    const checkpoints = new Map(
+      LONDON_MAP_PACK.laneGraph.checkpoints.map((checkpoint) => [
+        checkpoint.id,
+        checkpoint,
+      ]),
+    );
+    const museumLesson = LONDON_LESSONS.find(
+      (lesson) => lesson.id === "uk-london-museum-traffic",
+    );
+
+    expect(checkpoints.get("london-box-junction")?.anchor).toEqual({
+      laneId: "london-cromwell-east-1",
+      distanceAlongM: 125,
+    });
+    expect(checkpoints.get("london-cromwell-signal")?.anchor).toEqual({
+      laneId: "london-cromwell-east-1",
+      distanceAlongM: 136,
+    });
+    expect(museumLesson?.checkpoints).toEqual([
+      "london-bus-lane",
+      "london-box-junction",
+      "london-cromwell-signal",
+      "london-finish",
+    ]);
+  });
+
+  it("assesses the Exhibition Road approach to the Thurloe crossing", () => {
+    const crosswalk = LONDON_MAP_PACK.laneGraph.controls.find(
+      (control) => control.id === "london-crosswalk-thurloe",
+    );
+    expect(crosswalk?.laneIds).toContain("london-exhibition-shared-2");
+    expect(
+      crosswalk?.approaches.find(
+        (item) => item.id === "london-exhibition-crosswalk-approach",
+      )?.stopLine,
+    ).toEqual({
+      laneId: "london-exhibition-shared-2",
+      distanceAlongM: 50,
+    });
   });
 });
