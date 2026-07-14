@@ -266,11 +266,11 @@ export function buildRoadSurfaceStripGeometry(
     const nextNegative = nextPositive + 1;
     indices.push(
       positive,
-      negative,
       nextPositive,
       negative,
+      negative,
+      nextPositive,
       nextNegative,
-      nextPositive,
     );
   }
   return { positions, indices, closed };

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { VertexData } from "@babylonjs/core";
 import {
   AdaptiveInputRouter,
   COCKPIT_DASH_DRIVER_Z,
@@ -158,6 +159,30 @@ describe("continuous road-surface rendering", () => {
     expect(geometry.indices).toHaveLength(12);
     // The shared corner uses the mitered outer and inner corners of the turn.
     expect(geometry.positions.slice(6, 12)).toEqual([3, 0, 7, -3, 0, 13]);
+  });
+
+  it("faces the asphalt upward so Babylon renders it from driving cameras", () => {
+    const geometry = buildRoadSurfaceStripGeometry(
+      [
+        { x: 0, z: 0 },
+        { x: 0, z: 10 },
+      ],
+      6,
+    );
+    const normals: number[] = [];
+
+    VertexData.ComputeNormals(
+      [...geometry.positions],
+      [...geometry.indices],
+      normals,
+    );
+
+    expect(normals.filter((_, index) => index % 3 === 1)).toEqual([
+      1,
+      1,
+      1,
+      1,
+    ]);
   });
 
   it("wraps a closed roundabout strip without a final-segment seam", () => {
