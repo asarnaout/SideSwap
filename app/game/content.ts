@@ -1336,7 +1336,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "jp-block-south", center: point(-48, -30), size: point(100, 50), heightRange: [5, 13], density: 0.7, material: "wood-plaster" },
       ],
       landmarks: [
-        { id: "jp-gotokuji-station", kind: "station", center: point(-22, 12), size: point(20, 9), color: "#e85e59" },
+        { id: "jp-gotokuji-station", kind: "station", center: point(-14, 6), size: point(20, 9), color: "#e85e59" },
         { id: "jp-setagaya-line", kind: "railway", center: point(18, -62), size: point(5, 72), color: "#656a70" },
         // The former temple garden covered the live junction. Keep it visible
         // to the east of the street instead of placing it over the asphalt.
