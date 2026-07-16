@@ -945,34 +945,58 @@ export default function SideSwapApp() {
             </div>
             <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to home</button>
           </div>
-          <div className="hub-country-tabs" role="group" aria-label="Choose destination">
+          <div className="hub-country-tabs" role="tablist" aria-label="Choose country">
             {(["uk", "us", "fr", "jp"] as const).map((groupCountryId) => {
               const groupCountry = getCountryProfile(groupCountryId);
-              const groupDestinations = DESTINATION_PROFILES.filter(
-                (item) => item.countryId === groupCountryId,
-              );
+              const isActiveCountry = country.id === groupCountryId;
               return (
-                <div className="hub-destination-group" key={groupCountryId}>
-                  <small>{groupCountry.flagEmoji} {groupCountry.countryName}</small>
-                  <div>
-                    {groupDestinations.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={destinationId === item.id ? "active" : ""}
-                        aria-pressed={destinationId === item.id}
-                        onClick={() => chooseDestination(item.id)}
-                      >
-                        <span>{item.cityMark}</span>
-                        <b>{item.destinationName}</b>
-                        {item.promotion === "specialist" && <em>Roundabout Academy · specialist</em>}
-                        {item.promotion === "featured" && <em>Featured</em>}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <button
+                  key={groupCountryId}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActiveCountry}
+                  className={`hub-country-tab${isActiveCountry ? " active" : ""}`}
+                  onClick={() => {
+                    if (isActiveCountry) return;
+                    // A country tab jumps to that country by selecting its
+                    // featured map (or its first), keeping the detail panel and
+                    // lessons below in sync with the tiles shown.
+                    const countryDestinations = DESTINATION_PROFILES.filter(
+                      (item) => item.countryId === groupCountryId,
+                    );
+                    const target =
+                      countryDestinations.find(
+                        (item) => item.promotion === "featured",
+                      ) ?? countryDestinations[0];
+                    if (target) chooseDestination(target.id);
+                  }}
+                >
+                  {groupCountry.flagEmoji} {groupCountry.countryName}
+                </button>
               );
             })}
+          </div>
+          <div
+            className="hub-destination-grid"
+            role="tabpanel"
+            aria-label={`${country.countryName} destinations`}
+          >
+            {DESTINATION_PROFILES.filter(
+              (item) => item.countryId === country.id,
+            ).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={destinationId === item.id ? "active" : ""}
+                aria-pressed={destinationId === item.id}
+                onClick={() => chooseDestination(item.id)}
+              >
+                <span>{item.cityMark}</span>
+                <b>{item.destinationName}</b>
+                {item.promotion === "specialist" && <em>Roundabout Academy · specialist</em>}
+                {item.promotion === "featured" && <em>Featured</em>}
+              </button>
+            ))}
           </div>
           <div className="hub-destination-heading">
             <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{destination.destinationName}</h2><em>{destination.destinationSubtitle}</em></div></div>
