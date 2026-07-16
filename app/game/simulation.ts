@@ -34,6 +34,23 @@ const PLAYER_TRAFFIC_CLEARANCE_M =
   PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 1.25;
 const NPC_PHYSICAL_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 0.08;
 const NPC_CROSSING_YIELD_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 3;
+// A rendered vehicle is ~3.75 m long, but the physics model treats every car as
+// a ~1 m-radius disc. Holding at least a body length of centre-to-centre spacing
+// where cars physically hem each other in keeps a compressing or converging
+// queue bumper-to-bumper instead of letting the low-poly meshes interpenetrate.
+const NPC_BODY_CLEARANCE_M = 3.8;
+// When a car makes no progress for this long while obeying no signal or yield —
+// i.e. it is genuinely jammed against other traffic after a converging bump —
+// it is recycled through the deterministic traffic-gate queue, so the incident
+// clears like a real fender-bender being towed instead of blocking the lane
+// forever. Shortly before that it is nudged askew so the contact reads as a
+// knock rather than two cars politely halted in line.
+const NPC_INCIDENT_KNOCK_SECONDS = 2.5;
+const NPC_INCIDENT_STUCK_SECONDS = 6;
+const NPC_INCIDENT_KNOCK_RAD = 0.16;
+// Never recycle (vanish) a jammed car this close to the player; hold it visible
+// until they have moved on, so traffic never pops out of existence beside them.
+const NPC_INCIDENT_PLAYER_CLEARANCE_M = 26;
 const INITIAL_PLAYER_CLEARANCE_AHEAD_M = 20;
 const INITIAL_CROSS_LANE_CLEARANCE_M = 12;
 const SPAWN_PREDICTION_SECONDS = 4;
@@ -565,6 +582,10 @@ interface NpcInternal extends MutablePose {
   laneChangeProgress: number;
   signalSeconds: number;
   stoppedSeconds: number;
+  /** Seconds spent jammed against other traffic (no signal/yield reason). */
+  jamSeconds: number;
+  /** Display-only lean applied to the rendered pose during an incident. */
+  incidentLeanRad: number;
   decisionCooldown: number;
   previousX: number;
   previousZ: number;
@@ -1671,7 +1692,8 @@ export class SimulationCore {
           variant: npc.variant,
           x: npc.x,
           z: npc.z,
-          heading: npc.heading,
+          // Add the display-only incident lean; the model keeps npc.heading clean.
+          heading: wrapAngle(npc.heading + npc.incidentLeanRad),
           speedMps: npc.speedMps,
           state: npc.state,
           signal: npc.signal,
@@ -1742,6 +1764,7 @@ export class SimulationCore {
       this.trafficDecisionAccumulator -= TRAFFIC_DECISION_SECONDS;
     }
     this.moveNpcs(deltaSeconds);
+    this.updateNpcIncidents(deltaSeconds);
     this.updateRoadState();
 
     if (this.status !== "running") return;
@@ -1918,6 +1941,8 @@ export class SimulationCore {
         laneChangeProgress: 0,
         signalSeconds: 0,
         stoppedSeconds: 0,
+        jamSeconds: 0,
+        incidentLeanRad: 0,
         decisionCooldown: Number.POSITIVE_INFINITY,
         x: pose.x,
         z: pose.z,
@@ -1958,6 +1983,8 @@ export class SimulationCore {
         laneChangeProgress: 0,
         signalSeconds: 0,
         stoppedSeconds: 0,
+        jamSeconds: 0,
+        incidentLeanRad: 0,
         decisionCooldown: 4 + this.random.next() * 8,
         x: pose.x,
         z: pose.z,
@@ -2136,6 +2163,8 @@ export class SimulationCore {
     npc.laneChangeProgress = 0;
     npc.signalSeconds = 0;
     npc.stoppedSeconds = 0;
+    npc.jamSeconds = 0;
+    npc.incidentLeanRad = 0;
     npc.x = pose.x;
     npc.z = pose.z;
     npc.heading = pose.heading;
@@ -2154,6 +2183,8 @@ export class SimulationCore {
     npc.signal = "off";
     npc.targetLaneId = undefined;
     npc.laneChangeProgress = 0;
+    npc.jamSeconds = 0;
+    npc.incidentLeanRad = 0;
   }
 
   private activateQueuedNpcs(): void {
@@ -2413,7 +2444,9 @@ export class SimulationCore {
       if (!sourceLane) continue;
       const requestedTravel = npc.speedMps * deltaSeconds;
       const leadGap = this.leadVehicleGap(sourceLane, npc.distance, npc.id);
-      const minimumCentreGap = NPC_RADIUS_METRES * 2 + 0.4;
+      // Hold a full body length so a compressing queue stops bumper-to-bumper
+      // rather than letting the ~3.75 m car meshes overlap at the old ~2.4 m gap.
+      const minimumCentreGap = NPC_BODY_CLEARANCE_M;
       const followingSafeTravel =
         leadGap === null
           ? requestedTravel
@@ -2486,6 +2519,69 @@ export class SimulationCore {
       npc.x = sourcePose.x;
       npc.z = sourcePose.z;
       npc.heading = sourcePose.heading;
+    }
+  }
+
+  /**
+   * Turns a permanent NPC jam into a self-clearing incident. Raised body
+   * clearances already stop a converging collision bumper-to-bumper instead of
+   * meshing; this then sits the pinned car askew so the contact reads as a
+   * knock, and once it has been unable to move for a few seconds while it is
+   * pinned bumper-to-bumper against another vehicle (and obeying no signal or
+   * yield), recycles it through the deterministic traffic-gate queue so the lane
+   * flows again — as if the incident were cleared. A jammed car within
+   * NPC_INCIDENT_PLAYER_CLEARANCE_M of the player is held visible instead of
+   * vanishing beside them. The askew lean is a separate display-only field, so
+   * the model's heading stays clean and the knock cannot perturb determinism.
+   */
+  private updateNpcIncidents(deltaSeconds: number): void {
+    for (const npc of this.npcs) {
+      if (!npc.active || npc.scriptedManeuverId) continue;
+      const lane = this.lanesById.get(npc.laneId);
+      if (!lane) continue;
+      const barelyMoved =
+        Math.hypot(npc.x - npc.previousX, npc.z - npc.previousZ) < 0.04;
+      const obeyingControl =
+        lane.kind === "roundabout" ||
+        this.redLightGapForLane(lane, npc.distance) !== null ||
+        this.yieldGapForLane(lane, npc.distance) !== null;
+      // A car pressed within a body length of another is the signature of a
+      // collision jam: an orderly stopped queue settles at the ~5 m decision gap
+      // (see makeTrafficDecisions), so only a deadlock compresses down to the
+      // NPC_BODY_CLEARANCE_M hard floor. This catches both a same-heading
+      // pile-up and a converging bump while leaving normal queues untouched.
+      const pinnedAgainstAnotherCar = this.npcs.some((other) => {
+        if (!other.active || other.id === npc.id) return false;
+        const reach = NPC_BODY_CLEARANCE_M + 0.5;
+        return distanceSquared(npc, other) <= reach * reach;
+      });
+      const jammed =
+        npc.speedMps < 0.25 &&
+        barelyMoved &&
+        !obeyingControl &&
+        pinnedAgainstAnotherCar;
+      if (!jammed) {
+        npc.jamSeconds = 0;
+        npc.incidentLeanRad = 0;
+        continue;
+      }
+      npc.jamSeconds += deltaSeconds;
+      if (
+        npc.jamSeconds >= NPC_INCIDENT_STUCK_SECONDS &&
+        distanceSquared(npc, this.player) >
+          NPC_INCIDENT_PLAYER_CLEARANCE_M * NPC_INCIDENT_PLAYER_CLEARANCE_M
+      ) {
+        this.deactivateNpc(npc);
+        continue;
+      }
+      // Lean the rendered pose askew so the contact reads as a knock. This is a
+      // separate display-only field, so npc.heading stays pristine for the
+      // spatial-clearance model and the knock cannot perturb determinism.
+      const side = this.numericNpcId(npc.id) % 2 === 0 ? 1 : -1;
+      npc.incidentLeanRad =
+        npc.jamSeconds >= NPC_INCIDENT_KNOCK_SECONDS
+          ? side * NPC_INCIDENT_KNOCK_RAD
+          : 0;
     }
   }
 
@@ -2593,11 +2689,14 @@ export class SimulationCore {
       const sameFlow =
         npc.laneId === other.laneId ||
         Math.abs(angleDifference(npc.heading, other.heading)) < Math.PI / 6;
+      // A full body length keeps two converging cars from visibly overlapping;
+      // the lower-priority id still yields the larger crossing gap. (Was ~2.4 m
+      // same-flow / ~2.08 m physical, both shorter than the rendered car.)
       const clearance = sameFlow
-        ? NPC_RADIUS_METRES * 2 + 0.4
+        ? NPC_BODY_CLEARANCE_M
         : numericNpcId > this.numericNpcId(other.id)
           ? NPC_CROSSING_YIELD_CLEARANCE_M
-          : NPC_PHYSICAL_CLEARANCE_M;
+          : NPC_BODY_CLEARANCE_M;
       if (!this.isSweptNpcClearOfPoint(npc, candidate, other, clearance)) {
         return false;
       }
