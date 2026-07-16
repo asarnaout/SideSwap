@@ -14,7 +14,8 @@ import {
   WORLD_LAYER_MASK,
   buildRoadSurfaceStripGeometry,
   clampHorizontalFieldOfView,
-  collectRoadJunctionPatches,
+  collectRoadJunctionFills,
+  convexHullXZ,
   guidanceCueOverlapsCheckpoint,
   isAuthoredCheckpointCrossing,
   isLaneGuidanceDistanceAllowed,
@@ -208,8 +209,26 @@ describe("continuous road-surface rendering", () => {
     expect(smoothGeometry.indices).toHaveLength(96);
   });
 
-  it("adds one asphalt apron only where independently-authored surfaces share a node", () => {
-    const patches = collectRoadJunctionPatches([
+  it("paves one road-aligned junction fill only where independently-authored surfaces share a node", () => {
+    const pointInPolygon = (
+      point: { x: number; z: number },
+      polygon: readonly { x: number; z: number }[],
+    ): boolean => {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const a = polygon[i];
+        const b = polygon[j];
+        if (
+          a.z > point.z !== b.z > point.z &&
+          point.x < ((b.x - a.x) * (point.z - a.z)) / (b.z - a.z) + a.x
+        ) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+
+    const fills = collectRoadJunctionFills([
       {
         id: "north-south",
         widthM: 7.2,
@@ -238,7 +257,43 @@ describe("continuous road-surface rendering", () => {
       },
     ]);
 
-    expect(patches).toEqual([{ x: 0, z: 0, radiusM: 5.42 }]);
+    // Only the shared crossing yields a fill; the isolated stub does not.
+    expect(fills).toHaveLength(1);
+    const polygon = fills[0].polygon;
+    // A convex, non-degenerate hull centred on the shared node.
+    expect(polygon.length).toBeGreaterThanOrEqual(4);
+    expect(pointInPolygon({ x: 0, z: 0 }, polygon)).toBe(true);
+    // Its footprint squares off to both carriageways: it reaches each road's
+    // full half-width (east-west ±5 in x, north-south ±3.6 in z) but never
+    // balloons past the wider road's span the way a circle would.
+    const xs = polygon.map((p) => p.x);
+    const zs = polygon.map((p) => p.z);
+    expect(Math.min(...xs)).toBeLessThanOrEqual(-5);
+    expect(Math.max(...xs)).toBeGreaterThanOrEqual(5);
+    expect(Math.min(...zs)).toBeLessThanOrEqual(-3.6);
+    expect(Math.max(...zs)).toBeGreaterThanOrEqual(3.6);
+    expect(Math.max(...xs)).toBeLessThan(9);
+    expect(Math.max(...zs)).toBeLessThan(9);
+  });
+
+  it("returns a counter-clockwise hull that ignores interior and duplicate points", () => {
+    const hull = convexHullXZ([
+      { x: 0, z: 0 },
+      { x: 4, z: 0 },
+      { x: 4, z: 4 },
+      { x: 0, z: 4 },
+      { x: 2, z: 2 }, // interior point must be dropped
+      { x: 4, z: 0 }, // duplicate must be dropped
+    ]);
+    expect(hull).toHaveLength(4);
+    // Signed area is positive for a counter-clockwise ring in the xz plane.
+    let signedArea = 0;
+    for (let i = 0; i < hull.length; i += 1) {
+      const a = hull[i];
+      const b = hull[(i + 1) % hull.length];
+      signedArea += a.x * b.z - b.x * a.z;
+    }
+    expect(signedArea).toBeGreaterThan(0);
   });
 });
 

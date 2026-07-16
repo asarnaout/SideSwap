@@ -107,9 +107,12 @@ export const WORLD_LAYER_MASK = 0x0fffffff;
 export const GUIDANCE_LAYER_MASK = 0x10000000;
 export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
 const ROAD_SURFACE_Y = 0.07;
-const ROAD_JUNCTION_PATCH_Y = ROAD_SURFACE_Y + 0.004;
+// Junction fills sit a hair below their carriageway/shoulder strips so the road
+// always wins on overlap (no depth flicker) and the fill only shows through the
+// genuine seams and corner throats between independently-authored surfaces.
+const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y - 0.0015;
 const ROAD_SHOULDER_Y = 0.045;
-const ROAD_SHOULDER_JUNCTION_Y = 0.048;
+const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
 const MAX_ROAD_MITER_RATIO = 3.25;
 
@@ -126,10 +129,9 @@ export interface RoadJunctionSource {
   readonly widthM: number;
 }
 
-export interface RoadJunctionPatch {
-  readonly x: number;
-  readonly z: number;
-  readonly radiusM: number;
+export interface RoadJunctionFill {
+  /** Convex, upward-wound polygon that paves the shared-node junction. */
+  readonly polygon: readonly GameCanvasPoint[];
 }
 
 type RoadDirection = Readonly<{ x: number; z: number }>;
@@ -337,46 +339,115 @@ export function buildRoadSurfaceStripGeometry(
   return { positions, indices, closed };
 }
 
+/** Counter-clockwise convex hull (Andrew's monotone chain) of an xz point set. */
+export function convexHullXZ(
+  points: readonly GameCanvasPoint[],
+): readonly GameCanvasPoint[] {
+  const sorted = points
+    .map((point) => ({ x: point.x, z: point.z }))
+    .sort((left, right) => left.x - right.x || left.z - right.z);
+  const unique: GameCanvasPoint[] = [];
+  for (const point of sorted) {
+    const previous = unique.at(-1);
+    if (!previous || Math.hypot(previous.x - point.x, previous.z - point.z) > 1e-6) {
+      unique.push(point);
+    }
+  }
+  if (unique.length < 3) return unique;
+  const cross = (
+    origin: GameCanvasPoint,
+    a: GameCanvasPoint,
+    b: GameCanvasPoint,
+  ): number =>
+    (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
+  const build = (ordered: readonly GameCanvasPoint[]): GameCanvasPoint[] => {
+    const chain: GameCanvasPoint[] = [];
+    for (const point of ordered) {
+      while (
+        chain.length >= 2 &&
+        cross(chain[chain.length - 2], chain[chain.length - 1], point) <= 0
+      ) {
+        chain.pop();
+      }
+      chain.push(point);
+    }
+    chain.pop();
+    return chain;
+  };
+  const lower = build(unique);
+  const upper = build([...unique].reverse());
+  return lower.concat(upper);
+}
+
 /**
- * Finds shared authored road nodes so a small asphalt apron can cover the
- * seam between independently-authored road surfaces (for example a side
- * street and a roundabout approach).
+ * Paves each junction where independently-authored road surfaces share a node
+ * (a side street meeting an avenue, a roundabout approach, a spliced segment)
+ * with the convex hull of the road cross-sections that meet there. Unlike a
+ * circular apron, the hull's straight edges align to the carriageways and stop
+ * at their footprints, so it fills the seam and the corner throats without a
+ * round lip spilling onto the grass. `lateralInflationM` widens the sections to
+ * build the matching dirt-shoulder fill.
  */
-export function collectRoadJunctionPatches(
+export function collectRoadJunctionFills(
   surfaces: readonly RoadJunctionSource[],
-): readonly RoadJunctionPatch[] {
-  const candidates: Array<{
+  lateralInflationM = 0,
+): readonly RoadJunctionFill[] {
+  const clusters: Array<{
     x: number;
     z: number;
-    maxWidthM: number;
     surfaceIds: Set<string>;
+    corners: GameCanvasPoint[];
   }> = [];
   for (const surface of surfaces) {
-    const normalized = normalizeRoadCenterline(surface.centerline);
-    for (const point of normalized.points) {
-      const existing = candidates.find(
-        (candidate) => Math.hypot(candidate.x - point.x, candidate.z - point.z) <= ROAD_POINT_EPSILON_M,
+    const { points } = normalizeRoadCenterline(surface.centerline);
+    const half = surface.widthM / 2 + lateralInflationM;
+    for (let index = 0; index < points.length; index += 1) {
+      const node = points[index];
+      let cluster = clusters.find(
+        (candidate) =>
+          Math.hypot(candidate.x - node.x, candidate.z - node.z) <=
+          ROAD_POINT_EPSILON_M,
       );
-      if (existing) {
-        existing.maxWidthM = Math.max(existing.maxWidthM, surface.widthM);
-        existing.surfaceIds.add(surface.id);
-      } else {
-        candidates.push({
-          x: point.x,
-          z: point.z,
-          maxWidthM: surface.widthM,
-          surfaceIds: new Set([surface.id]),
+      if (!cluster) {
+        cluster = { x: node.x, z: node.z, surfaceIds: new Set(), corners: [] };
+        clusters.push(cluster);
+      }
+      cluster.surfaceIds.add(surface.id);
+      // Emit the strip's lateral corners at the node and a short reach into each
+      // adjacent segment; the union's hull then squares off to the roads.
+      const neighbours: GameCanvasPoint[] = [];
+      if (index > 0) neighbours.push(points[index - 1]);
+      if (index < points.length - 1) neighbours.push(points[index + 1]);
+      for (const neighbour of neighbours) {
+        const direction = normalizeRoadDirection({
+          x: neighbour.x - node.x,
+          z: neighbour.z - node.z,
         });
+        if (!direction) continue;
+        const lateral = roadLateral(direction);
+        const reach = Math.min(
+          half * 1.5,
+          roadPointDistance(node, neighbour) * 0.9,
+        );
+        for (const along of [0, reach]) {
+          const baseX = node.x + direction.x * along;
+          const baseZ = node.z + direction.z * along;
+          cluster.corners.push({
+            x: baseX + lateral.x * half,
+            z: baseZ + lateral.z * half,
+          });
+          cluster.corners.push({
+            x: baseX - lateral.x * half,
+            z: baseZ - lateral.z * half,
+          });
+        }
       }
     }
   }
-  return candidates
-    .filter((candidate) => candidate.surfaceIds.size > 1)
-    .map((candidate) => ({
-      x: candidate.x,
-      z: candidate.z,
-      radiusM: Math.max(2.7, candidate.maxWidthM / 2 + 0.42),
-    }));
+  return clusters
+    .filter((cluster) => cluster.surfaceIds.size > 1)
+    .map((cluster) => ({ polygon: convexHullXZ(cluster.corners) }))
+    .filter((fill) => fill.polygon.length >= 3);
 }
 
 /** Keeps a checkpoint target wholly inside its authored lane. */
@@ -4038,18 +4109,25 @@ class BabylonGameSession {
         surface.surfaceType === "roundabout",
       );
     }
-    for (const [index, patch] of collectRoadJunctionPatches(roadSurfaces).entries()) {
-      this.createRoadJunctionPatch(
+    // Dirt-shoulder fills first (lowest), then the asphalt fills, mirroring the
+    // strip layering so a junction reads as one continuous surface.
+    for (const [index, fill] of collectRoadJunctionFills(
+      roadSurfaces,
+      shoulderWidth,
+    ).entries()) {
+      this.createRoadJunctionFill(
         `road-junction-shoulder-${index}`,
-        patch,
+        fill.polygon,
         dirtShoulder,
-        shoulderWidth,
-        ROAD_SHOULDER_JUNCTION_Y,
+        ROAD_SHOULDER_JUNCTION_FILL_Y,
       );
-      this.createRoadJunctionPatch(
+    }
+    for (const [index, fill] of collectRoadJunctionFills(roadSurfaces).entries()) {
+      this.createRoadJunctionFill(
         `road-junction-${index}`,
-        patch,
+        fill.polygon,
         asphalt,
+        ROAD_JUNCTION_FILL_Y,
       );
     }
     for (const surface of roadSurfaces) {
@@ -5087,27 +5165,46 @@ class BabylonGameSession {
     return mesh;
   }
 
-  private createRoadJunctionPatch(
+  private createRoadJunctionFill(
     name: string,
-    patch: RoadJunctionPatch,
+    polygon: readonly GameCanvasPoint[],
     material: StandardMaterial,
-    radiusExtraM = 0,
-    y = ROAD_JUNCTION_PATCH_Y,
-  ) {
-    const disk = createCylinder(
-      this.scene,
-      name,
-      {
-        height: 0.026,
-        diameter: (patch.radiusM + radiusExtraM) * 2,
-        tessellation: 20,
-      },
-      new Vector3(patch.x, y, patch.z),
-      material,
-    );
-    disk.receiveShadows = true;
-    disk.freezeWorldMatrix();
-    return disk;
+    y: number,
+  ): Mesh | undefined {
+    if (polygon.length < 3) return undefined;
+    const positions: number[] = [];
+    for (const point of polygon) positions.push(point.x, y, point.z);
+    // Fan-triangulate the convex hull from its first vertex.
+    const indices: number[] = [];
+    for (let index = 1; index + 1 < polygon.length; index += 1) {
+      indices.push(0, index, index + 1);
+    }
+    let normals: number[] = [];
+    VertexData.ComputeNormals(positions, indices, normals);
+    // Guarantee the surface faces up regardless of the hull's winding in world
+    // space, so it lights the same as the road strips instead of going black.
+    if (normals[1] < 0) {
+      for (let index = 0; index < indices.length; index += 3) {
+        const swap = indices[index + 1];
+        indices[index + 1] = indices[index + 2];
+        indices[index + 2] = swap;
+      }
+      normals = [];
+      VertexData.ComputeNormals(positions, indices, normals);
+    }
+    const mesh = new Mesh(name, this.scene);
+    const vertexData = new VertexData();
+    vertexData.positions = positions;
+    vertexData.indices = indices;
+    vertexData.normals = normals;
+    // Same ~20 m world-planar tiling as createRoadSurfaceMesh so the wear
+    // texture is continuous across the seam with the surrounding carriageway.
+    vertexData.uvs = buildPlanarUVs(positions, 0.05);
+    vertexData.applyToMesh(mesh);
+    setMeshMaterial(mesh, material, true);
+    mesh.receiveShadows = true;
+    mesh.freezeWorldMatrix();
+    return mesh;
   }
 
   private createFlatSegment(
