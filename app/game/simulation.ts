@@ -1023,6 +1023,12 @@ export class SimulationCore {
   };
   private currentCheckpoint: SimulationCheckpoint;
   private reachedCheckpoints = new Set<string>();
+  /**
+   * Route lanes the player has legally driven this run, so guidance recovery
+   * can tell a missed-corner leg (recoverable) from a short-cut or teleport to
+   * a later lane (must not skip the unvisited legs in between).
+   */
+  private readonly visitedRouteLaneIds = new Set<string>();
   private readonly routeProgressByCheckpoint = new Map<string, number>();
   private distanceTravelledM = 0;
   private wrongWaySeconds = 0;
@@ -1483,6 +1489,7 @@ export class SimulationCore {
     this.ruleCooldowns.clear();
     this.currentCheckpoint = this.config.checkpoints[0];
     this.reachedCheckpoints = new Set([this.currentCheckpoint.id]);
+    this.visitedRouteLaneIds.clear();
     for (const state of this.routeGuidanceStates) {
       state.enteredTarget = false;
       state.satisfied = false;
@@ -3814,8 +3821,24 @@ export class SimulationCore {
     previousProjection: LaneProjection | null,
     currentProjection: LaneProjection | null,
   ): void {
+    if (!previousProjection || !currentProjection) return;
+    const movingLegallyForward =
+      this.signedSpeedMps > STOPPED_SPEED_MPS &&
+      !this.roadState.wrongWay &&
+      !this.roadState.offRoad;
+    // Route legs complete at an anchor a few metres before each lane end—i.e.
+    // right at a turn. A player who swings wide there misses the anchor and,
+    // with no way to re-satisfy a leg once past it, permanently stalls the
+    // finish. If the player is legally established further along the route than
+    // the pointer, they drove the intervening legs: bank them (and the
+    // checkpoints on them) so progress follows the car.
+    if (movingLegallyForward) {
+      this.visitedRouteLaneIds.add(currentProjection.lane.id);
+      this.recoverRouteAndCheckpointProgress(currentProjection);
+    }
+
     const state = this.routeGuidanceStates.find((candidate) => !candidate.satisfied);
-    if (!state || !previousProjection || !currentProjection) return;
+    if (!state) return;
     const { config } = state;
     const fromLane = config.fromLaneId
       ? this.lanesById.get(config.fromLaneId)
@@ -3826,10 +3849,6 @@ export class SimulationCore {
     const fullyInsideTarget =
       currentProjection.lane.id === targetLane.id &&
       currentProjection.distance <= this.routeLaneContainmentTolerance(targetLane);
-    const movingLegallyForward =
-      this.signedSpeedMps > STOPPED_SPEED_MPS &&
-      !this.roadState.wrongWay &&
-      !this.roadState.offRoad;
 
     if (!state.enteredTarget) {
       const crossedInitialAnchor =
@@ -3846,8 +3865,19 @@ export class SimulationCore {
             fromLane.length - ROUTE_ENTRY_WINDOW_M &&
           currentProjection.distanceAlong <= ROUTE_ENTRY_WINDOW_M,
       );
+      // Simply being established on the target lane—having already driven its
+      // predecessor—also counts as entry. Without it, a wide line through the
+      // entry corner can permanently deny a leg, which recovery cannot rescue on
+      // the final leg (no later occurrence to advance into). Full-lane
+      // containment and the visited-predecessor gate keep straddling and
+      // short-cuts out (see routeGuidanceSimulation tests).
+      const establishedOnTarget =
+        currentProjection.lane.id === targetLane.id &&
+        (fromLane === null || this.visitedRouteLaneIds.has(fromLane.id));
       if (
-        (crossedInitialAnchor || crossedSuccessorBoundary) &&
+        (crossedInitialAnchor ||
+          crossedSuccessorBoundary ||
+          establishedOnTarget) &&
         fullyInsideTarget &&
         movingLegallyForward
       ) {
@@ -3868,6 +3898,80 @@ export class SimulationCore {
     ) {
       state.satisfied = true;
       state.enteredTarget = false;
+    }
+  }
+
+  /**
+   * Advances route and checkpoint progress to wherever the player has legally
+   * driven, curing the corner soft-lock: a leg's completion anchor sits a few
+   * metres before its lane end (at the turn), and a wide line misses it with no
+   * way to re-satisfy the leg once the car has moved on.
+   */
+  private recoverRouteAndCheckpointProgress(
+    currentProjection: LaneProjection,
+  ): void {
+    const states = this.routeGuidanceStates;
+    const firstUnsatisfied = states.findIndex((candidate) => !candidate.satisfied);
+    if (firstUnsatisfied < 0) return;
+    // On the pointer's own lane the normal completion path handles it; never
+    // guess past a lane the route may legitimately revisit.
+    if (states[firstUnsatisfied].config.targetLaneId === currentProjection.lane.id) {
+      return;
+    }
+    // Walk forward from the pointer, but only across legs the player actually
+    // drove, and stop at the occurrence they are established on now. A cut
+    // corner (every skipped leg visited) recovers; a short-cut that jumps an
+    // unvisited leg does not advance past it.
+    let target = -1;
+    for (let index = firstUnsatisfied; index < states.length; index += 1) {
+      const lane = this.lanesById.get(states[index].config.targetLaneId);
+      if (!lane) break;
+      if (
+        index > firstUnsatisfied &&
+        currentProjection.lane.id === lane.id &&
+        currentProjection.distance <= lane.width
+      ) {
+        target = index;
+        break;
+      }
+      if (!this.visitedRouteLaneIds.has(states[index].config.targetLaneId)) break;
+    }
+    if (target < 0) return;
+    for (let behind = firstUnsatisfied; behind < target; behind += 1) {
+      states[behind].satisfied = true;
+      states[behind].enteredTarget = false;
+    }
+    this.bankCheckpointsBeforeRouteOccurrence(states[target].config.routeIndex);
+  }
+
+  /** Route occurrence at which a lane-anchored checkpoint is driven past. */
+  private routeOccurrenceForCheckpoint(
+    checkpoint: SimulationCheckpoint,
+  ): number | null {
+    if (!checkpoint.laneId) return null;
+    const step = this.routeGuidanceStates.find(
+      (candidate) => candidate.config.targetLaneId === checkpoint.laneId,
+    );
+    return step ? step.config.routeIndex : null;
+  }
+
+  /**
+   * Banks the leading run of still-pending checkpoints the player has already
+   * driven past, in authored order, so a missed lane-anchor crossing at a
+   * corner cannot block the finish. The scan stops at the first pending
+   * checkpoint not yet passed, preserving strict checkpoint ordering.
+   */
+  private bankCheckpointsBeforeRouteOccurrence(occurrenceIndex: number): void {
+    for (const checkpoint of this.config.checkpoints) {
+      if (this.reachedCheckpoints.has(checkpoint.id)) continue;
+      const checkpointOccurrence = this.routeOccurrenceForCheckpoint(checkpoint);
+      if (
+        checkpointOccurrence === null ||
+        checkpointOccurrence >= occurrenceIndex
+      ) {
+        break;
+      }
+      this.markCheckpointReached(checkpoint);
     }
   }
 
@@ -4490,7 +4594,10 @@ export class SimulationCore {
       ? crossedLaneAnchor
       : distanceSquared(checkpoint, this.player) <= radius * radius;
     if (!reached) return;
+    this.markCheckpointReached(checkpoint);
+  }
 
+  private markCheckpointReached(checkpoint: SimulationCheckpoint): void {
     this.currentCheckpoint = { ...checkpoint };
     this.reachedCheckpoints.add(checkpoint.id);
     this.routeProgressByCheckpoint.set(
@@ -4518,6 +4625,35 @@ export class SimulationCore {
   private checkFinish(): void {
     const finish = this.config.finish;
     if (!finish) return;
+    const radius = finish.radius ?? 5;
+    const atFinish = distanceSquared(finish, this.player) <= radius * radius;
+    if (atFinish) {
+      // The route end is only reachable by driving the route, so any leg or
+      // lane-anchored checkpoint on a lane the player actually drove is done.
+      // This clears the strict "moving and fully in-lane" gate misses uniformly
+      // on every map—chiefly the final leg (which has no later occurrence for
+      // forward recovery) and a coast-to-stop a lane's width off the centreline
+      // or between two parallel lanes. The visited-lanes gate keeps a shortcut
+      // across open ground from satisfying anything it never drove.
+      for (const state of this.routeGuidanceStates) {
+        if (
+          !state.satisfied &&
+          this.visitedRouteLaneIds.has(state.config.targetLaneId)
+        ) {
+          state.satisfied = true;
+          state.enteredTarget = false;
+        }
+      }
+      for (const checkpoint of this.config.checkpoints) {
+        if (
+          !this.reachedCheckpoints.has(checkpoint.id) &&
+          checkpoint.laneId !== undefined &&
+          this.visitedRouteLaneIds.has(checkpoint.laneId)
+        ) {
+          this.markCheckpointReached(checkpoint);
+        }
+      }
+    }
     if (
       this.config.checkpoints.some(
         (checkpoint) => !this.reachedCheckpoints.has(checkpoint.id),
@@ -4526,10 +4662,7 @@ export class SimulationCore {
       return;
     }
     if (!this.requiredGuidanceComplete()) return;
-    const radius = finish.radius ?? 5;
-    if (distanceSquared(finish, this.player) <= radius * radius) {
-      this.completeLesson();
-    }
+    if (atFinish) this.completeLesson();
   }
 
   private restoreCheckpointPose(): void {

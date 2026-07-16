@@ -1,18 +1,24 @@
 "use client";
 
 import {
+  AbstractMesh,
   ArcRotateCamera,
   Camera,
   Color3,
   Color4,
+  ColorCurves,
+  DefaultRenderingPipeline,
   DirectionalLight,
   DynamicTexture,
   Engine,
   HemisphericLight,
+  ImageProcessingConfiguration,
   Mesh,
   MeshBuilder,
   Scene,
+  ShadowGenerator,
   StandardMaterial,
+  Texture,
   TransformNode,
   UniversalCamera,
   Vector3,
@@ -46,6 +52,21 @@ import {
   type AuthoredSignalAspect,
   type AuthoredSignalStyle,
 } from "./trafficSignals";
+import {
+  buildAsphaltTextureSpec,
+  buildGrassTextureSpec,
+  buildHorizonSilhouetteSpec,
+  buildPlanarUVs,
+  generateRoadsidePropPlacements,
+  hashStringToSeed,
+  resolveFogRange,
+  resolveMapVisualKey,
+  resolveMapVisualPalette,
+  seededUnit,
+  skyGradientStops,
+  type MapVisualPalette,
+  type PropKindConfig,
+} from "./visuals";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -87,6 +108,8 @@ export const GUIDANCE_LAYER_MASK = 0x10000000;
 export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
 const ROAD_SURFACE_Y = 0.07;
 const ROAD_JUNCTION_PATCH_Y = ROAD_SURFACE_Y + 0.004;
+const ROAD_SHOULDER_Y = 0.045;
+const ROAD_SHOULDER_JUNCTION_Y = 0.048;
 const ROAD_POINT_EPSILON_M = 0.08;
 const MAX_ROAD_MITER_RATIO = 3.25;
 
@@ -539,6 +562,68 @@ export function isLaneGuidanceDistanceAllowed(
       distanceAlongM >= range.startDistanceAlongM - 0.05 &&
       distanceAlongM <= range.endDistanceAlongM + 0.05,
   );
+}
+
+export interface RouteChevronPlacement {
+  readonly distanceAlongM: number;
+  readonly tip: GameCanvasPoint;
+  readonly back: GameCanvasPoint;
+  readonly sideX: number;
+  readonly sideZ: number;
+}
+
+/**
+ * Deterministic chevron layout for one route lane. Arrows march every 12 m,
+ * skipping junction connectors and compact conflict zones; roundabout rings
+ * are exempt from the conflict-zone rule because their priority zone covers
+ * the whole circle and would otherwise erase every arrow on the ring. Pure so
+ * per-lesson guidance coverage can be asserted in tests.
+ */
+export function computeRouteChevronPlacements(
+  lane: GameCanvasLane,
+  conflictZones: GameCanvasMapPack["laneGraph"]["conflictZones"],
+): readonly RouteChevronPlacement[] {
+  const placements: RouteChevronPlacement[] = [];
+  let travelled = 0;
+  let nextChevronAt = 7;
+  for (let segmentIndex = 0; segmentIndex < lane.centerline.length - 1; segmentIndex += 1) {
+    const start = lane.centerline[segmentIndex];
+    const end = lane.centerline[segmentIndex + 1];
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.01) continue;
+    const ux = dx / length;
+    const uz = dz / length;
+    while (nextChevronAt <= travelled + length) {
+      const along = nextChevronAt - travelled;
+      const tip = { x: start.x + ux * along, z: start.z + uz * along };
+      const back = { x: tip.x - ux * 1.45, z: tip.z - uz * 1.45 };
+      const inConnectorRange = !isLaneGuidanceDistanceAllowed(
+        lane,
+        nextChevronAt,
+      );
+      const inConflictZone =
+        lane.role !== "roundabout" &&
+        conflictZones.some(
+          (zone) =>
+            zone.laneIds.includes(lane.id) &&
+            (isPointInPolygon(tip, zone.polygon) || isPointInPolygon(back, zone.polygon)),
+        );
+      if (!inConnectorRange && !inConflictZone) {
+        placements.push({
+          distanceAlongM: nextChevronAt,
+          tip,
+          back,
+          sideX: uz,
+          sideZ: -ux,
+        });
+      }
+      nextChevronAt += 12;
+    }
+    travelled += length;
+  }
+  return placements;
 }
 
 /** Structural map contract; existing MapPack objects can be passed directly. */
@@ -1257,12 +1342,164 @@ export class AdaptiveInputRouter {
 
 const degreesToRadians = (degrees: number) => (degrees * Math.PI) / 180;
 
-function seededUnit(seed: number) {
-  let value = (Math.trunc(seed) || 1) >>> 0;
-  return () => {
-    value = (Math.imul(value, 1_664_525) + 1_013_904_223) >>> 0;
-    return value / 0x1_0000_0000;
-  };
+const LONDON_LAMP_POSITIONS: readonly (readonly [number, number])[] = [
+  [-83, -52],
+  [-50, -52],
+  [-2, -52],
+  [25, -52],
+  [28, 2],
+  [56, 18],
+  [28, 60],
+  [56, 72],
+];
+
+const LONDON_BOLLARD_POSITIONS: readonly (readonly [number, number])[] = [
+  -2, 22, 46, 70,
+].flatMap((z) => [
+  [32, z] as const,
+  [52, z] as const,
+]);
+
+const LONDON_PLANTER_POSITIONS: readonly (readonly [number, number])[] = [
+  [57, -8],
+  [57, 36],
+  [57, 68],
+];
+
+const LONDON_POST_BOX_POSITION = [122, 87] as const;
+
+/** Hand-placed South Kensington furniture that scattered props must avoid. */
+const LONDON_FURNITURE_POINTS: readonly GameCanvasPoint[] = [
+  ...LONDON_LAMP_POSITIONS,
+  ...LONDON_BOLLARD_POSITIONS,
+  ...LONDON_PLANTER_POSITIONS,
+  LONDON_POST_BOX_POSITION,
+].map(([x, z]) => ({ x, z }));
+
+const PROP_TREE: PropKindConfig = {
+  kind: "tree",
+  spacingM: 26,
+  jitterM: 8,
+  lateralMarginM: 2.2,
+  bothSides: true,
+  variants: 3,
+  minScale: 0.85,
+  maxScale: 1.3,
+};
+
+const PROP_STREETLIGHT: PropKindConfig = {
+  kind: "streetlight",
+  spacingM: 38,
+  jitterM: 6,
+  lateralMarginM: 1,
+  bothSides: false,
+  alternateSides: true,
+  variants: 1,
+  faceRoad: true,
+};
+
+const PROP_SIGN: PropKindConfig = {
+  kind: "sign",
+  spacingM: 66,
+  jitterM: 18,
+  lateralMarginM: 1.2,
+  bothSides: false,
+  variants: 2,
+  faceRoad: true,
+};
+
+/** Per-map roadside dressing: shared basics plus locally recognisable extras. */
+function roadsidePropKindsForMap(
+  key: ReturnType<typeof resolveMapVisualKey>,
+): readonly PropKindConfig[] {
+  switch (key) {
+    case "nyc":
+      return [
+        PROP_STREETLIGHT,
+        { ...PROP_TREE, spacingM: 30 },
+        {
+          kind: "hydrant",
+          spacingM: 58,
+          jitterM: 14,
+          lateralMarginM: 0.9,
+          bothSides: false,
+          variants: 1,
+          faceRoad: true,
+        },
+        PROP_SIGN,
+      ];
+    case "london":
+      // Street lamps are hand-placed for South Kensington; scattered props
+      // stay clear of them via LONDON_FURNITURE_POINTS.
+      return [{ ...PROP_TREE, spacingM: 30 }, PROP_SIGN];
+    case "milton":
+      return [
+        { ...PROP_TREE, spacingM: 20 },
+        {
+          kind: "hedge",
+          spacingM: 34,
+          jitterM: 10,
+          lateralMarginM: 1.6,
+          bothSides: true,
+          variants: 1,
+          minScale: 0.9,
+          maxScale: 1.4,
+          faceRoad: true,
+        },
+        PROP_SIGN,
+        { ...PROP_STREETLIGHT, spacingM: 52 },
+      ];
+    case "calais":
+      return [
+        { ...PROP_TREE, spacingM: 42 },
+        {
+          kind: "bollard",
+          spacingM: 24,
+          jitterM: 5,
+          lateralMarginM: 0.9,
+          bothSides: true,
+          variants: 1,
+        },
+        {
+          kind: "dune-tuft",
+          spacingM: 18,
+          jitterM: 7,
+          lateralMarginM: 2.6,
+          bothSides: true,
+          variants: 1,
+          minScale: 0.7,
+          maxScale: 1.5,
+        },
+        PROP_SIGN,
+      ];
+    case "tokyo":
+      return [
+        {
+          kind: "utility-pole",
+          spacingM: 32,
+          jitterM: 5,
+          lateralMarginM: 0.9,
+          bothSides: false,
+          alternateSides: true,
+          variants: 1,
+          faceRoad: true,
+        },
+        {
+          kind: "vending",
+          spacingM: 74,
+          jitterM: 20,
+          lateralMarginM: 1,
+          bothSides: false,
+          variants: 2,
+          faceRoad: true,
+        },
+        { ...PROP_TREE, spacingM: 34, minScale: 0.7, maxScale: 1 },
+        PROP_SIGN,
+      ];
+    case "orientation":
+    default:
+      return [{ ...PROP_TREE, spacingM: 24 }];
+  }
 }
 
 function colorFromHex(value: string, fallback: Color3): Color3 {
@@ -1468,10 +1705,247 @@ function makeMaterial(
   return material;
 }
 
-function setMeshMaterial(mesh: Mesh, material: StandardMaterial) {
+function setMeshMaterial(
+  mesh: Mesh,
+  material: StandardMaterial,
+  receiveShadows = false,
+) {
   mesh.material = material;
-  mesh.receiveShadows = false;
+  mesh.receiveShadows = receiveShadows;
   mesh.isPickable = false;
+}
+
+function textureContext(texture: DynamicTexture): CanvasRenderingContext2D {
+  return texture.getContext() as unknown as CanvasRenderingContext2D;
+}
+
+function createSkyGradientTexture(
+  scene: Scene,
+  palette: MapVisualPalette,
+): DynamicTexture {
+  const height = 256;
+  const texture = new DynamicTexture(
+    "sky-gradient",
+    { width: 4, height },
+    scene,
+    false,
+  );
+  const context = textureContext(texture);
+  // Canvas bottom samples the dome's top pole (v=0 after the flipped upload),
+  // so the zenith stop is anchored at the bottom row.
+  const gradient = context.createLinearGradient(0, height, 0, 0);
+  for (const stop of skyGradientStops(palette)) {
+    gradient.addColorStop(stop.offset, stop.color);
+  }
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 4, height);
+  texture.update();
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  return texture;
+}
+
+function createHorizonSilhouetteTexture(
+  scene: Scene,
+  mapId: string,
+  palette: MapVisualPalette,
+): DynamicTexture {
+  const width = 2048;
+  const height = 256;
+  const texture = new DynamicTexture(
+    "horizon-silhouette",
+    { width, height },
+    scene,
+    true,
+  );
+  texture.hasAlpha = true;
+  const context = textureContext(texture);
+  context.clearRect(0, 0, width, height);
+
+  const shapes = buildHorizonSilhouetteSpec(mapId, hashStringToSeed(mapId));
+  // Keep the shared terrain band shallow: a tall band reads as a wall around
+  // the map instead of a distant skyline.
+  const baseBandHeight = height * 0.1;
+  const usableHeight = height - baseBandHeight;
+
+  const drawShape = (
+    shape: (typeof shapes)[number],
+    offsetX: number,
+  ): void => {
+    const centerX = (shape.x + offsetX) * width;
+    const shapeWidth = Math.max(2, shape.w * width);
+    const top = height - baseBandHeight - shape.h * usableHeight;
+    if (shape.kind === "box") {
+      context.fillRect(centerX - shapeWidth / 2, top, shapeWidth, height - top);
+      return;
+    }
+    if (shape.kind === "spike") {
+      context.beginPath();
+      context.moveTo(centerX - shapeWidth / 2, height);
+      context.lineTo(centerX, top);
+      context.lineTo(centerX + shapeWidth / 2, height);
+      context.closePath();
+      context.fill();
+      return;
+    }
+    if (shape.kind === "pylon") {
+      const mastWidth = Math.max(2, shapeWidth * 0.3);
+      context.fillRect(centerX - mastWidth / 2, top, mastWidth, height - top);
+      const armWidth = shapeWidth * 4;
+      const armHeight = Math.max(2, height * 0.012);
+      context.fillRect(centerX - armWidth / 2, top + usableHeight * 0.08, armWidth, armHeight);
+      context.fillRect(
+        centerX - armWidth * 0.375,
+        top + usableHeight * 0.2,
+        armWidth * 0.75,
+        armHeight,
+      );
+      return;
+    }
+    const radiusX = Math.max(3, shapeWidth / 2);
+    context.beginPath();
+    context.ellipse(
+      centerX,
+      height - baseBandHeight,
+      radiusX,
+      Math.max(2, shape.h * usableHeight),
+      0,
+      Math.PI,
+      Math.PI * 2,
+    );
+    context.closePath();
+    context.fill();
+    context.fillRect(
+      centerX - radiusX,
+      height - baseBandHeight,
+      radiusX * 2,
+      baseBandHeight,
+    );
+  };
+
+  // A continuous distant-terrain band keeps the ring base seamless where the
+  // fogged ground meets the sky, with skyline shapes rising above it.
+  context.fillStyle = palette.silhouetteFar;
+  context.fillRect(0, height - baseBandHeight, width, baseBandHeight);
+  for (const layer of [1, 0] as const) {
+    context.fillStyle =
+      layer === 1 ? palette.silhouetteFar : palette.silhouetteNear;
+    for (const shape of shapes) {
+      if (shape.layer !== layer) continue;
+      // Draw wrapped copies so shapes crossing the seam stay continuous.
+      drawShape(shape, -1);
+      drawShape(shape, 0);
+      drawShape(shape, 1);
+    }
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  return texture;
+}
+
+function applyLuminanceNoise(
+  context: CanvasRenderingContext2D,
+  size: number,
+  seed: number,
+  amplitude: number,
+): void {
+  const image = context.getImageData(0, 0, size, size);
+  const random = seededUnit(seed);
+  const data = image.data;
+  for (let index = 0; index < data.length; index += 4) {
+    const factor = 1 + (random() - 0.5) * 2 * amplitude;
+    data[index] = Math.min(255, Math.max(0, data[index] * factor));
+    data[index + 1] = Math.min(255, Math.max(0, data[index + 1] * factor));
+    data[index + 2] = Math.min(255, Math.max(0, data[index + 2] * factor));
+  }
+  context.putImageData(image, 0, 0);
+}
+
+function createAsphaltTexture(
+  scene: Scene,
+  name: string,
+  baseColorHex: string,
+  seed: number,
+): DynamicTexture {
+  const size = 512;
+  const texture = new DynamicTexture(name, size, scene, true);
+  const context = textureContext(texture);
+  context.fillStyle = baseColorHex;
+  context.fillRect(0, 0, size, size);
+
+  const spec = buildAsphaltTextureSpec(seed);
+  applyLuminanceNoise(context, size, spec.noiseSeed, 0.03);
+  context.fillStyle = "rgba(255, 255, 255, 1)";
+  for (const patch of spec.patches) {
+    context.globalAlpha = patch.lighten;
+    context.beginPath();
+    context.arc(patch.x * size, patch.y * size, patch.r * size, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalAlpha = 1;
+  context.strokeStyle = "rgba(0, 0, 0, 0.14)";
+  context.lineWidth = 2;
+  context.lineJoin = "round";
+  for (const crack of spec.cracks) {
+    context.beginPath();
+    for (const [pointIndex, point] of crack.points.entries()) {
+      // Cracks that wrap the tile edge would draw a long straight artefact;
+      // break the stroke on large jumps instead.
+      const previous = crack.points[pointIndex - 1];
+      if (
+        pointIndex === 0 ||
+        (previous &&
+          (Math.abs(point.x - previous.x) > 0.5 ||
+            Math.abs(point.y - previous.y) > 0.5))
+      ) {
+        context.moveTo(point.x * size, point.y * size);
+        continue;
+      }
+      context.lineTo(point.x * size, point.y * size);
+    }
+    context.stroke();
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
+}
+
+function createGrassTexture(
+  scene: Scene,
+  name: string,
+  palette: MapVisualPalette,
+  seed: number,
+): DynamicTexture {
+  const size = 512;
+  const texture = new DynamicTexture(name, size, scene, true);
+  const context = textureContext(texture);
+  context.fillStyle = palette.grassBase;
+  context.fillRect(0, 0, size, size);
+
+  const spec = buildGrassTextureSpec(seed);
+  context.fillStyle = palette.grassAlt;
+  for (const blob of spec.blobs) {
+    if (!blob.alt) continue;
+    context.globalAlpha = 0.5;
+    context.beginPath();
+    context.arc(blob.x * size, blob.y * size, blob.r * size, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalAlpha = 0.35;
+  context.fillStyle = palette.dirtShoulder;
+  for (const speckle of spec.speckles) {
+    context.beginPath();
+    context.arc(speckle.x * size, speckle.y * size, 2.2, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalAlpha = 1;
+  applyLuminanceNoise(context, size, spec.noiseSeed, 0.03);
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
 }
 
 function createBox(
@@ -1607,6 +2081,7 @@ class BabylonGameSession {
   private readonly routePoints: readonly GameCanvasPoint[];
   private readonly authoredCheckpoints: readonly AuthoredCheckpoint[];
   private readonly checkpointVisuals: GuidanceVisual[] = [];
+  private finishVisual: GuidanceVisual | null = null;
   private readonly routeChevronVisuals: RouteChevronVisual[] = [];
   private guidanceCueVisual: GuidanceVisual | null = null;
   private guidanceCueKey: string | null = null;
@@ -1638,6 +2113,15 @@ class BabylonGameSession {
   private cameraMotionSeconds = 0;
   private lastSimulationHonkActive = false;
   private lastSimulationCoachMessage: string | null = null;
+  private visualPalette: MapVisualPalette = resolveMapVisualPalette("orientation-yard");
+  private shadowGenerator: ShadowGenerator | null = null;
+  private readonly staticShadowCasters: Array<{
+    mesh: AbstractMesh;
+    x: number;
+    z: number;
+  }> = [];
+  private shadowRefreshSeconds = Number.POSITIVE_INFINITY;
+  private effectsPipeline: DefaultRenderingPipeline | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -1787,6 +2271,7 @@ class BabylonGameSession {
     this.rearCamera.layerMask = WORLD_LAYER_MASK;
     this.rearCamera.viewport = new Viewport(0.36, 0.845, 0.28, 0.125);
 
+    this.createEffectsPipeline();
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
     this.updatePlayerVisuals(1);
@@ -1974,6 +2459,8 @@ class BabylonGameSession {
       void this.audioContext.close();
       this.audioContext = null;
     }
+    this.effectsPipeline?.dispose();
+    this.effectsPipeline = null;
     this.scene.dispose();
     this.engine.dispose();
   }
@@ -1998,6 +2485,11 @@ class BabylonGameSession {
     this.updateGuidanceVisuals();
     this.updateCamera(frameSeconds);
     this.updateIndicatorLights(frameSeconds);
+    this.shadowRefreshSeconds += frameSeconds;
+    if (this.shadowRefreshSeconds >= 0.5) {
+      this.shadowRefreshSeconds = 0;
+      this.refreshShadowCasters();
+    }
     this.scene.render();
     if (now - this.lastHudTime >= 100) this.publishHud();
   };
@@ -3321,31 +3813,93 @@ class BabylonGameSession {
     }
   }
 
+  /**
+   * Lane ids the active lesson can actually reach, walking successors and
+   * adjacency as an undirected graph out from the route. Returns null when the
+   * lesson has no route (free drive), meaning "show everything". Used to drop
+   * road surfaces on a disconnected practice track—e.g. the orientation yard's
+   * opposite-side loop—so they don't sit beside the route as a phantom
+   * oncoming carriageway.
+   */
+  private lessonReachableLaneIds(
+    mapPack: GameCanvasMapPack,
+  ): Set<string> | null {
+    const route = this.options.lesson?.route ?? [];
+    if (!route.length) return null;
+    const neighbors = new Map<string, Set<string>>();
+    const link = (from: string, to: string) => {
+      const bucket = neighbors.get(from) ?? new Set<string>();
+      bucket.add(to);
+      neighbors.set(from, bucket);
+    };
+    for (const lane of mapPack.laneGraph.lanes) {
+      for (const successor of lane.successors ?? []) {
+        link(lane.id, successor);
+        link(successor, lane.id);
+      }
+      for (const adjacent of lane.adjacentLaneIds ?? []) {
+        link(lane.id, adjacent);
+        link(adjacent, lane.id);
+      }
+    }
+    const laneExists = new Set(mapPack.laneGraph.lanes.map((lane) => lane.id));
+    const reachable = new Set<string>();
+    const queue: string[] = [];
+    for (const laneId of route) {
+      if (laneExists.has(laneId) && !reachable.has(laneId)) {
+        reachable.add(laneId);
+        queue.push(laneId);
+      }
+    }
+    while (queue.length) {
+      const current = queue.shift()!;
+      for (const next of neighbors.get(current) ?? []) {
+        if (!reachable.has(next)) {
+          reachable.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    return reachable;
+  }
+
   private buildScenarioEnvironment(mapPack: GameCanvasMapPack) {
     const scene = this.scene;
     const mapId = mapPack.id.toLowerCase();
-    const sky = mapId.includes("tokyo")
-      ? new Color4(0.72, 0.82, 0.88, 1)
-      : mapId.includes("london")
-        ? new Color4(0.69, 0.77, 0.81, 1)
-      : mapId.includes("milton")
-        ? new Color4(0.66, 0.77, 0.8, 1)
-        : mapId.includes("calais") || mapId.includes("folkestone")
-          ? new Color4(0.67, 0.8, 0.86, 1)
-          : new Color4(0.61, 0.79, 0.9, 1);
-    scene.clearColor = sky;
+    const palette = resolveMapVisualPalette(mapId);
+    this.visualPalette = palette;
+    this.createSkyAndHorizon(palette, mapId, mapPack.geometry.worldSize);
 
     const grass = makeMaterial(scene, "scenario-ground", new Color3(0.24, 0.39, 0.25));
-    const asphalt = makeMaterial(scene, "scenario-asphalt", new Color3(0.105, 0.13, 0.145));
-    const sharedSpace = makeMaterial(
+    const asphalt = makeMaterial(scene, "scenario-asphalt", Color3.White());
+    asphalt.diffuseTexture = createAsphaltTexture(
       scene,
-      "scenario-shared-space",
-      new Color3(0.25, 0.255, 0.245),
+      "scenario-asphalt-texture",
+      "#1b2125",
+      hashStringToSeed(`${mapId}-asphalt`),
+    );
+    const sharedSpace = makeMaterial(scene, "scenario-shared-space", Color3.White());
+    sharedSpace.diffuseTexture = createAsphaltTexture(
+      scene,
+      "scenario-shared-space-texture",
+      "#40413e",
+      hashStringToSeed(`${mapId}-shared`),
     );
     const terminalSurface = makeMaterial(
       scene,
       "scenario-terminal-surface",
-      new Color3(0.145, 0.16, 0.17),
+      Color3.White(),
+    );
+    terminalSurface.diffuseTexture = createAsphaltTexture(
+      scene,
+      "scenario-terminal-texture",
+      "#25292b",
+      hashStringToSeed(`${mapId}-terminal`),
+    );
+    const dirtShoulder = makeMaterial(
+      scene,
+      "scenario-dirt-shoulder",
+      Color3.FromHexString(palette.dirtShoulder),
     );
     const routeMaterial = makeMaterial(
       scene,
@@ -3371,24 +3925,34 @@ class BabylonGameSession {
     );
 
     const hemi = new HemisphericLight("scenario-sky-light", new Vector3(0.1, 1, 0.15), scene);
-    hemi.intensity = 0.82;
+    hemi.intensity = 0.66;
     hemi.diffuse = new Color3(0.93, 0.96, 1);
-    hemi.groundColor = new Color3(0.2, 0.25, 0.22);
+    hemi.groundColor = new Color3(0.26, 0.31, 0.28);
     const sun = new DirectionalLight("scenario-sun", new Vector3(-0.42, -1, 0.48), scene);
-    sun.intensity = 0.68;
+    sun.intensity = 0.92;
+    this.createSunShadows(sun);
 
+    const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
+    const groundHeight = Math.max(90, mapPack.geometry.worldSize.z + 36);
+    const grassTexture = createGrassTexture(
+      scene,
+      "scenario-ground-texture",
+      palette,
+      hashStringToSeed(`${mapId}-grass`),
+    );
+    grassTexture.uScale = groundWidth / 16;
+    grassTexture.vScale = groundHeight / 16;
+    grass.diffuseColor = Color3.White();
+    grass.diffuseTexture = grassTexture;
     const ground = MeshBuilder.CreateGround(
       "scenario-world",
-      {
-        width: Math.max(90, mapPack.geometry.worldSize.x + 36),
-        height: Math.max(90, mapPack.geometry.worldSize.z + 36),
-        subdivisions: 1,
-      },
+      { width: groundWidth, height: groundHeight, subdivisions: 1 },
       scene,
     );
-    setMeshMaterial(ground, grass);
+    setMeshMaterial(ground, grass, true);
+    ground.freezeWorldMatrix();
 
-    const roadSurfaces = mapPack.geometry.roadSurfaces?.length
+    const authoredRoadSurfaces = mapPack.geometry.roadSurfaces?.length
       ? mapPack.geometry.roadSurfaces
       : mapPack.laneGraph.lanes.map((lane) => ({
           id: `legacy-${lane.id}`,
@@ -3398,6 +3962,19 @@ class BabylonGameSession {
           surfaceType: "standard" as const,
           markings: [],
         }));
+    // Drop surfaces the lesson can never reach so a disconnected practice track
+    // stops reading as an oncoming carriageway. Falls back to everything if the
+    // filter would empty the map (route/surface id mismatch).
+    const reachableLaneIds = this.lessonReachableLaneIds(mapPack);
+    const connectedRoadSurfaces = reachableLaneIds
+      ? authoredRoadSurfaces.filter((surface) =>
+          surface.laneIds.some((laneId) => reachableLaneIds.has(laneId)),
+        )
+      : authoredRoadSurfaces;
+    const roadSurfaces = connectedRoadSurfaces.length
+      ? connectedRoadSurfaces
+      : authoredRoadSurfaces;
+    const shoulderWidth = Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     for (const surface of roadSurfaces) {
       const surfaceMaterial =
         surface.surfaceType === "shared_space"
@@ -3405,6 +3982,16 @@ class BabylonGameSession {
           : surface.surfaceType === "terminal"
           ? terminalSurface
             : asphalt;
+      // A slightly wider dirt band under each carriageway grounds the road
+      // in the landscape instead of letting it float on the green plane.
+      this.createRoadSurfaceMesh(
+        `road-shoulder-${surface.id}`,
+        surface.centerline,
+        surface.widthM + shoulderWidth * 2,
+        dirtShoulder,
+        surface.surfaceType === "roundabout",
+        ROAD_SHOULDER_Y,
+      );
       this.createRoadSurfaceMesh(
         `road-${surface.id}`,
         surface.centerline,
@@ -3414,6 +4001,13 @@ class BabylonGameSession {
       );
     }
     for (const [index, patch] of collectRoadJunctionPatches(roadSurfaces).entries()) {
+      this.createRoadJunctionPatch(
+        `road-junction-shoulder-${index}`,
+        patch,
+        dirtShoulder,
+        shoulderWidth,
+        ROAD_SHOULDER_JUNCTION_Y,
+      );
       this.createRoadJunctionPatch(
         `road-junction-${index}`,
         patch,
@@ -3494,16 +4088,17 @@ class BabylonGameSession {
         const wingWidth = Math.max(12, block.size.x * 0.23);
         const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
         for (const side of [-1, 1]) {
-          createBox(
-            scene,
-            `building-${block.id}-wing-${side}`,
-            { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
-            new Vector3(
-              block.center.x + side * block.size.x * 0.37,
-              wingHeight / 2,
-              block.center.z,
+          const wingX = block.center.x + side * block.size.x * 0.37;
+          this.registerShadowCaster(
+            createBox(
+              scene,
+              `building-${block.id}-wing-${side}`,
+              { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
+              new Vector3(wingX, wingHeight / 2, block.center.z),
+              material,
             ),
-            material,
+            wingX,
+            block.center.z,
           );
         }
         continue;
@@ -3521,12 +4116,16 @@ class BabylonGameSession {
         const height = block.heightRange[0] + random() * (block.heightRange[1] - block.heightRange[0]);
         const x = block.center.x - block.size.x / 2 + cellWidth * (column + 0.5);
         const z = block.center.z - block.size.z / 2 + cellDepth * (row + 0.5);
-        createBox(
-          scene,
-          `building-${block.id}-${index}`,
-          { width, height, depth },
-          new Vector3(x, height / 2, z),
-          material,
+        this.registerShadowCaster(
+          createBox(
+            scene,
+            `building-${block.id}-${index}`,
+            { width, height, depth },
+            new Vector3(x, height / 2, z),
+            material,
+          ),
+          x,
+          z,
         );
       }
     }
@@ -3782,11 +4381,14 @@ class BabylonGameSession {
       }
     }
 
+    this.buildRoadsideProps(mapPack, palette, mapId, roadSurfaces);
+
     for (const checkpoint of this.authoredCheckpoints) {
       this.checkpointVisuals.push(
         this.createCheckpointTarget(checkpoint, checkpointMaterial),
       );
     }
+    this.finishVisual = this.createFinishBeacon(mapPack);
     this.updateGuidanceVisuals();
   }
 
@@ -3972,6 +4574,339 @@ class BabylonGameSession {
     return false;
   }
 
+  /**
+   * Deterministic roadside dressing (trees, streetlights, signs plus per-map
+   * extras) built from instanced master meshes: one draw call per part kind
+   * regardless of how many props a map receives.
+   */
+  private buildRoadsideProps(
+    mapPack: GameCanvasMapPack,
+    palette: MapVisualPalette,
+    mapId: string,
+    roadSurfaces: readonly {
+      readonly id: string;
+      readonly centerline: readonly GameCanvasPoint[];
+      readonly widthM: number;
+    }[],
+  ) {
+    const scene = this.scene;
+    const key = resolveMapVisualKey(mapId);
+    const kinds = roadsidePropKindsForMap(key);
+    if (!kinds.length || !roadSurfaces.length) return;
+
+    const placements = generateRoadsidePropPlacements({
+      roadSurfaces: roadSurfaces.map((surface) => ({
+        id: surface.id,
+        centerline: surface.centerline,
+        widthM: surface.widthM,
+      })),
+      blocks: mapPack.geometry.blocks.map((block) => ({
+        center: block.center,
+        size: block.size,
+      })),
+      landmarks: mapPack.geometry.landmarks.map((landmark) => ({
+        center: landmark.center,
+        size: landmark.size,
+      })),
+      worldSize: mapPack.geometry.worldSize,
+      shoulderWidthM: Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2),
+      seed: hashStringToSeed(`${mapId}-props`),
+      kinds,
+      occupiedPoints: key === "london" ? LONDON_FURNITURE_POINTS : undefined,
+    });
+    if (!placements.length) return;
+
+    const material = (name: string, color: Color3, emissive?: Color3) =>
+      makeMaterial(scene, `prop-${name}`, color, emissive);
+    const trunk = material("trunk", new Color3(0.3, 0.19, 0.1));
+    const leaves = [
+      material("leaves-0", new Color3(0.16, 0.36, 0.19)),
+      material("leaves-1", new Color3(0.2, 0.42, 0.2)),
+      material("leaves-2", new Color3(0.13, 0.3, 0.17)),
+    ];
+    const iron = material("iron", new Color3(0.09, 0.1, 0.11));
+    const lampHead = material(
+      "lamp-head",
+      new Color3(0.75, 0.7, 0.5),
+      new Color3(0.3, 0.26, 0.12),
+    );
+    const signPost = material("sign-post", new Color3(0.45, 0.47, 0.48));
+    const signPanels = [
+      material("sign-panel-blue", new Color3(0.1, 0.28, 0.5)),
+      material("sign-panel-green", new Color3(0.1, 0.35, 0.2)),
+    ];
+    const hydrantRed = material("hydrant", new Color3(0.62, 0.1, 0.07));
+    const hedgeGreen = material("hedge", new Color3(0.15, 0.32, 0.15));
+    const bollardPale = material("bollard", new Color3(0.75, 0.76, 0.72));
+    const tuftSand = material("dune-tuft", new Color3(0.55, 0.6, 0.35));
+    const poleWood = material("utility-pole", new Color3(0.35, 0.32, 0.28));
+    const vendingBodies = [
+      material("vending-red", new Color3(0.68, 0.14, 0.13)),
+      material("vending-white", new Color3(0.82, 0.83, 0.82)),
+    ];
+    const vendingPanel = material(
+      "vending-panel",
+      new Color3(0.55, 0.6, 0.58),
+      new Color3(0.22, 0.26, 0.24),
+    );
+
+    interface PropPart {
+      readonly master: Mesh;
+      readonly offset: Vector3;
+    }
+    const masterBox = (
+      name: string,
+      dimensions: { width: number; height: number; depth: number },
+      partMaterial: StandardMaterial,
+    ): Mesh => {
+      const mesh = MeshBuilder.CreateBox(`prop-master-${name}`, dimensions, scene);
+      setMeshMaterial(mesh, partMaterial);
+      mesh.isVisible = false;
+      return mesh;
+    };
+    const masterCylinder = (
+      name: string,
+      options: {
+        height: number;
+        diameter?: number;
+        diameterTop?: number;
+        diameterBottom?: number;
+      },
+      partMaterial: StandardMaterial,
+    ): Mesh => {
+      const mesh = MeshBuilder.CreateCylinder(
+        `prop-master-${name}`,
+        { tessellation: 8, ...options },
+        scene,
+      );
+      setMeshMaterial(mesh, partMaterial);
+      mesh.isVisible = false;
+      return mesh;
+    };
+
+    const masters = new Map<string, readonly PropPart[]>();
+    const partsFor = (kind: string, variant: number): readonly PropPart[] => {
+      const cacheKey = `${kind}:${variant}`;
+      const cached = masters.get(cacheKey);
+      if (cached) return cached;
+      let parts: readonly PropPart[];
+      switch (kind) {
+        case "tree": {
+          const crown =
+            variant === 1
+              ? masterCylinder(
+                  cacheKey,
+                  { height: 4.2, diameterTop: 0.3, diameterBottom: 2.2 },
+                  leaves[variant],
+                )
+              : variant === 2
+                ? masterCylinder(
+                    cacheKey,
+                    { height: 2.4, diameterTop: 1.9, diameterBottom: 2.6 },
+                    leaves[variant],
+                  )
+                : masterCylinder(
+                    cacheKey,
+                    { height: 3.2, diameterTop: 0.35, diameterBottom: 2.9 },
+                    leaves[variant],
+                  );
+          parts = [
+            {
+              master: masterCylinder(
+                `${cacheKey}-trunk`,
+                { height: 2.2, diameter: 0.34 },
+                trunk,
+              ),
+              offset: new Vector3(0, 1.1, 0),
+            },
+            {
+              master: crown,
+              offset: new Vector3(0, variant === 1 ? 4 : variant === 2 ? 3.3 : 3.6, 0),
+            },
+          ];
+          break;
+        }
+        case "streetlight":
+          parts = [
+            {
+              master: masterCylinder(cacheKey, { height: 5.2, diameter: 0.16 }, iron),
+              offset: new Vector3(0, 2.6, 0),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-arm`,
+                { width: 0.09, height: 0.09, depth: 1.4 },
+                iron,
+              ),
+              offset: new Vector3(0, 5.15, 0.6),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-head`,
+                { width: 0.26, height: 0.12, depth: 0.55 },
+                lampHead,
+              ),
+              offset: new Vector3(0, 5.08, 1.25),
+            },
+          ];
+          break;
+        case "sign":
+          parts = [
+            {
+              master: masterCylinder(cacheKey, { height: 2.4, diameter: 0.09 }, signPost),
+              offset: new Vector3(0, 1.2, 0),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-panel`,
+                { width: 0.72, height: 0.5, depth: 0.05 },
+                signPanels[variant % signPanels.length],
+              ),
+              offset: new Vector3(0, 2.15, 0),
+            },
+          ];
+          break;
+        case "hydrant":
+          parts = [
+            {
+              master: masterCylinder(cacheKey, { height: 0.7, diameter: 0.4 }, hydrantRed),
+              offset: new Vector3(0, 0.36, 0),
+            },
+            {
+              master: masterCylinder(
+                `${cacheKey}-cap`,
+                { height: 0.16, diameterTop: 0.12, diameterBottom: 0.34 },
+                hydrantRed,
+              ),
+              offset: new Vector3(0, 0.78, 0),
+            },
+          ];
+          break;
+        case "hedge":
+          parts = [
+            {
+              master: masterBox(cacheKey, { width: 2.6, height: 1.05, depth: 0.95 }, hedgeGreen),
+              offset: new Vector3(0, 0.52, 0),
+            },
+          ];
+          break;
+        case "bollard":
+          parts = [
+            {
+              master: masterCylinder(
+                cacheKey,
+                { height: 0.85, diameterTop: 0.16, diameterBottom: 0.2 },
+                bollardPale,
+              ),
+              offset: new Vector3(0, 0.43, 0),
+            },
+          ];
+          break;
+        case "dune-tuft":
+          parts = [
+            {
+              master: masterCylinder(
+                cacheKey,
+                { height: 0.55, diameterTop: 0.05, diameterBottom: 1.15 },
+                tuftSand,
+              ),
+              offset: new Vector3(0, 0.28, 0),
+            },
+          ];
+          break;
+        case "utility-pole":
+          parts = [
+            {
+              master: masterCylinder(cacheKey, { height: 7.4, diameter: 0.22 }, poleWood),
+              offset: new Vector3(0, 3.7, 0),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-arm-top`,
+                { width: 1.7, height: 0.09, depth: 0.09 },
+                iron,
+              ),
+              offset: new Vector3(0, 6.8, 0),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-arm-low`,
+                { width: 1.25, height: 0.08, depth: 0.08 },
+                iron,
+              ),
+              offset: new Vector3(0, 6.25, 0),
+            },
+          ];
+          break;
+        case "vending":
+          parts = [
+            {
+              master: masterBox(
+                cacheKey,
+                { width: 0.92, height: 1.7, depth: 0.72 },
+                vendingBodies[variant % vendingBodies.length],
+              ),
+              offset: new Vector3(0, 0.85, 0),
+            },
+            {
+              master: masterBox(
+                `${cacheKey}-panel`,
+                { width: 0.78, height: 1.15, depth: 0.05 },
+                vendingPanel,
+              ),
+              offset: new Vector3(0, 0.95, 0.37),
+            },
+          ];
+          break;
+        default:
+          parts = [];
+      }
+      masters.set(cacheKey, parts);
+      return parts;
+    };
+
+    let instanceIndex = 0;
+    for (const placement of placements) {
+      const parts = partsFor(placement.kind, placement.variant);
+      const sin = Math.sin(placement.rotationY);
+      const cos = Math.cos(placement.rotationY);
+      for (const part of parts) {
+        const instance = part.master.createInstance(
+          `prop-${placement.kind}-${instanceIndex}`,
+        );
+        instanceIndex += 1;
+        const scaled = part.offset.scale(placement.scale);
+        instance.position.set(
+          placement.x + scaled.x * cos + scaled.z * sin,
+          scaled.y,
+          placement.z - scaled.x * sin + scaled.z * cos,
+        );
+        instance.rotation.y = placement.rotationY;
+        instance.scaling.setAll(placement.scale);
+        instance.isPickable = false;
+        this.registerShadowCaster(instance, placement.x, placement.z);
+      }
+    }
+
+    for (const propMaterial of [
+      trunk,
+      ...leaves,
+      iron,
+      lampHead,
+      signPost,
+      ...signPanels,
+      hydrantRed,
+      hedgeGreen,
+      bollardPale,
+      tuftSand,
+      poleWood,
+      ...vendingBodies,
+      vendingPanel,
+    ]) {
+      propMaterial.freeze();
+    }
+  }
+
   private buildLondonStreetFurniture() {
     const scene = this.scene;
     const iron = makeMaterial(scene, "london-street-iron", new Color3(0.055, 0.065, 0.065));
@@ -3984,16 +4919,7 @@ class BabylonGameSession {
     const planter = makeMaterial(scene, "london-planter", new Color3(0.2, 0.34, 0.19));
     const postBoxRed = makeMaterial(scene, "london-post-box", new Color3(0.62, 0.045, 0.04));
 
-    const lampPositions = [
-      [-83, -52],
-      [-50, -52],
-      [-2, -52],
-      [25, -52],
-      [28, 2],
-      [56, 18],
-      [28, 60],
-      [56, 72],
-    ] as const;
+    const lampPositions = LONDON_LAMP_POSITIONS;
     for (let index = 0; index < lampPositions.length; index += 1) {
       const [x, z] = lampPositions[index];
       createCylinder(
@@ -4012,24 +4938,22 @@ class BabylonGameSession {
       );
     }
 
-    for (const [index, z] of [-2, 22, 46, 70].entries()) {
-      for (const x of [32, 52]) {
-        createCylinder(
-          scene,
-          `london-bollard-${index}-${x}`,
-          { height: 0.95, diameterTop: 0.17, diameterBottom: 0.28 },
-          new Vector3(x, 0.49, z),
-          iron,
-        );
-      }
+    for (const [index, [x, z]] of LONDON_BOLLARD_POSITIONS.entries()) {
+      createCylinder(
+        scene,
+        `london-bollard-${index}-${x}`,
+        { height: 0.95, diameterTop: 0.17, diameterBottom: 0.28 },
+        new Vector3(x, 0.49, z),
+        iron,
+      );
     }
 
-    for (const [index, z] of [-8, 36, 68].entries()) {
+    for (const [index, [x, z]] of LONDON_PLANTER_POSITIONS.entries()) {
       createCylinder(
         scene,
         `london-planter-${index}`,
         { height: 0.72, diameterTop: 1.15, diameterBottom: 0.92 },
-        new Vector3(57, 0.38, z),
+        new Vector3(x, 0.38, z),
         planter,
       );
     }
@@ -4038,14 +4962,14 @@ class BabylonGameSession {
       scene,
       "london-generic-post-box",
       { height: 1.55, diameter: 0.62 },
-      new Vector3(122, 0.79, 87),
+      new Vector3(LONDON_POST_BOX_POSITION[0], 0.79, LONDON_POST_BOX_POSITION[1]),
       postBoxRed,
     );
     createCylinder(
       scene,
       "london-generic-post-box-cap",
       { height: 0.28, diameterTop: 0.4, diameterBottom: 0.72 },
-      new Vector3(122, 1.69, 87),
+      new Vector3(LONDON_POST_BOX_POSITION[0], 1.69, LONDON_POST_BOX_POSITION[1]),
       postBoxRed,
     );
   }
@@ -4056,19 +4980,24 @@ class BabylonGameSession {
     widthM: number,
     material: StandardMaterial,
     smoothClosed = false,
+    surfaceY = ROAD_SURFACE_Y,
   ): Mesh | undefined {
     const renderedCenterline = smoothClosed
       ? smoothClosedRoadCenterline(centerline)
       : centerline;
+    // Smoothed roundabout rings arrive deduplicated and must force closure;
+    // every other centreline relies on auto-detection so authored loops (for
+    // example the orientation-yard rectangles) get mitered corners instead of
+    // two dead-end caps at their shared first/last point.
     const geometry = buildRoadSurfaceStripGeometry(
       renderedCenterline,
       widthM,
-      smoothClosed,
+      smoothClosed ? true : undefined,
     );
     if (!geometry.positions.length || !geometry.indices.length) return undefined;
 
     const positions = geometry.positions.map((value, index) =>
-      index % 3 === 1 ? ROAD_SURFACE_Y : value,
+      index % 3 === 1 ? surfaceY : value,
     );
     const normals: number[] = [];
     VertexData.ComputeNormals(positions, [...geometry.indices], normals);
@@ -4077,8 +5006,12 @@ class BabylonGameSession {
     vertexData.positions = positions;
     vertexData.indices = [...geometry.indices];
     vertexData.normals = normals;
+    // World-planar UVs (~20 m tile) keep the wear texture continuous where
+    // independently authored surfaces meet without obvious repetition.
+    vertexData.uvs = buildPlanarUVs(positions, 0.05);
     vertexData.applyToMesh(mesh);
-    setMeshMaterial(mesh, material);
+    setMeshMaterial(mesh, material, true);
+    mesh.freezeWorldMatrix();
     return mesh;
   }
 
@@ -4086,18 +5019,22 @@ class BabylonGameSession {
     name: string,
     patch: RoadJunctionPatch,
     material: StandardMaterial,
+    radiusExtraM = 0,
+    y = ROAD_JUNCTION_PATCH_Y,
   ) {
     const disk = createCylinder(
       this.scene,
       name,
       {
         height: 0.026,
-        diameter: patch.radiusM * 2,
+        diameter: (patch.radiusM + radiusExtraM) * 2,
         tessellation: 20,
       },
-      new Vector3(patch.x, ROAD_JUNCTION_PATCH_Y, patch.z),
+      new Vector3(patch.x, y, patch.z),
       material,
     );
+    disk.receiveShadows = true;
+    disk.freezeWorldMatrix();
     return disk;
   }
 
@@ -4213,72 +5150,43 @@ class BabylonGameSession {
     routeIndex: number,
     conflictZones: GameCanvasMapPack["laneGraph"]["conflictZones"],
   ) {
-    let travelled = 0;
-    let nextChevronAt = 7;
-    let index = 0;
     const halfSpan = resolveRouteChevronHalfSpan(lane.widthM ?? 3.2);
-    for (let segmentIndex = 0; segmentIndex < lane.centerline.length - 1; segmentIndex += 1) {
-      const start = lane.centerline[segmentIndex];
-      const end = lane.centerline[segmentIndex + 1];
-      const dx = end.x - start.x;
-      const dz = end.z - start.z;
-      const length = Math.hypot(dx, dz);
-      if (length < 0.01) continue;
-      const ux = dx / length;
-      const uz = dz / length;
-      const sideX = uz;
-      const sideZ = -ux;
-      while (nextChevronAt <= travelled + length) {
-        const along = nextChevronAt - travelled;
-        const tip = { x: start.x + ux * along, z: start.z + uz * along };
-        const back = { x: tip.x - ux * 1.45, z: tip.z - uz * 1.45 };
-        const inConnectorRange = !isLaneGuidanceDistanceAllowed(
-          lane,
-          nextChevronAt,
-        );
-        const inConflictZone = conflictZones.some(
-          (zone) =>
-            zone.laneIds.includes(lane.id) &&
-            (isPointInPolygon(tip, zone.polygon) || isPointInPolygon(back, zone.polygon)),
-        );
-        if (inConnectorRange || inConflictZone) {
-          nextChevronAt += 12;
-          continue;
-        }
-        const left = this.createFlatSegment(
-          `route-chevron-${lane.id}-${index}-left`,
-          { x: back.x + sideX * halfSpan, z: back.z + sideZ * halfSpan },
-          tip,
-          0.22,
-          0.145,
-          material,
-        );
-        const right = this.createFlatSegment(
-          `route-chevron-${lane.id}-${index}-right`,
-          { x: back.x - sideX * halfSpan, z: back.z - sideZ * halfSpan },
-          tip,
-          0.22,
-          0.145,
-          material,
-        );
-        const meshes = [left, right].filter((mesh): mesh is Mesh => Boolean(mesh));
-        for (const mesh of meshes) mesh.layerMask = GUIDANCE_LAYER_MASK;
-        this.routeChevronVisuals.push({
-          routeIndex,
-          laneId: lane.id,
-          distanceAlongM: nextChevronAt,
-          meshes,
-        });
-        nextChevronAt += 12;
-        index += 1;
-      }
-      travelled += length;
+    for (const [index, placement] of computeRouteChevronPlacements(
+      lane,
+      conflictZones,
+    ).entries()) {
+      const { tip, back, sideX, sideZ } = placement;
+      const left = this.createFlatSegment(
+        `route-chevron-${lane.id}-${index}-left`,
+        { x: back.x + sideX * halfSpan, z: back.z + sideZ * halfSpan },
+        tip,
+        0.22,
+        0.145,
+        material,
+      );
+      const right = this.createFlatSegment(
+        `route-chevron-${lane.id}-${index}-right`,
+        { x: back.x - sideX * halfSpan, z: back.z - sideZ * halfSpan },
+        tip,
+        0.22,
+        0.145,
+        material,
+      );
+      const meshes = [left, right].filter((mesh): mesh is Mesh => Boolean(mesh));
+      for (const mesh of meshes) mesh.layerMask = GUIDANCE_LAYER_MASK;
+      this.routeChevronVisuals.push({
+        routeIndex,
+        laneId: lane.id,
+        distanceAlongM: placement.distanceAlongM,
+        meshes,
+      });
     }
   }
 
   private createCheckpointTarget(
     checkpoint: AuthoredCheckpoint,
     material: StandardMaterial,
+    labelText = "◆  CHECKPOINT",
   ): GuidanceVisual {
     const meshes: Mesh[] = [];
     const targetWidth = resolveCheckpointTargetWidth(checkpoint.laneWidthM);
@@ -4336,7 +5244,7 @@ class BabylonGameSession {
     context.font = "700 38px Arial";
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText("◆  CHECKPOINT", 256, 64);
+    context.fillText(labelText, 256, 64);
     texture.update(false);
     const labelMaterial = new StandardMaterial(
       `checkpoint-${checkpoint.id}-label-material`,
@@ -4365,12 +5273,59 @@ class BabylonGameSession {
     return { id: checkpoint.id, meshes };
   }
 
+  /**
+   * A gold "FINISH" target at the end of the route's last lane. The route end
+   * is otherwise unmarked—on a loop lesson it coincides with the spawn corner—
+   * so it stays hidden until every checkpoint is passed, then signposts exactly
+   * where the drive completes.
+   */
+  private createFinishBeacon(
+    mapPack: GameCanvasMapPack,
+  ): GuidanceVisual | null {
+    const route = this.options.lesson?.route ?? [];
+    const lastLaneId = route.at(-1);
+    if (!lastLaneId) return null;
+    const lane = mapPack.laneGraph.lanes.find(
+      (candidate) => candidate.id === lastLaneId,
+    );
+    const centerline = lane?.centerline;
+    if (!lane || !centerline || centerline.length < 2) return null;
+    const end = centerline[centerline.length - 1];
+    const prev = centerline[centerline.length - 2];
+    const finishMaterial = makeMaterial(
+      this.scene,
+      "scenario-finish",
+      new Color3(0.95, 0.78, 0.25),
+      new Color3(0.4, 0.3, 0.05),
+    );
+    return this.createCheckpointTarget(
+      {
+        id: "__route_finish__",
+        label: "Finish",
+        x: end.x,
+        z: end.z,
+        heading: Math.atan2(end.x - prev.x, end.z - prev.z),
+        laneId: lane.id,
+        laneWidthM: lane.widthM ?? mapPack.geometry.roadWidth ?? 3.2,
+        distanceAlongM: null,
+      },
+      finishMaterial,
+      "◆  FINISH",
+    );
+  }
+
   private updateGuidanceVisuals() {
     for (const [index, visual] of this.checkpointVisuals.entries()) {
       const enabled =
         index === this.checkpointIndex &&
         this.simulationSnapshot.nextCheckpointId === visual.id;
       for (const mesh of visual.meshes) mesh.setEnabled(enabled);
+    }
+    if (this.finishVisual) {
+      const showFinish =
+        this.checkpointIndex >= this.authoredCheckpoints.length &&
+        !this.completed;
+      for (const mesh of this.finishVisual.meshes) mesh.setEnabled(showFinish);
     }
 
     const lesson = this.options.lesson;
@@ -4394,23 +5349,69 @@ class BabylonGameSession {
           z: this.playerState.z,
         })
       : null;
+    const playerOccupiesVisibleLane = Boolean(
+      currentProjection &&
+        currentLane &&
+        currentProjection.distance <= (currentLane.widthM ?? 3.2) / 2 + 0.5,
+    );
     for (const visual of this.routeChevronVisuals) {
-      let enabled = visual.routeIndex === visibleRouteIndex;
-      const playerOccupiesVisibleLane = Boolean(
-        currentProjection &&
-          currentLane &&
-          currentProjection.distance <= (currentLane.widthM ?? 3.2) / 2 + 0.5,
-      );
-      if (enabled && playerOccupiesVisibleLane && currentProjection) {
+      let enabled = false;
+      if (visual.routeIndex === visibleRouteIndex) {
         enabled =
-          visual.distanceAlongM > currentProjection.distanceAlongM + 2 &&
-          visual.distanceAlongM < currentProjection.distanceAlongM + 58;
-      } else if (enabled) {
+          playerOccupiesVisibleLane && currentProjection
+            ? visual.distanceAlongM > currentProjection.distanceAlongM + 2 &&
+              visual.distanceAlongM < currentProjection.distanceAlongM + 58
+            : visual.distanceAlongM < 42;
+      } else if (
+        visibleRouteIndex !== null &&
+        visual.routeIndex === visibleRouteIndex + 1
+      ) {
+        // Preview the start of the next route occurrence so a turn is
+        // signposted before the current lane's arrows run out; without this
+        // every junction hand-off left a blind gap in the guidance.
         enabled = visual.distanceAlongM < 42;
       }
       for (const mesh of visual.meshes) mesh.setEnabled(enabled);
     }
     this.updateGuidanceCueVisual();
+    // TEMP DEBUG: live guidance introspection + analog control for
+    // WebDriver-based QA.
+    if (typeof window !== "undefined") {
+      const debugWindow = window as unknown as Record<string, unknown>;
+      debugWindow.__sideswapGuidanceDebug = {
+        owner: this.simulationSnapshot.guidance.owner,
+        status: this.simulationSnapshot.guidance.status,
+        blockingReason: this.simulationSnapshot.guidance.blockingReason ?? null,
+        cue: this.simulationSnapshot.guidance.cue ?? null,
+        visibleRouteIndex,
+        paused: this.paused,
+        player: {
+          x: Math.round(this.playerState.x * 100) / 100,
+          z: Math.round(this.playerState.z * 100) / 100,
+          heading: Math.round(this.playerState.heading * 1000) / 1000,
+          speed: Math.round(this.playerState.speedMps * 100) / 100,
+        },
+        checkpoint: this.simulationSnapshot.nextCheckpointId ?? null,
+        instruction: this.instruction,
+        chevrons: this.routeChevronVisuals.map((visual) => ({
+          routeIndex: visual.routeIndex,
+          laneId: visual.laneId,
+          d: Math.round(visual.distanceAlongM),
+          x: Math.round((visual.meshes[0]?.position.x ?? 0) * 10) / 10,
+          z: Math.round((visual.meshes[0]?.position.z ?? 0) * 10) / 10,
+          on: visual.meshes[0]?.isEnabled() ?? false,
+        })),
+      };
+      debugWindow.__sideswapDriveControl = (input: {
+        throttle?: number;
+        brake?: number;
+        steer?: number;
+      }) => {
+        this.touch.throttle = clamp(input.throttle ?? 0, 0, 1);
+        this.touch.brake = clamp(input.brake ?? 0, 0, 1);
+        this.touch.steer = clamp(input.steer ?? 0, -1, 1);
+      };
+    }
   }
 
   private updateGuidanceCueVisual() {
@@ -4831,13 +5832,190 @@ class BabylonGameSession {
     beam.rotation.y = heading;
   }
 
+  /**
+   * Camera-following gradient sky dome, distance fog matched to the horizon,
+   * and a low-poly skyline ring. Both atmosphere meshes use infiniteDistance
+   * so they work identically on every world size; their world matrices are
+   * therefore recomputed per frame and must never be frozen.
+   */
+  private createSkyAndHorizon(
+    palette: MapVisualPalette,
+    mapId: string,
+    worldSize: GameCanvasPoint,
+  ) {
+    const scene = this.scene;
+    const horizon = Color3.FromHexString(palette.skyHorizon);
+    scene.clearColor = new Color4(horizon.r, horizon.g, horizon.b, 1);
+    const fogRange = resolveFogRange(worldSize);
+    scene.fogMode = Scene.FOGMODE_LINEAR;
+    scene.fogColor = Color3.FromHexString(palette.fogColor);
+    scene.fogStart = fogRange.start;
+    scene.fogEnd = fogRange.end;
+
+    const skyMaterial = new StandardMaterial("sky-dome-material", scene);
+    skyMaterial.emissiveTexture = createSkyGradientTexture(scene, palette);
+    skyMaterial.diffuseColor = Color3.Black();
+    skyMaterial.specularColor = Color3.Black();
+    skyMaterial.disableLighting = true;
+    skyMaterial.fogEnabled = false;
+    const skyDome = MeshBuilder.CreateSphere(
+      "sky-dome",
+      { diameter: 1900, segments: 12, sideOrientation: Mesh.BACKSIDE },
+      scene,
+    );
+    skyDome.material = skyMaterial;
+    skyDome.infiniteDistance = true;
+    skyDome.isPickable = false;
+    skyDome.applyFog = false;
+    skyMaterial.freeze();
+
+    const ringMaterial = new StandardMaterial("horizon-ring-material", scene);
+    const silhouette = createHorizonSilhouetteTexture(scene, mapId, palette);
+    // hasAlpha on the diffuse texture opts into alpha *testing*: crisp
+    // silhouette edges with no blend-sorting concerns against the sky dome.
+    ringMaterial.diffuseTexture = silhouette;
+    ringMaterial.emissiveTexture = silhouette;
+    ringMaterial.diffuseColor = Color3.Black();
+    ringMaterial.specularColor = Color3.Black();
+    ringMaterial.disableLighting = true;
+    ringMaterial.fogEnabled = false;
+    const ring = MeshBuilder.CreateCylinder(
+      "horizon-ring",
+      {
+        height: 110,
+        diameter: 1700,
+        tessellation: 48,
+        cap: Mesh.NO_CAP,
+        sideOrientation: Mesh.BACKSIDE,
+      },
+      scene,
+    );
+    ring.material = ringMaterial;
+    ring.position.y = 26;
+    ring.infiniteDistance = true;
+    ring.isPickable = false;
+    ring.applyFog = false;
+    ringMaterial.freeze();
+  }
+
+  /**
+   * Subtle PCF sun shadows. The render list is rebuilt around the player at
+   * a slow cadence so the auto-computed directional frustum stays tight even
+   * on the 1.5 km Milton Keynes corridor.
+   */
+  private createSunShadows(sun: DirectionalLight) {
+    sun.diffuse = Color3.FromHexString(this.visualPalette.sunTint);
+    sun.position = sun.direction.scale(-260);
+    sun.autoUpdateExtends = true;
+    sun.autoCalcShadowZBounds = true;
+    const generator = new ShadowGenerator(2048, sun);
+    generator.usePercentageCloserFiltering = true;
+    generator.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+    generator.bias = 0.015;
+    generator.normalBias = 0.4;
+    generator.setDarkness(0.6);
+    this.shadowGenerator = generator;
+    this.shadowRefreshSeconds = Number.POSITIVE_INFINITY;
+  }
+
+  /** Static casters never move again, so their world matrices freeze here. */
+  private registerShadowCaster(mesh: AbstractMesh, x: number, z: number) {
+    mesh.freezeWorldMatrix();
+    this.staticShadowCasters.push({ mesh, x, z });
+  }
+
+  private static readonly SHADOW_CASTER_RADIUS_M = 90;
+
+  private refreshShadowCasters() {
+    const shadowMap = this.shadowGenerator?.getShadowMap();
+    if (!shadowMap) return;
+    const radius = BabylonGameSession.SHADOW_CASTER_RADIUS_M;
+    const list: AbstractMesh[] = [...this.playerExterior.getChildMeshes()];
+    for (const npc of this.npcVehicles) {
+      if (npc.active === false) continue;
+      const position = npc.node.position;
+      if (Math.hypot(position.x - this.displayedX, position.z - this.displayedZ) > radius) {
+        continue;
+      }
+      list.push(...npc.node.getChildMeshes());
+    }
+    for (const caster of this.staticShadowCasters) {
+      if (
+        Math.hypot(caster.x - this.displayedX, caster.z - this.displayedZ) <=
+        radius
+      ) {
+        list.push(caster.mesh);
+      }
+    }
+    shadowMap.renderList = list;
+  }
+
+  /**
+   * Subtle full-screen grade: bloom limited to emissives, gentle contrast,
+   * a soft multiply vignette and mild saturation. The rear mirror camera is
+   * deliberately excluded so the mirror stays cheap and never shows a
+   * vignette-in-a-mirror artefact; with image processing running as a
+   * post-process the mirror renders slightly flatter, which is acceptable.
+   * Both driving cameras stay attached for the session's lifetime, so
+   * toggling scene.activeCameras needs no pipeline mutation.
+   */
+  private createEffectsPipeline() {
+    const pipeline = new DefaultRenderingPipeline(
+      "sideswap-fx",
+      false,
+      this.scene,
+      [this.thirdCamera, this.firstCamera],
+    );
+    // The pipeline renders through an offscreen target, bypassing the
+    // engine-level MSAA; re-enable multisampling on that target instead.
+    pipeline.samples = 4;
+    pipeline.fxaaEnabled = false;
+    pipeline.bloomEnabled = true;
+    pipeline.bloomThreshold = 0.85;
+    pipeline.bloomWeight = 0.15;
+    pipeline.bloomScale = 0.5;
+    pipeline.bloomKernel = 48;
+    pipeline.imageProcessingEnabled = true;
+    const imageProcessing = pipeline.imageProcessing;
+    imageProcessing.toneMappingEnabled = false;
+    imageProcessing.contrast = 1.08;
+    imageProcessing.exposure = 1.02;
+    imageProcessing.vignetteEnabled = true;
+    imageProcessing.vignetteWeight = 1.5;
+    imageProcessing.vignetteColor = new Color4(0, 0.02, 0.04, 0);
+    imageProcessing.vignetteBlendMode =
+      ImageProcessingConfiguration.VIGNETTEMODE_MULTIPLY;
+    const curves = new ColorCurves();
+    curves.globalSaturation = 12;
+    curves.highlightsHue = 30;
+    curves.highlightsDensity = 12;
+    curves.highlightsSaturation = 6;
+    imageProcessing.colorCurves = curves;
+    imageProcessing.colorCurvesEnabled = true;
+    this.effectsPipeline = pipeline;
+  }
+
   private buildEnvironment() {
     if (this.options.mapPack && this.options.lesson) {
       this.buildScenarioEnvironment(this.options.mapPack);
       return;
     }
     const scene = this.scene;
-    const grass = makeMaterial(scene, "grass", new Color3(0.22, 0.38, 0.24));
+    const yardPalette = resolveMapVisualPalette("orientation-yard");
+    this.visualPalette = yardPalette;
+    this.createSkyAndHorizon(yardPalette, "orientation-yard", { x: 180, z: 180 });
+    const grass = makeMaterial(scene, "grass", Color3.White());
+    const yardGrassTexture = createGrassTexture(
+      scene,
+      "yard-grass-texture",
+      yardPalette,
+      hashStringToSeed("yard-grass"),
+    );
+    yardGrassTexture.uScale = 180 / 16;
+    yardGrassTexture.vScale = 180 / 16;
+    grass.diffuseTexture = yardGrassTexture;
+    // Yard roads are stretched boxes whose 0..1 face UVs would smear a wear
+    // texture across their full length; the yard keeps clean flat asphalt.
     const asphalt = makeMaterial(scene, "asphalt", new Color3(0.12, 0.15, 0.17));
     const paleAsphalt = makeMaterial(scene, "junction-asphalt", new Color3(0.15, 0.18, 0.19));
     const white = makeMaterial(scene, "road-white", new Color3(0.88, 0.87, 0.76));
@@ -4869,20 +6047,21 @@ class BabylonGameSession {
     this.signalGreenMaterial = greenLamp;
 
     const hemi = new HemisphericLight("soft-sky", new Vector3(0.2, 1, 0.1), scene);
-    hemi.intensity = 0.82;
+    hemi.intensity = 0.66;
     hemi.diffuse = new Color3(0.92, 0.95, 1);
-    hemi.groundColor = new Color3(0.22, 0.28, 0.25);
+    hemi.groundColor = new Color3(0.27, 0.32, 0.29);
     const sun = new DirectionalLight("sun", new Vector3(-0.4, -1, 0.55), scene);
-    sun.intensity = 0.68;
+    sun.intensity = 0.92;
+    this.createSunShadows(sun);
 
     const ground = MeshBuilder.CreateGround(
       "training-ground",
       { width: 180, height: 180, subdivisions: 1 },
       scene,
     );
-    setMeshMaterial(ground, grass);
-    createBox(scene, "main-road", { width: 13, height: 0.08, depth: 170 }, new Vector3(0, 0.04, 4), asphalt);
-    createBox(scene, "cross-road", { width: 100, height: 0.09, depth: 13 }, new Vector3(0, 0.05, 0), paleAsphalt);
+    setMeshMaterial(ground, grass, true);
+    createBox(scene, "main-road", { width: 13, height: 0.08, depth: 170 }, new Vector3(0, 0.04, 4), asphalt).receiveShadows = true;
+    createBox(scene, "cross-road", { width: 100, height: 0.09, depth: 13 }, new Vector3(0, 0.05, 0), paleAsphalt).receiveShadows = true;
 
     const roundaboutRoad = MeshBuilder.CreateTorus(
       "roundabout-road",
@@ -4938,12 +6117,17 @@ class BabylonGameSession {
         `building-material-${index}`,
         buildingColors[index % buildingColors.length],
       );
-      createBox(
-        scene,
-        `building-${index}`,
-        { width: 8 + (index % 3), height, depth: 8 },
-        new Vector3(side * (13 + (index % 3) * 2), height / 2, z),
-        buildingMaterial,
+      const buildingX = side * (13 + (index % 3) * 2);
+      this.registerShadowCaster(
+        createBox(
+          scene,
+          `building-${index}`,
+          { width: 8 + (index % 3), height, depth: 8 },
+          new Vector3(buildingX, height / 2, z),
+          buildingMaterial,
+        ),
+        buildingX,
+        z,
       );
     }
 
@@ -4952,14 +6136,22 @@ class BabylonGameSession {
       const z = -70 + index * 8.5;
       const tree = new TransformNode(`tree-${index}`, scene);
       tree.position.set(side * 8.7, 0, z);
-      createCylinder(scene, `trunk-${index}`, { height: 2.3, diameter: 0.38 }, new Vector3(0, 1.15, 0), trunk, tree);
-      createCylinder(
-        scene,
-        `crown-${index}`,
-        { height: 3.4, diameterTop: 0.4, diameterBottom: 3.2, tessellation: 8 },
-        new Vector3(0, 3.4, 0),
-        leaves,
-        tree,
+      this.registerShadowCaster(
+        createCylinder(scene, `trunk-${index}`, { height: 2.3, diameter: 0.38 }, new Vector3(0, 1.15, 0), trunk, tree),
+        side * 8.7,
+        z,
+      );
+      this.registerShadowCaster(
+        createCylinder(
+          scene,
+          `crown-${index}`,
+          { height: 3.4, diameterTop: 0.4, diameterBottom: 3.2, tessellation: 8 },
+          new Vector3(0, 3.4, 0),
+          leaves,
+          tree,
+        ),
+        side * 8.7,
+        z,
       );
     }
   }
@@ -5887,18 +7079,28 @@ const canvasStyle: CSSProperties = {
 };
 
 const glassPanelStyle: CSSProperties = {
-  border: "1px solid rgba(255,255,255,.17)",
-  background: "rgba(10,18,20,.72)",
-  boxShadow: "0 10px 35px rgba(0,0,0,.18)",
-  backdropFilter: "blur(12px)",
+  border: "1px solid rgba(255,255,255,.14)",
+  background: "rgba(12,20,23,.6)",
+  boxShadow:
+    "inset 0 1px 0 rgba(255,255,255,.09), 0 8px 24px rgba(0,0,0,.35)",
+  backdropFilter: "blur(14px) saturate(1.2)",
+};
+
+const hudLabelStyle: CSSProperties = {
+  fontSize: 10,
+  fontWeight: 750,
+  letterSpacing: ".12em",
+  textTransform: "uppercase",
 };
 
 const actionButtonStyle: CSSProperties = {
   width: 48,
   height: 48,
   borderRadius: 999,
-  border: "1px solid rgba(255,255,255,.22)",
-  background: "rgba(17,27,29,.82)",
+  border: "1px solid rgba(255,255,255,.18)",
+  background: "rgba(12,20,23,.72)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,.09)",
+  backdropFilter: "blur(10px)",
   color: "#fff9ea",
   font: "700 12px/1 system-ui, sans-serif",
   letterSpacing: ".03em",
@@ -6206,13 +7408,25 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
                 fontFamily: "system-ui, sans-serif",
               }}
             >
-              <div style={{ fontSize: 28, fontWeight: 850, lineHeight: 1 }}>{hud.speed}</div>
-              <div style={{ opacity: 0.72, fontSize: 11, lineHeight: 1.2 }}>
+              <div
+                style={{
+                  minWidth: 42,
+                  fontSize: 28,
+                  fontWeight: 850,
+                  lineHeight: 1,
+                  textAlign: "right",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {hud.speed}
+              </div>
+              <div style={{ opacity: 0.72, fontSize: 11, lineHeight: 1.25 }}>
                 {hud.speedUnit}
-                <br />GEAR {hud.gear}
+                <br />
+                <span style={{ ...hudLabelStyle, color: "#f2c658" }}>Gear {hud.gear}</span>
               </div>
               <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,.16)" }} />
-              <div style={{ fontSize: 11, lineHeight: 1.45, opacity: 0.9 }}>
+              <div style={{ fontSize: 11, lineHeight: 1.45, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                 SCORE {hud.score}
                 <br />{hud.cameraMode === "first" ? "COCKPIT" : "CHASE"}
                 <br />IND {hud.indicator === "off" ? "OFF" : hud.indicator === "left" ? "← LEFT" : "RIGHT →"}
@@ -6229,10 +7443,10 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
                   height: "12.5%",
                   transform: "translateX(-50%)",
                   boxSizing: "border-box",
-                  border: "4px solid rgba(18,24,25,.94)",
-                  borderRadius: 13,
+                  border: "3px solid rgba(16,22,24,.92)",
+                  borderRadius: 12,
                   background: "linear-gradient(145deg, rgba(255,255,255,.09), transparent 32%)",
-                  boxShadow: "inset 0 0 0 2px rgba(255,255,255,.13), 0 5px 18px rgba(0,0,0,.38)",
+                  boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 6px 20px rgba(0,0,0,.35)",
                   pointerEvents: "none",
                 }}
               >
@@ -6269,8 +7483,10 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               }}
             >
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 7 }}>
-                <span style={{ color: "#f2c658", fontSize: 10, letterSpacing: ".1em" }}>COACH</span>
-                <span style={{ opacity: 0.62, fontSize: 10 }}>{Math.round(hud.objectiveProgress * 100)}%</span>
+                <span style={{ ...hudLabelStyle, color: "#f2c658" }}>Coach</span>
+                <span style={{ ...hudLabelStyle, opacity: 0.62, fontVariantNumeric: "tabular-nums" }}>
+                  {Math.round(hud.objectiveProgress * 100)}%
+                </span>
               </div>
               <div style={{ marginBottom: 5, fontSize: 10, opacity: 0.62 }}>
                 {hud.scenarioTitle} · {hud.objective}
@@ -6292,7 +7508,14 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               )}
               {hud.instruction}
               <div style={{ height: 3, marginTop: 10, overflow: "hidden", borderRadius: 99, background: "rgba(255,255,255,.12)" }}>
-                <div style={{ width: `${hud.objectiveProgress * 100}%`, height: "100%", background: "#f2c658" }} />
+                <div
+                  style={{
+                    width: `${hud.objectiveProgress * 100}%`,
+                    height: "100%",
+                    background: "#f2c658",
+                    transition: reducedMotion ? "none" : "width 240ms ease",
+                  }}
+                />
               </div>
             </div>
 
@@ -6304,7 +7527,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
                   ...glassPanelStyle,
                   position: "absolute",
                   left: 16,
-                  bottom: touchVisible ? 122 : 20,
+                  // Keep clear of the SIDESWAP brand mark pinned bottom-left.
+                  bottom: touchVisible ? 122 : 56,
                   maxWidth: "min(390px, calc(100% - 32px))",
                   padding: "9px 12px",
                   borderRadius: 13,
