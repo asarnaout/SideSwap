@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { LESSONS, MAP_PACKS, getMapPack } from "../app/game/content";
 import {
   buildRoadSurfaceStripGeometry,
-  collectRoadJunctionPatches,
+  collectRoadJunctionFills,
   computeRouteChevronPlacements,
   smoothClosedRoadCenterline,
   type GameCanvasLane,
 } from "../app/game/GameCanvas";
+import { isPointInPolygon } from "../app/game/simulation";
 
 interface Point {
   readonly x: number;
@@ -72,7 +73,7 @@ describe("road surface continuity on every map", () => {
   it("keeps every lesson route transition on one surface or under a junction apron", () => {
     for (const lesson of LESSONS) {
       const mapPack = getMapPack(lesson.mapId);
-      const patches = collectRoadJunctionPatches(mapPack.geometry.roadSurfaces);
+      const fills = collectRoadJunctionFills(mapPack.geometry.roadSurfaces);
       const surfaceForLane = new Map<string, string>();
       for (const surface of mapPack.geometry.roadSurfaces) {
         for (const laneId of surface.laneIds) {
@@ -94,14 +95,12 @@ describe("road surface continuity on every map", () => {
         );
         const transition = previousLane?.centerline.at(-1);
         expect(transition).toBeDefined();
-        const covered = patches.some(
-          (patch) =>
-            Math.hypot(patch.x - transition!.x, patch.z - transition!.z) <=
-            patch.radiusM,
+        const covered = fills.some((fill) =>
+          isPointInPolygon(transition!, fill.polygon),
         );
         expect(
           covered,
-          `${lesson.id}: transition ${previousLaneId} -> ${laneId} crosses surfaces with no junction apron`,
+          `${lesson.id}: transition ${previousLaneId} -> ${laneId} crosses surfaces with no junction fill`,
         ).toBe(true);
       }
     }
