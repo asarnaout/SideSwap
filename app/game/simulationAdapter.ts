@@ -422,11 +422,31 @@ function buildBoxJunctions(
   });
 }
 
+/** End-to-end unit direction of a lane, used to split a carriageway's lanes
+ * into their two opposing travel directions. */
+function laneForwardDirection(
+  lane: GameCanvasLane,
+): { readonly x: number; readonly z: number } | null {
+  const start = lane.centerline[0];
+  const end = lane.centerline.at(-1);
+  if (!start || !end) return null;
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  return length > 0.01 ? { x: dx / length, z: dz / length } : null;
+}
+
+/** Arclength fractions for the supplemental oncoming gates on a two-way road. */
+const ONCOMING_GATE_FRACTIONS = [0.72, 0.28] as const;
+
 function buildTrafficGates(
   mapPack: GameCanvasMapPack,
 ): SimulationTrafficGate[] {
-  const laneIds = new Set(mapPack.laneGraph.lanes.map((lane) => lane.id));
-  return mapPack.laneGraph.spawnPoints.flatMap((spawn) => {
+  const lanes = mapPack.laneGraph.lanes;
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const laneIds = new Set(lanes.map((lane) => lane.id));
+
+  const authoredGates: SimulationTrafficGate[] = mapPack.laneGraph.spawnPoints.flatMap((spawn) => {
     if (spawn.kind !== "vehicle") return [];
     const anchor = "anchor" in spawn ? spawn.anchor : undefined;
     if (anchor && laneIds.has(anchor.laneId)) {
@@ -439,7 +459,7 @@ function buildTrafficGates(
     }
     const laneId = spawn.laneId;
     const lane = laneId
-      ? mapPack.laneGraph.lanes.find((candidate) => candidate.id === laneId)
+      ? lanes.find((candidate) => candidate.id === laneId)
       : undefined;
     const distance = lane && spawn.pose
       ? projectDistanceAlongLane(lane, spawn.pose.position)
@@ -453,6 +473,50 @@ function buildTrafficGates(
         }]
       : [];
   });
+
+  // Give every TWO-WAY road oncoming traffic. Authored vehicle spawns only ever
+  // sit on same-direction lanes, so without this the player never meets a car
+  // coming the other way — the whole point of the game. For each carriageway
+  // whose lanes split into two opposing directions, make sure each direction
+  // carries a gate; these supplemental gates defer their first spawn
+  // (allowInitialSpawn:false), so a parked player is never boxed in and only
+  // meets oncoming cars once under way. Fully deterministic (fixed lane order +
+  // fractions) so the traffic-safety replay stays reproducible.
+  const gatedLaneIds = new Set(authoredGates.map((gate) => gate.laneId));
+  const supplementalGates: SimulationTrafficGate[] = [];
+  for (const surface of mapPack.geometry.roadSurfaces ?? []) {
+    const surfaceLanes = surface.laneIds
+      .map((id) => laneById.get(id))
+      .filter((lane): lane is GameCanvasLane => Boolean(lane));
+    const reference = surfaceLanes.map(laneForwardDirection).find(Boolean);
+    if (!reference) continue;
+    const forward: GameCanvasLane[] = [];
+    const backward: GameCanvasLane[] = [];
+    for (const lane of surfaceLanes) {
+      const direction = laneForwardDirection(lane);
+      if (!direction) continue;
+      const aligned = direction.x * reference.x + direction.z * reference.z >= 0;
+      (aligned ? forward : backward).push(lane);
+    }
+    if (!forward.length || !backward.length) continue; // one-way carriageway
+    for (const group of [forward, backward]) {
+      if (group.some((lane) => gatedLaneIds.has(lane.id))) continue;
+      const target = group.reduce((longest, lane) =>
+        laneLength(lane) > laneLength(longest) ? lane : longest,
+      );
+      const length = laneLength(target);
+      for (const fraction of ONCOMING_GATE_FRACTIONS) {
+        supplementalGates.push({
+          id: `oncoming-${target.id}-${Math.round(fraction * 100)}`,
+          laneId: target.id,
+          distance: length * fraction,
+          allowInitialSpawn: false,
+        });
+      }
+      gatedLaneIds.add(target.id);
+    }
+  }
+  return [...authoredGates, ...supplementalGates];
 }
 
 function pointInPolygon(
