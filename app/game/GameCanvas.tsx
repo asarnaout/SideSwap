@@ -4367,7 +4367,11 @@ class BabylonGameSession {
           (candidate) => candidate.id === approach.stopLine.laneId,
         );
         if (!stop || !lane) continue;
-        const halfWidth = (lane.widthM ?? 3.2) / 2;
+        // Lane widths are authored narrower than the painted carriageway, so a
+        // stop bar at exactly half-lane-width reads as a short stub floating in
+        // the middle of the lane. Widen it so adjacent lanes' bars meet into a
+        // continuous line across the approach.
+        const halfWidth = (lane.widthM ?? 3.2) / 2 + 0.7;
         const sideX = Math.cos(stop.heading);
         const sideZ = -Math.sin(stop.heading);
         this.createFlatSegment(
