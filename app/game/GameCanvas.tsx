@@ -158,6 +158,44 @@ function dotRoadDirections(first: RoadDirection, second: RoadDirection): number 
   return first.x * second.x + first.z * second.z;
 }
 
+/**
+ * Nearest point on a polyline to a query point. Used to anchor stop bars to the
+ * road's centreline rather than the offset lane centreline, so a two-way road's
+ * bar can start exactly at the centre line instead of painting across it.
+ */
+function nearestPointOnPolyline(
+  query: GameCanvasPoint,
+  polyline: readonly GameCanvasPoint[],
+): GameCanvasPoint {
+  let best: GameCanvasPoint = polyline[0] ?? query;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index + 1 < polyline.length; index += 1) {
+    const start = polyline[index];
+    const end = polyline[index + 1];
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const lengthSquared = dx * dx + dz * dz;
+    const t =
+      lengthSquared > 0
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              ((query.x - start.x) * dx + (query.z - start.z) * dz) /
+                lengthSquared,
+            ),
+          )
+        : 0;
+    const point = { x: start.x + dx * t, z: start.z + dz * t };
+    const distance = Math.hypot(query.x - point.x, query.z - point.z);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = point;
+    }
+  }
+  return best;
+}
+
 /** Removes authored duplicate points while retaining the fact that a path is closed. */
 function normalizeRoadCenterline(
   points: readonly GameCanvasPoint[],
@@ -4376,13 +4414,38 @@ class BabylonGameSession {
           candidate.laneIds.includes(lane.id),
         );
         const roadHalfWidth = (stopSurface?.widthM ?? lane.widthM ?? 3.2) / 2;
-        const halfWidth = Math.min((lane.widthM ?? 3.2) / 2 + 1.4, roadHalfWidth);
         const sideX = Math.cos(stop.heading);
         const sideZ = -Math.sin(stop.heading);
+        // A centre line means a two-way road: the bar runs from the centre line
+        // to the near kerb so it never paints across the oncoming side. A
+        // one-way road (lane dividers only) gets the full-width bar.
+        const twoWay = (stopSurface?.markings ?? []).some(
+          (marking) =>
+            marking.style === "centre_solid" || marking.style === "centre_dashed",
+        );
+        let stopStart: GameCanvasPoint;
+        let stopEnd: GameCanvasPoint;
+        if (twoWay && stopSurface) {
+          const centre = nearestPointOnPolyline(
+            { x: stop.x, z: stop.z },
+            stopSurface.centerline,
+          );
+          const towardKerb =
+            (stop.x - centre.x) * sideX + (stop.z - centre.z) * sideZ >= 0 ? 1 : -1;
+          stopStart = centre;
+          stopEnd = {
+            x: centre.x + towardKerb * roadHalfWidth * sideX,
+            z: centre.z + towardKerb * roadHalfWidth * sideZ,
+          };
+        } else {
+          const halfWidth = Math.min((lane.widthM ?? 3.2) / 2 + 1.4, roadHalfWidth);
+          stopStart = { x: stop.x - sideX * halfWidth, z: stop.z - sideZ * halfWidth };
+          stopEnd = { x: stop.x + sideX * halfWidth, z: stop.z + sideZ * halfWidth };
+        }
         this.createFlatSegment(
           `${control.id}-${approach.id}-stop-line`,
-          { x: stop.x - sideX * halfWidth, z: stop.z - sideZ * halfWidth },
-          { x: stop.x + sideX * halfWidth, z: stop.z + sideZ * halfWidth },
+          stopStart,
+          stopEnd,
           0.28,
           0.147,
           laneMaterial,
