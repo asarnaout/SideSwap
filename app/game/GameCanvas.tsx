@@ -4696,18 +4696,18 @@ class BabylonGameSession {
             variant === 1
               ? masterCylinder(
                   cacheKey,
-                  { height: 4.2, diameterTop: 0.3, diameterBottom: 2.2 },
+                  { height: 4.2, diameterTop: 0, diameterBottom: 2.2 },
                   leaves[variant],
                 )
               : variant === 2
                 ? masterCylinder(
                     cacheKey,
-                    { height: 2.4, diameterTop: 1.9, diameterBottom: 2.6 },
+                    { height: 2.9, diameterTop: 0, diameterBottom: 2.6 },
                     leaves[variant],
                   )
                 : masterCylinder(
                     cacheKey,
-                    { height: 3.2, diameterTop: 0.35, diameterBottom: 2.9 },
+                    { height: 3.2, diameterTop: 0, diameterBottom: 2.9 },
                     leaves[variant],
                   );
           parts = [
@@ -6145,7 +6145,7 @@ class BabylonGameSession {
         createCylinder(
           scene,
           `crown-${index}`,
-          { height: 3.4, diameterTop: 0.4, diameterBottom: 3.2, tessellation: 8 },
+          { height: 3.4, diameterTop: 0, diameterBottom: 3.2, tessellation: 8 },
           new Vector3(0, 3.4, 0),
           leaves,
           tree,
