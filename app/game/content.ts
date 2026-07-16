@@ -1086,7 +1086,7 @@ export const MAP_PACKS: readonly MapPack[] = [
           roadMarking("nyc-west-79-divider", "lane_dashed", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], "white"),
         ]),
         roadSurface("nyc-broadway", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], 10.8, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"], "standard", [
-          roadMarking("nyc-broadway-centre", "centre_solid", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], "yellow"),
+          roadMarking("nyc-broadway-centre", "centre_solid", [point(0, -66), nycNodes.e.position, point(0, 66)], "yellow"),
         ]),
         roadSurface("nyc-columbus", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], 10.2, ["nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-columbus-n-1-after-72", "nyc-columbus-n-2-after-72"], "standard", [
           roadMarking("nyc-columbus-divider", "lane_dashed", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], "white"),
@@ -1336,7 +1336,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "jp-block-south", center: point(-48, -30), size: point(100, 50), heightRange: [5, 13], density: 0.7, material: "wood-plaster" },
       ],
       landmarks: [
-        { id: "jp-gotokuji-station", kind: "station", center: point(-22, 12), size: point(20, 9), color: "#e85e59" },
+        { id: "jp-gotokuji-station", kind: "station", center: point(-14, 6), size: point(20, 9), color: "#e85e59" },
         { id: "jp-setagaya-line", kind: "railway", center: point(18, -62), size: point(5, 72), color: "#656a70" },
         // The former temple garden covered the live junction. Keep it visible
         // to the east of the street instead of placing it over the asphalt.

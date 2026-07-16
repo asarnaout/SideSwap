@@ -788,10 +788,10 @@ const londonLaneGraph: LaneGraph = {
         "london-exhibition-shared-1",
       ],
       polygon: [
-        point(30, -44),
-        point(54, -44),
-        point(54, -20),
-        point(30, -20),
+        point(37, -36),
+        point(47, -36),
+        point(47, -25),
+        point(37, -25),
       ],
     },
   ]),
@@ -903,7 +903,7 @@ export const LONDON_MAP_PACK: MapPack = {
       roadSurface("london-cromwell-west", [point(-108, -30.3), point(42, -30.3)], 11.4, ["london-cromwell-east-1", "london-cromwell-east-bus", "london-cromwell-west-2"], "standard", [
         roadMarking("london-cromwell-bus-divider", "lane_solid", [point(-108, -28.6), point(42, -28.6)], "white"),
         roadMarking("london-cromwell-centre-west", "centre_dashed", [point(-108, -32), point(42, -32)], "white"),
-        roadMarking("london-cromwell-box", "box_junction", [point(30, -43), point(54, -43), point(54, -21), point(30, -21), point(30, -43)], "yellow"),
+        roadMarking("london-cromwell-box", "box_junction", [point(37, -36), point(47, -36), point(47, -25), point(37, -25), point(37, -36)], "yellow"),
       ]),
       roadSurface("london-cromwell-east", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], 7.6, ["london-cromwell-east-2", "london-cromwell-west-1"], "standard", [roadMarking("london-cromwell-centre-east", "centre_dashed", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], "white")]),
       roadSurface("london-east-road", [londonNodes.cromwellEast.position, londonNodes.thurloeEast.position], 7.2, ["london-east-north"]),
