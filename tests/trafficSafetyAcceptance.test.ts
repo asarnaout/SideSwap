@@ -689,7 +689,12 @@ describe("traffic safety acceptance", () => {
           : undefined,
       ).toEqual([]);
     },
-    900_000,
+    // Exhaustive 60 s × 51-seed stationary check over every start + checkpoint on
+    // all 23 playable paths. The guarantee (seeds, duration, positions) is fixed;
+    // wall-clock scales with map size + density, which grew as NYC/London/Tokyo
+    // were enlarged ~3-4×. This body is synchronous, so the budget only labels a
+    // completed run — it never truncates coverage. Sized to the enlarged maps.
+    2_700_000,
   );
 
   it(

@@ -2133,7 +2133,7 @@ export const LESSONS: readonly LessonDefinition[] = [
       { id: "jp-follow", label: "Keep a patient following distance", ruleCode: "following_distance" },
     ],
     trafficSeed: 1402,
-    trafficDensity: "busy",
+    trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 14, cyclists: 9 },
     checkpoints: ["jp-start", "jp-dori", "jp-station", "jp-vru-finish"],
     coachPrompts: [
@@ -2164,7 +2164,7 @@ export const LESSONS: readonly LessonDefinition[] = [
       { id: "jp-rail-observe", label: "Look and listen in both directions", ruleCode: "observation" },
     ],
     trafficSeed: 1403,
-    trafficDensity: "busy",
+    trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 10, cyclists: 7 },
     checkpoints: ["jp-start", "jp-rail", "jp-rail-clear", "jp-station", "jp-finish", "jp-hill-finish"],
     coachPrompts: [
