@@ -1127,27 +1127,31 @@ const jpNodes = {
   nw2: node("jp-nw2", -112, 168),
   nm2: node("jp-nm2", -30, 168),
   ne2: node("jp-ne2", 82, 168),
+  // Western corridor (Yamashita side, west of the existing loop).
+  sw: node("jp-sw", -260, -72),
+  cw: node("jp-cw", -260, 18),
+  nw: node("jp-nw", -260, 76),
 };
 
 const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
   laneTrue("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
-  laneTrue("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, [], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
+  laneTrue("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, ["jp-westedge-north", "jp-southrow-west-w"], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
   laneTrue("jp-south-west-2", jpNodes.c, jpNodes.b, "left", 30, ["jp-south-west-1"], "rail_crossing", [point(21, -73.5)], ["jp-south-east-2"], "jp-south-road", 3),
   laneTrue("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(71.64, -70.27), point(100.78, -54.81), point(106.36, -34.57), point(110.23, -18.1)], ["jp-curve-south"]),
   laneTrue("jp-curve-south", jpNodes.d, jpNodes.c, "left", 30, ["jp-south-west-2"], "travel", [point(113.54, -18.88), point(109.64, -35.43), point(103.22, -57.19), point(73.24, -73.26)], ["jp-curve-north"], "jp-east-curve", 3),
   laneTrue("jp-center-west-1", jpNodes.d, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(110.37, -18.7), point(81.1, 16.56), point(54.5, 16.3)], ["jp-center-east-3"]),
   laneTrue("jp-center-west-2", jpNodes.e, jpNodes.f, "left", 30, ["jp-center-west-3", "jp-narrow-north-2"], "travel", [point(12, 16.5)], ["jp-center-east-2"]),
-  laneTrue("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north"], "travel", [point(-71, 16.5)], ["jp-center-east-1"]),
+  laneTrue("jp-center-west-3", jpNodes.f, jpNodes.g, "left", 30, ["jp-west-north", "jp-centerrow-west-w"], "travel", [point(-71, 16.5)], ["jp-center-east-1"]),
   laneTrue("jp-center-east-1", jpNodes.g, jpNodes.f, "left", 30, ["jp-center-east-2", "jp-narrow-south-1"], "travel", [point(-71, 19.5)], ["jp-center-west-3"], "jp-center-road", 3),
   laneTrue("jp-center-east-2", jpNodes.f, jpNodes.e, "left", 30, ["jp-center-east-3"], "travel", [point(12, 19.5)], ["jp-center-west-2"], "jp-center-road", 3),
   laneTrue("jp-center-east-3", jpNodes.e, jpNodes.d, "left", 30, ["jp-curve-south"], "travel", [point(54.5, 19.7), point(82.9, 19.45), point(112.99, -16.53)], ["jp-center-west-1"], "jp-center-road", 3),
   laneTrue("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1", "jp-westhill-north"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
-  laneTrue("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
+  laneTrue("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1", "jp-westedge-south"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
   laneTrue("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"], "travel", [point(-71, 77.5)], ["jp-north-west-2"]),
   laneTrue("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south", "jp-easthill-north"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
   laneTrue("jp-north-west-1", jpNodes.j, jpNodes.i, "left", 30, ["jp-north-west-2", "jp-narrow-south-2"], "travel", [point(26, 74.5)], ["jp-north-east-2"], "jp-north-road", 3),
-  laneTrue("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
+  laneTrue("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south", "jp-northrow-west-w"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
   laneTrue("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(83.3, 75.1), point(83.5, 47), point(55.3, 17.1)], ["jp-junction-north"]),
   laneTrue("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1", "jp-easthill-north"], "travel", [point(52.7, 18.9), point(80.5, 47), point(80.7, 76.9)], ["jp-junction-south"], "jp-junction-road", 3),
   laneTrue("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
@@ -1169,6 +1173,24 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-uptown-east-2", jpNodes.nm2, jpNodes.ne2, "left", 30, ["jp-easthill-south"], "travel", [point(26, 169.5)], ["jp-uptown-west-1"], "jp-uptown-road", 3),
   laneTrue("jp-uptown-west-1", jpNodes.ne2, jpNodes.nm2, "left", 30, ["jp-uptown-west-2", "jp-narrowhill-south"], "travel", [point(26, 166.5)], ["jp-uptown-east-2"], "jp-uptown-road", 3),
   laneTrue("jp-uptown-west-2", jpNodes.nm2, jpNodes.nw2, "left", 30, ["jp-westhill-south"], "travel", [point(-71, 166.5)], ["jp-uptown-east-1"], "jp-uptown-road", 3),
+  // --- Western corridor: closes the west side and reaches out to Westside Road ---
+  // Westedge Road (N-S, x=-112): joins the south stub up to the centre street.
+  laneTrue("jp-westedge-north", jpNodes.a, jpNodes.g, "left", 30, ["jp-west-north", "jp-centerrow-west-w"], "travel", [point(-113.5, -27)], ["jp-westedge-south"], "jp-westedge-road", 3),
+  laneTrue("jp-westedge-south", jpNodes.g, jpNodes.a, "left", 30, ["jp-south-east-1", "jp-southrow-west-w"], "travel", [point(-110.5, -27)], ["jp-westedge-north"], "jp-westedge-road", 3),
+  // Southrow West (E-W, z=-72): extends the south road out to Westside Road.
+  laneTrue("jp-southrow-west-w", jpNodes.a, jpNodes.sw, "left", 30, ["jp-westside-north-1"], "travel", [point(-186, -73.5)], ["jp-southrow-west-e"], "jp-southrow-west", 3),
+  laneTrue("jp-southrow-west-e", jpNodes.sw, jpNodes.a, "left", 30, ["jp-south-east-1", "jp-westedge-north"], "travel", [point(-186, -70.5)], ["jp-southrow-west-w"], "jp-southrow-west", 3),
+  // Centerrow West (E-W, z=18): extends the centre street out to Westside Road.
+  laneTrue("jp-centerrow-west-w", jpNodes.g, jpNodes.cw, "left", 30, ["jp-westside-north-2", "jp-westside-south-1"], "travel", [point(-186, 16.5)], ["jp-centerrow-west-e"], "jp-centerrow-west", 3),
+  laneTrue("jp-centerrow-west-e", jpNodes.cw, jpNodes.g, "left", 30, ["jp-center-east-1", "jp-westedge-south"], "travel", [point(-186, 19.5)], ["jp-centerrow-west-w"], "jp-centerrow-west", 3),
+  // Northrow West (E-W, z=76): extends the north road out to Westside Road.
+  laneTrue("jp-northrow-west-w", jpNodes.h, jpNodes.nw, "left", 30, ["jp-westside-south-2"], "travel", [point(-186, 74.5)], ["jp-northrow-west-e"], "jp-northrow-west", 3),
+  laneTrue("jp-northrow-west-e", jpNodes.nw, jpNodes.h, "left", 30, ["jp-north-east-1", "jp-west-south"], "travel", [point(-186, 77.5)], ["jp-northrow-west-w"], "jp-northrow-west", 3),
+  // Westside Road (N-S, x=-260): the far-west street closing the western loop.
+  laneTrue("jp-westside-north-1", jpNodes.sw, jpNodes.cw, "left", 30, ["jp-westside-north-2", "jp-centerrow-west-e"], "travel", [point(-261.5, -27)], ["jp-westside-south-1"], "jp-westside-road", 3),
+  laneTrue("jp-westside-north-2", jpNodes.cw, jpNodes.nw, "left", 30, ["jp-northrow-west-e"], "travel", [point(-261.5, 47)], ["jp-westside-south-2"], "jp-westside-road", 3),
+  laneTrue("jp-westside-south-2", jpNodes.nw, jpNodes.cw, "left", 30, ["jp-westside-south-1", "jp-centerrow-west-e"], "travel", [point(-258.5, 47)], ["jp-westside-north-2"], "jp-westside-road", 3),
+  laneTrue("jp-westside-south-1", jpNodes.cw, jpNodes.sw, "left", 30, ["jp-southrow-west-e"], "travel", [point(-258.5, -27)], ["jp-westside-north-1"], "jp-westside-road", 3),
 ];
 
 const transitionNodes = {
@@ -1497,7 +1519,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:tokyo-setagaya-2026-07-10",
     ),
     geometry: {
-      worldSize: point(280, 380),
+      worldSize: point(600, 380),
       roadWidth: 6.5,
       shoulderWidth: 0.8,
       roadSurfaces: [
@@ -1512,6 +1534,11 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("jp-narrowhill-road", [jpNodes.i.position, jpNodes.nm2.position], 5.8, ["jp-narrowhill-north", "jp-narrowhill-south"], "shared_space"),
         roadSurface("jp-easthill-road", [jpNodes.j.position, jpNodes.ne2.position], 6.4, ["jp-easthill-north", "jp-easthill-south"]),
         roadSurface("jp-uptown-road", [jpNodes.nw2.position, jpNodes.nm2.position, jpNodes.ne2.position], 6.4, ["jp-uptown-east-1", "jp-uptown-east-2", "jp-uptown-west-1", "jp-uptown-west-2"]),
+        roadSurface("jp-westedge-road", [jpNodes.a.position, jpNodes.g.position], 6.4, ["jp-westedge-north", "jp-westedge-south"]),
+        roadSurface("jp-southrow-west", [jpNodes.a.position, jpNodes.sw.position], 6.4, ["jp-southrow-west-w", "jp-southrow-west-e"]),
+        roadSurface("jp-centerrow-west", [jpNodes.g.position, jpNodes.cw.position], 6.4, ["jp-centerrow-west-w", "jp-centerrow-west-e"]),
+        roadSurface("jp-northrow-west", [jpNodes.h.position, jpNodes.nw.position], 6.4, ["jp-northrow-west-w", "jp-northrow-west-e"]),
+        roadSurface("jp-westside-road", [jpNodes.sw.position, jpNodes.cw.position, jpNodes.nw.position], 6.4, ["jp-westside-north-1", "jp-westside-north-2", "jp-westside-south-1", "jp-westside-south-2"]),
       ],
       blocks: [
         { id: "jp-block-west", center: point(-70, 46), size: point(64, 40), heightRange: [5, 14], density: 0.72, material: "plaster" },
