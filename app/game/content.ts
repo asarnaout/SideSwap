@@ -1442,7 +1442,26 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("uk-player", "player", "uk-entry-south", 22),
         anchoredSpawn("uk-car-1", "vehicle", "uk-rb-w-n", 27),
         anchoredSpawn("uk-car-2", "vehicle", "uk-dual-n-east", 108),
+        // Oncoming/cross traffic on every two-way road. Total live NPCs stay
+        // capped by density (npcCount); these extra anchors only guarantee the
+        // player meets cars in both directions and vary the opening scene. All
+        // sit >=25 m from every checkpoint so stationary-safety staging is clean.
+        anchoredSpawn("uk-car-3", "vehicle", "uk-exit-north", 45),
+        anchoredSpawn("uk-car-4", "vehicle", "uk-entry-north", 38),
+        anchoredSpawn("uk-car-5", "vehicle", "uk-exit-east", 52),
+        anchoredSpawn("uk-car-6", "vehicle", "uk-entry-east", 44),
+        anchoredSpawn("uk-car-7", "vehicle", "uk-exit-west", 55),
+        anchoredSpawn("uk-car-8", "vehicle", "uk-entry-west", 48),
+        anchoredSpawn("uk-car-9", "vehicle", "uk-rb-e-s", 14),
+        anchoredSpawn("uk-car-10", "vehicle", "uk-rb-s-w", 22),
+        anchoredSpawn("uk-car-11", "vehicle", "uk-dual-n-east-pass", 300),
+        anchoredSpawn("uk-car-12", "vehicle", "uk-east-north", 200),
+        anchoredSpawn("uk-car-13", "vehicle", "uk-south-west", 70),
+        anchoredSpawn("uk-car-14", "vehicle", "uk-west-south", 130),
         freeSpawn("uk-ped-1", "pedestrian", -104, -92, 0),
+        freeSpawn("uk-ped-2", "pedestrian", 78, -58, 180),
+        freeSpawn("uk-ped-3", "pedestrian", -68, 58, 0),
+        freeSpawn("uk-cyclist-1", "cyclist", -98, -12, 90),
       ],
       [
         checkpoint("uk-start", "Oldbrook approach", "uk-entry-south", 22),
