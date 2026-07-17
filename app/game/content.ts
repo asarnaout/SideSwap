@@ -1265,15 +1265,22 @@ export const MAP_PACKS: readonly MapPack[] = [
         ]),
       ],
       blocks: [
+        // One building cluster per grid cell, fitted between the avenues so none
+        // sits on Amsterdam or Columbus.
         { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(150, 420), heightRange: [18, 42], density: 0.8, material: "brick" },
         { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(150, 420), heightRange: [20, 46], density: 0.82, material: "sandstone" },
-        { id: "nyc-block-bway-cpw-s", center: point(100, -240), size: point(360, 420), heightRange: [16, 38], density: 0.68, material: "stone" },
-        { id: "nyc-block-bway-cpw-n", center: point(100, 240), size: point(360, 420), heightRange: [22, 48], density: 0.7, material: "brick" },
+        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(120, 420), heightRange: [16, 40], density: 0.78, material: "stone" },
+        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(120, 420), heightRange: [20, 44], density: 0.8, material: "brick" },
+        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(100, 420), heightRange: [18, 46], density: 0.82, material: "sandstone" },
+        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone" },
+        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
       ],
       landmarks: [
         // Kept clear of the carriageways (a content test enforces this).
         { id: "nyc-verdi-green", kind: "park", center: point(-40, -455), size: point(40, 24), color: "#5c8c4b" },
         { id: "nyc-subway", kind: "station", center: point(-92, -455), size: point(8, 5), color: "#2d2f33" },
+        { id: "nyc-central-park", kind: "park", center: point(358, 0), size: point(38, 940), color: "#4f7a3d" },
+        { id: "nyc-amnh", kind: "shops", center: point(250, 240), size: point(100, 420), color: "#caa76f" },
       ],
     },
     laneGraph: graph(
@@ -1289,7 +1296,12 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("nyc-cab-4", "vehicle", "nyc-amst-n-1a", 120),
         anchoredSpawn("nyc-car-5", "vehicle", "nyc-col-s-1a", 120),
         freeSpawn("nyc-ped-1", "pedestrian", -100, 12, 0),
+        freeSpawn("nyc-ped-2", "pedestrian", -132, -10, 180),
+        freeSpawn("nyc-ped-3", "pedestrian", 28, 12, 0),
+        freeSpawn("nyc-ped-4", "pedestrian", 168, -12, 180),
+        freeSpawn("nyc-ped-5", "pedestrian", -308, 10, 0),
         freeSpawn("nyc-cyclist-1", "cyclist", -318, -200, 0, "nyc-we-n-1"),
+        freeSpawn("nyc-cyclist-2", "cyclist", 38.3, -200, 0, "nyc-amst-n-1a"),
       ],
       [
         checkpoint("nyc-start", "Broadway & 86th", "nyc-bway-s-1", 30),
