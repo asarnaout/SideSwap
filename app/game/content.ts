@@ -1123,6 +1123,10 @@ const jpNodes = {
   h: node("jp-h", -112, 76),
   i: node("jp-i", -30, 76),
   j: node("jp-j", 82, 76),
+  // Northern district (Miyanosaka side, north of the existing loop).
+  nw2: node("jp-nw2", -112, 168),
+  nm2: node("jp-nm2", -30, 168),
+  ne2: node("jp-ne2", 82, 168),
 };
 
 const jpLanes: readonly LaneSegment[] = [
@@ -1138,18 +1142,33 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-center-east-1", jpNodes.g, jpNodes.f, "left", 30, ["jp-center-east-2", "jp-narrow-south-1"], "travel", [point(-71, 19.5)], ["jp-center-west-3"], "jp-center-road", 3),
   laneTrue("jp-center-east-2", jpNodes.f, jpNodes.e, "left", 30, ["jp-center-east-3"], "travel", [point(12, 19.5)], ["jp-center-west-2"], "jp-center-road", 3),
   laneTrue("jp-center-east-3", jpNodes.e, jpNodes.d, "left", 30, ["jp-curve-south"], "travel", [point(54.5, 19.7), point(82.9, 19.45), point(112.99, -16.53)], ["jp-center-west-1"], "jp-center-road", 3),
-  laneTrue("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
+  laneTrue("jp-west-north", jpNodes.g, jpNodes.h, "left", 30, ["jp-north-east-1", "jp-westhill-north"], "travel", [point(-113.5, 47)], ["jp-west-south"]),
   laneTrue("jp-west-south", jpNodes.h, jpNodes.g, "left", 30, ["jp-center-east-1"], "travel", [point(-110.5, 47)], ["jp-west-north"], "jp-west-road", 3),
   laneTrue("jp-north-east-1", jpNodes.h, jpNodes.i, "left", 30, ["jp-north-east-2"], "travel", [point(-71, 77.5)], ["jp-north-west-2"]),
-  laneTrue("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
+  laneTrue("jp-north-east-2", jpNodes.i, jpNodes.j, "left", 30, ["jp-junction-south", "jp-easthill-north"], "travel", [point(26, 77.5)], ["jp-north-west-1"]),
   laneTrue("jp-north-west-1", jpNodes.j, jpNodes.i, "left", 30, ["jp-north-west-2", "jp-narrow-south-2"], "travel", [point(26, 74.5)], ["jp-north-east-2"], "jp-north-road", 3),
   laneTrue("jp-north-west-2", jpNodes.i, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-71, 74.5)], ["jp-north-east-1"], "jp-north-road", 3),
   laneTrue("jp-junction-south", jpNodes.j, jpNodes.e, "left", 30, ["jp-center-west-2"], "travel", [point(83.3, 75.1), point(83.5, 47), point(55.3, 17.1)], ["jp-junction-north"]),
-  laneTrue("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1"], "travel", [point(52.7, 18.9), point(80.5, 47), point(80.7, 76.9)], ["jp-junction-south"], "jp-junction-road", 3),
+  laneTrue("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1", "jp-easthill-north"], "travel", [point(52.7, 18.9), point(80.5, 47), point(80.7, 76.9)], ["jp-junction-south"], "jp-junction-road", 3),
   laneTrue("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
-  laneTrue("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
+  laneTrue("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2", "jp-narrowhill-north"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
   laneTrue("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
   laneTrue("jp-narrow-south-2", jpNodes.i, jpNodes.f, "left", 20, ["jp-narrow-south-1"], "travel", [point(-28.65, 47)], ["jp-narrow-north-2"], "jp-narrow-road", 2.7),
+  // --- Northern district: a second loop north of the existing streets ---
+  // Westhill Road (N-S, x=-112): extends the west edge north up to Uptown.
+  laneTrue("jp-westhill-north", jpNodes.h, jpNodes.nw2, "left", 30, ["jp-uptown-east-1"], "travel", [point(-113.5, 122)], ["jp-westhill-south"], "jp-westhill-road", 3),
+  laneTrue("jp-westhill-south", jpNodes.nw2, jpNodes.h, "left", 30, ["jp-west-south"], "travel", [point(-110.5, 122)], ["jp-westhill-north"], "jp-westhill-road", 3),
+  // Narrowhill Road (narrow N-S, x=-30): extends the central spine north.
+  laneTrue("jp-narrowhill-north", jpNodes.i, jpNodes.nm2, "left", 20, ["jp-uptown-east-2", "jp-uptown-west-2"], "travel", [point(-31.35, 122)], ["jp-narrowhill-south"], "jp-narrowhill-road", 2.7),
+  laneTrue("jp-narrowhill-south", jpNodes.nm2, jpNodes.i, "left", 20, ["jp-narrow-south-2"], "travel", [point(-28.65, 122)], ["jp-narrowhill-north"], "jp-narrowhill-road", 2.7),
+  // Easthill Road (N-S, x=82): extends the junction line north.
+  laneTrue("jp-easthill-north", jpNodes.j, jpNodes.ne2, "left", 30, ["jp-uptown-west-1"], "travel", [point(80.5, 122)], ["jp-easthill-south"], "jp-easthill-road", 3),
+  laneTrue("jp-easthill-south", jpNodes.ne2, jpNodes.j, "left", 30, ["jp-junction-south", "jp-north-west-1"], "travel", [point(83.5, 122)], ["jp-easthill-north"], "jp-easthill-road", 3),
+  // Uptown Road (E-W, z=168): the northern through-street closing the loop.
+  laneTrue("jp-uptown-east-1", jpNodes.nw2, jpNodes.nm2, "left", 30, ["jp-uptown-east-2", "jp-narrowhill-south"], "travel", [point(-71, 169.5)], ["jp-uptown-west-2"], "jp-uptown-road", 3),
+  laneTrue("jp-uptown-east-2", jpNodes.nm2, jpNodes.ne2, "left", 30, ["jp-easthill-south"], "travel", [point(26, 169.5)], ["jp-uptown-west-1"], "jp-uptown-road", 3),
+  laneTrue("jp-uptown-west-1", jpNodes.ne2, jpNodes.nm2, "left", 30, ["jp-uptown-west-2", "jp-narrowhill-south"], "travel", [point(26, 166.5)], ["jp-uptown-east-2"], "jp-uptown-road", 3),
+  laneTrue("jp-uptown-west-2", jpNodes.nm2, jpNodes.nw2, "left", 30, ["jp-westhill-south"], "travel", [point(-71, 166.5)], ["jp-uptown-east-1"], "jp-uptown-road", 3),
 ];
 
 const transitionNodes = {
@@ -1478,7 +1497,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:tokyo-setagaya-2026-07-10",
     ),
     geometry: {
-      worldSize: point(270, 190),
+      worldSize: point(280, 380),
       roadWidth: 6.5,
       shoulderWidth: 0.8,
       roadSurfaces: [
@@ -1489,6 +1508,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("jp-north-road", [jpNodes.h.position, jpNodes.i.position, jpNodes.j.position], 6.4, ["jp-north-east-1", "jp-north-east-2", "jp-north-west-1", "jp-north-west-2"]),
         roadSurface("jp-junction-road", [jpNodes.e.position, point(82, 47), jpNodes.j.position], 6.4, ["jp-junction-south", "jp-junction-north"]),
         roadSurface("jp-narrow-road", [jpNodes.b.position, jpNodes.f.position, jpNodes.i.position], 5.8, ["jp-narrow-north-1", "jp-narrow-north-2", "jp-narrow-south-1", "jp-narrow-south-2"], "shared_space"),
+        roadSurface("jp-westhill-road", [jpNodes.h.position, jpNodes.nw2.position], 6.4, ["jp-westhill-north", "jp-westhill-south"]),
+        roadSurface("jp-narrowhill-road", [jpNodes.i.position, jpNodes.nm2.position], 5.8, ["jp-narrowhill-north", "jp-narrowhill-south"], "shared_space"),
+        roadSurface("jp-easthill-road", [jpNodes.j.position, jpNodes.ne2.position], 6.4, ["jp-easthill-north", "jp-easthill-south"]),
+        roadSurface("jp-uptown-road", [jpNodes.nw2.position, jpNodes.nm2.position, jpNodes.ne2.position], 6.4, ["jp-uptown-east-1", "jp-uptown-east-2", "jp-uptown-west-1", "jp-uptown-west-2"]),
       ],
       blocks: [
         { id: "jp-block-west", center: point(-70, 46), size: point(64, 40), heightRange: [5, 14], density: 0.72, material: "plaster" },
