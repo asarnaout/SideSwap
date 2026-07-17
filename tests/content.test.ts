@@ -1499,18 +1499,9 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("uses the legal left-turn lanes throughout the authored NYC loop", () => {
+  it("routes every NYC lesson along the two-way Broadway corridor", () => {
     const map = getMapPack("nyc-upper-west-side");
-    const expectedRoute = [
-      "nyc-72-east-2",
-      "nyc-72-east-2-after-bway",
-      "nyc-columbus-n-1",
-      "nyc-columbus-n-1-after-72",
-      "nyc-79-west-2",
-      "nyc-79-west-2-after-bway",
-      "nyc-west-end-s-2",
-      "nyc-west-end-s-2-after-79",
-    ];
+    const expectedRoute = ["nyc-bway-s-1", "nyc-bway-s-2"];
 
     for (const lessonId of [
       "us-one-way-grid",
@@ -1526,30 +1517,17 @@ describe("SideSwap content", () => {
     expect(player?.kind).toBe("player");
     if (player?.kind === "player") {
       expect(player.anchor).toEqual({
-        laneId: "nyc-72-east-2",
-        distanceAlongM: 17,
+        laneId: "nyc-bway-s-1",
+        distanceAlongM: 20,
       });
     }
-
-    const controls = new Map(
-      map.laneGraph.controls.map((control) => [control.id, control]),
-    );
-    expect(controls.get("nyc-signal-72-bway")?.laneIds).toContain(
-      "nyc-72-east-2",
-    );
-    expect(controls.get("nyc-crosswalk-79")?.laneIds).toContain(
-      "nyc-79-west-2",
-    );
-    expect(controls.get("nyc-signal-columbus")?.laneIds).toContain(
-      "nyc-columbus-n-2",
-    );
 
     const checkpoints = new Map(
       map.laneGraph.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]),
     );
     expect(checkpoints.get("nyc-79")?.anchor).toEqual({
-      laneId: "nyc-79-west-2",
-      distanceAlongM: 96,
+      laneId: "nyc-bway-s-2",
+      distanceAlongM: 40,
     });
   });
 
