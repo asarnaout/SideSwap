@@ -1131,11 +1131,15 @@ const jpNodes = {
   sw: node("jp-sw", -260, -72),
   cw: node("jp-cw", -260, 18),
   nw: node("jp-nw", -260, 76),
+  // Southern district: Setagaya-dori arterial and its approaches.
+  ssW: node("jp-ss-w", -260, -168),
+  ssM: node("jp-ss-m", -30, -168),
+  ssE: node("jp-ss-e", 72, -168),
 };
 
 const jpLanes: readonly LaneSegment[] = [
-  laneTrue("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
-  laneTrue("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
+  laneTrue("jp-south-east-1", jpNodes.a, jpNodes.b, "left", 30, ["jp-south-east-2", "jp-narrow-north-1", "jp-shrine-south"], "travel", [point(-71, -70.5)], ["jp-south-west-1"]),
+  laneTrue("jp-south-east-2", jpNodes.b, jpNodes.c, "left", 30, ["jp-curve-north", "jp-eastside-south"], "rail_crossing", [point(21, -70.5)], ["jp-south-west-2"]),
   laneTrue("jp-south-west-1", jpNodes.b, jpNodes.a, "left", 30, ["jp-westedge-north", "jp-southrow-west-w"], "travel", [point(-71, -73.5)], ["jp-south-east-1"], "jp-south-road", 3),
   laneTrue("jp-south-west-2", jpNodes.c, jpNodes.b, "left", 30, ["jp-south-west-1"], "rail_crossing", [point(21, -73.5)], ["jp-south-east-2"], "jp-south-road", 3),
   laneTrue("jp-curve-north", jpNodes.c, jpNodes.d, "left", 30, ["jp-center-west-1"], "travel", [point(71.64, -70.27), point(100.78, -54.81), point(106.36, -34.57), point(110.23, -18.1)], ["jp-curve-south"]),
@@ -1156,7 +1160,7 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-junction-north", jpNodes.e, jpNodes.j, "left", 30, ["jp-north-west-1", "jp-easthill-north"], "travel", [point(52.7, 18.9), point(80.5, 47), point(80.7, 76.9)], ["jp-junction-south"], "jp-junction-road", 3),
   laneTrue("jp-narrow-north-1", jpNodes.b, jpNodes.f, "left", 20, ["jp-narrow-north-2"], "travel", [point(-31.35, -27)], ["jp-narrow-south-1"]),
   laneTrue("jp-narrow-north-2", jpNodes.f, jpNodes.i, "left", 20, ["jp-north-east-2", "jp-narrowhill-north"], "travel", [point(-31.35, 47)], ["jp-narrow-south-2"]),
-  laneTrue("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
+  laneTrue("jp-narrow-south-1", jpNodes.f, jpNodes.b, "left", 20, ["jp-south-west-1", "jp-shrine-south"], "travel", [point(-28.65, -27)], ["jp-narrow-north-1"], "jp-narrow-road", 2.7),
   laneTrue("jp-narrow-south-2", jpNodes.i, jpNodes.f, "left", 20, ["jp-narrow-south-1"], "travel", [point(-28.65, 47)], ["jp-narrow-north-2"], "jp-narrow-road", 2.7),
   // --- Northern district: a second loop north of the existing streets ---
   // Westhill Road (N-S, x=-112): extends the west edge north up to Uptown.
@@ -1178,7 +1182,7 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-westedge-north", jpNodes.a, jpNodes.g, "left", 30, ["jp-west-north", "jp-centerrow-west-w"], "travel", [point(-113.5, -27)], ["jp-westedge-south"], "jp-westedge-road", 3),
   laneTrue("jp-westedge-south", jpNodes.g, jpNodes.a, "left", 30, ["jp-south-east-1", "jp-southrow-west-w"], "travel", [point(-110.5, -27)], ["jp-westedge-north"], "jp-westedge-road", 3),
   // Southrow West (E-W, z=-72): extends the south road out to Westside Road.
-  laneTrue("jp-southrow-west-w", jpNodes.a, jpNodes.sw, "left", 30, ["jp-westside-north-1"], "travel", [point(-186, -73.5)], ["jp-southrow-west-e"], "jp-southrow-west", 3),
+  laneTrue("jp-southrow-west-w", jpNodes.a, jpNodes.sw, "left", 30, ["jp-westside-north-1", "jp-westside-south-south"], "travel", [point(-186, -73.5)], ["jp-southrow-west-e"], "jp-southrow-west", 3),
   laneTrue("jp-southrow-west-e", jpNodes.sw, jpNodes.a, "left", 30, ["jp-south-east-1", "jp-westedge-north"], "travel", [point(-186, -70.5)], ["jp-southrow-west-w"], "jp-southrow-west", 3),
   // Centerrow West (E-W, z=18): extends the centre street out to Westside Road.
   laneTrue("jp-centerrow-west-w", jpNodes.g, jpNodes.cw, "left", 30, ["jp-westside-north-2", "jp-westside-south-1"], "travel", [point(-186, 16.5)], ["jp-centerrow-west-e"], "jp-centerrow-west", 3),
@@ -1190,7 +1194,22 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-westside-north-1", jpNodes.sw, jpNodes.cw, "left", 30, ["jp-westside-north-2", "jp-centerrow-west-e"], "travel", [point(-261.5, -27)], ["jp-westside-south-1"], "jp-westside-road", 3),
   laneTrue("jp-westside-north-2", jpNodes.cw, jpNodes.nw, "left", 30, ["jp-northrow-west-e"], "travel", [point(-261.5, 47)], ["jp-westside-south-2"], "jp-westside-road", 3),
   laneTrue("jp-westside-south-2", jpNodes.nw, jpNodes.cw, "left", 30, ["jp-westside-south-1", "jp-centerrow-west-e"], "travel", [point(-258.5, 47)], ["jp-westside-north-2"], "jp-westside-road", 3),
-  laneTrue("jp-westside-south-1", jpNodes.cw, jpNodes.sw, "left", 30, ["jp-southrow-west-e"], "travel", [point(-258.5, -27)], ["jp-westside-north-1"], "jp-westside-road", 3),
+  laneTrue("jp-westside-south-1", jpNodes.cw, jpNodes.sw, "left", 30, ["jp-southrow-west-e", "jp-westside-south-south"], "travel", [point(-258.5, -27)], ["jp-westside-north-1"], "jp-westside-road", 3),
+  // --- Southern district: Setagaya-dori arterial and its approaches ---
+  // Setagaya-dori (E-W arterial, z=-168): the wider, faster hero through-road.
+  laneTrue("jp-dori-east-1", jpNodes.ssW, jpNodes.ssM, "left", 40, ["jp-dori-east-2", "jp-shrine-north"], "travel", [point(-145, -166.5)], ["jp-dori-west-2"], "jp-setagaya-dori", 3),
+  laneTrue("jp-dori-east-2", jpNodes.ssM, jpNodes.ssE, "left", 40, ["jp-eastside-north"], "travel", [point(21, -166.5)], ["jp-dori-west-1"], "jp-setagaya-dori", 3),
+  laneTrue("jp-dori-west-1", jpNodes.ssE, jpNodes.ssM, "left", 40, ["jp-dori-west-2", "jp-shrine-north"], "travel", [point(21, -169.5)], ["jp-dori-east-2"], "jp-setagaya-dori", 3),
+  laneTrue("jp-dori-west-2", jpNodes.ssM, jpNodes.ssW, "left", 40, ["jp-westside-south-north"], "travel", [point(-145, -169.5)], ["jp-dori-east-1"], "jp-setagaya-dori", 3),
+  // Westside South (N-S, x=-260): joins Westside Road down to the arterial.
+  laneTrue("jp-westside-south-north", jpNodes.ssW, jpNodes.sw, "left", 30, ["jp-westside-north-1", "jp-southrow-west-e"], "travel", [point(-261.5, -120)], ["jp-westside-south-south"], "jp-westside-south", 3),
+  laneTrue("jp-westside-south-south", jpNodes.sw, jpNodes.ssW, "left", 30, ["jp-dori-east-1"], "travel", [point(-258.5, -120)], ["jp-westside-south-north"], "jp-westside-south", 3),
+  // Shrine Road (narrow N-S, x=-30): extends the central spine south to the arterial.
+  laneTrue("jp-shrine-north", jpNodes.ssM, jpNodes.b, "left", 20, ["jp-narrow-north-1", "jp-south-east-2"], "travel", [point(-31.35, -120)], ["jp-shrine-south"], "jp-shrine-road", 2.7),
+  laneTrue("jp-shrine-south", jpNodes.b, jpNodes.ssM, "left", 20, ["jp-dori-west-2", "jp-dori-east-2"], "travel", [point(-28.65, -120)], ["jp-shrine-north"], "jp-shrine-road", 2.7),
+  // Eastside Road (N-S, x=72): joins the south road down to the arterial.
+  laneTrue("jp-eastside-north", jpNodes.ssE, jpNodes.c, "left", 30, ["jp-south-west-2", "jp-curve-north"], "travel", [point(70.5, -120)], ["jp-eastside-south"], "jp-eastside-road", 3),
+  laneTrue("jp-eastside-south", jpNodes.c, jpNodes.ssE, "left", 30, ["jp-dori-west-1"], "travel", [point(73.5, -120)], ["jp-eastside-north"], "jp-eastside-road", 3),
 ];
 
 const transitionNodes = {
@@ -1519,7 +1538,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:tokyo-setagaya-2026-07-10",
     ),
     geometry: {
-      worldSize: point(600, 380),
+      worldSize: point(600, 420),
       roadWidth: 6.5,
       shoulderWidth: 0.8,
       roadSurfaces: [
@@ -1539,6 +1558,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("jp-centerrow-west", [jpNodes.g.position, jpNodes.cw.position], 6.4, ["jp-centerrow-west-w", "jp-centerrow-west-e"]),
         roadSurface("jp-northrow-west", [jpNodes.h.position, jpNodes.nw.position], 6.4, ["jp-northrow-west-w", "jp-northrow-west-e"]),
         roadSurface("jp-westside-road", [jpNodes.sw.position, jpNodes.cw.position, jpNodes.nw.position], 6.4, ["jp-westside-north-1", "jp-westside-north-2", "jp-westside-south-1", "jp-westside-south-2"]),
+        roadSurface("jp-setagaya-dori", [jpNodes.ssW.position, jpNodes.ssM.position, jpNodes.ssE.position], 6.4, ["jp-dori-east-1", "jp-dori-east-2", "jp-dori-west-1", "jp-dori-west-2"], "standard", [roadMarking("jp-dori-centre", "centre_dashed", [jpNodes.ssW.position, jpNodes.ssE.position], "white")]),
+        roadSurface("jp-westside-south", [jpNodes.sw.position, jpNodes.ssW.position], 6.4, ["jp-westside-south-north", "jp-westside-south-south"]),
+        roadSurface("jp-shrine-road", [jpNodes.b.position, jpNodes.ssM.position], 5.8, ["jp-shrine-north", "jp-shrine-south"], "shared_space"),
+        roadSurface("jp-eastside-road", [jpNodes.c.position, jpNodes.ssE.position], 6.4, ["jp-eastside-north", "jp-eastside-south"]),
       ],
       blocks: [
         { id: "jp-block-west", center: point(-70, 46), size: point(64, 40), heightRange: [5, 14], density: 0.72, material: "plaster" },
