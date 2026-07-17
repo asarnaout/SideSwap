@@ -428,6 +428,15 @@ const londonNodes = {
   exhibitionThurloe: node("london-node-exhibition-thurloe", 42, 82),
   cromwellEast: node("london-node-cromwell-east", 150, -32),
   thurloeEast: node("london-node-thurloe-east", 150, 82),
+  // Enlargement: Cromwell Road continues east toward Brompton, Queen's Gate
+  // continues north toward Kensington Gardens.
+  cromwellFarEast: node("london-node-cromwell-far-east", 330, -32),
+  queenGateFarNorth: node("london-node-queen-gate-far-north", -108, 220),
+  // Big enlargement: Gloucester Road (west), Kensington Road (north).
+  gloucesterSouth: node("london-node-gloucester-south", -300, -104),
+  gloucesterCromwell: node("london-node-gloucester-cromwell", -300, -32),
+  gloucesterKensington: node("london-node-gloucester-kensington", -300, 220),
+  kensingtonExhibition: node("london-node-kensington-exhibition", 42, 220),
 };
 
 const londonLanes: readonly LaneSegment[] = [
@@ -507,7 +516,7 @@ const londonLanes: readonly LaneSegment[] = [
     londonNodes.queenGateCromwell,
     londonNodes.queenGateThurloe,
     20,
-    ["london-queen-gate-south-1"],
+    ["london-queen-gate-south-1", "london-queen-gate-north-3"],
     "travel",
     [point(-109.7, 24), point(-109.7, 58)],
     ["london-queen-gate-south-1"],
@@ -566,7 +575,7 @@ const londonLanes: readonly LaneSegment[] = [
     londonNodes.exhibitionCromwell,
     londonNodes.cromwellEast,
     20,
-    ["london-east-north"],
+    ["london-east-north", "london-cromwell-east-3"],
     "travel",
     [point(82, -30.3), point(118, -30.3)],
     ["london-cromwell-west-1"],
@@ -586,7 +595,7 @@ const londonLanes: readonly LaneSegment[] = [
     londonNodes.exhibitionCromwell,
     londonNodes.queenGateCromwell,
     20,
-    ["london-queen-gate-south-2", "london-queen-gate-north-2"],
+    ["london-queen-gate-south-2", "london-queen-gate-north-2", "london-cromwell-fw-w"],
     "travel",
     [point(-14, -33.7), point(-66, -33.7)],
     ["london-cromwell-east-1"],
@@ -607,7 +616,7 @@ const londonLanes: readonly LaneSegment[] = [
     londonNodes.thurloeEast,
     londonNodes.exhibitionThurloe,
     20,
-    ["london-thurloe-west-2"],
+    ["london-thurloe-west-2", "london-exhibition-north-n"],
     "one_way",
     [point(100, 80.2)],
   ),
@@ -641,6 +650,70 @@ const londonLanes: readonly LaneSegment[] = [
     "one_way",
     [point(40.3, 54)],
   ),
+
+  // Cromwell Road extended east toward Brompton (two-way).
+  laneTrue(
+    "london-cromwell-east-3",
+    londonNodes.cromwellEast,
+    londonNodes.cromwellFarEast,
+    20,
+    [],
+    "travel",
+    [point(240, -30.3)],
+    ["london-cromwell-west-0"],
+    "london-cromwell-east",
+  ),
+  laneTrue(
+    "london-cromwell-west-0",
+    londonNodes.cromwellFarEast,
+    londonNodes.cromwellEast,
+    20,
+    ["london-cromwell-west-1"],
+    "travel",
+    [point(240, -33.7)],
+    ["london-cromwell-east-3"],
+    "london-cromwell-east",
+  ),
+  // Queen's Gate extended north toward Kensington Gardens (two-way).
+  laneTrue(
+    "london-queen-gate-north-3",
+    londonNodes.queenGateThurloe,
+    londonNodes.queenGateFarNorth,
+    20,
+    ["london-kensington-e-2", "london-kensington-w-2"],
+    "travel",
+    [point(-109.7, 150)],
+    ["london-queen-gate-south-0"],
+    "london-queen-gate",
+  ),
+  laneTrue(
+    "london-queen-gate-south-0",
+    londonNodes.queenGateFarNorth,
+    londonNodes.queenGateThurloe,
+    20,
+    ["london-queen-gate-south-1"],
+    "travel",
+    [point(-106.3, 150)],
+    ["london-queen-gate-north-3"],
+    "london-queen-gate",
+  ),
+
+  // Cromwell Road extended west to Gloucester Road (two-way).
+  laneTrue("london-cromwell-fw-e", londonNodes.gloucesterCromwell, londonNodes.queenGateCromwell, 20, ["london-cromwell-east-1"], "travel", [point(-204, -30.3)], ["london-cromwell-fw-w"], "london-cromwell-far-west"),
+  laneTrue("london-cromwell-fw-w", londonNodes.queenGateCromwell, londonNodes.gloucesterCromwell, 20, ["london-gloucester-n-2", "london-gloucester-s-2"], "travel", [point(-204, -33.7)], ["london-cromwell-fw-e"], "london-cromwell-far-west"),
+  // Gloucester Road (two-way, x=-300).
+  laneTrue("london-gloucester-n-1", londonNodes.gloucesterSouth, londonNodes.gloucesterCromwell, 20, ["london-gloucester-n-2", "london-cromwell-fw-e"], "travel", [point(-301.7, -68)], ["london-gloucester-s-2"], "london-gloucester"),
+  laneTrue("london-gloucester-n-2", londonNodes.gloucesterCromwell, londonNodes.gloucesterKensington, 20, ["london-kensington-e-1"], "travel", [point(-301.7, 94)], ["london-gloucester-s-1"], "london-gloucester"),
+  laneTrue("london-gloucester-s-1", londonNodes.gloucesterKensington, londonNodes.gloucesterCromwell, 20, ["london-gloucester-s-2", "london-cromwell-fw-e"], "travel", [point(-298.3, 94)], ["london-gloucester-n-2"], "london-gloucester"),
+  laneTrue("london-gloucester-s-2", londonNodes.gloucesterCromwell, londonNodes.gloucesterSouth, 20, [], "travel", [point(-298.3, -68)], ["london-gloucester-n-1"], "london-gloucester"),
+  // Kensington Road (two-way, z=220): Gloucester <-> Queen's Gate <-> Exhibition.
+  laneTrue("london-kensington-e-1", londonNodes.gloucesterKensington, londonNodes.queenGateFarNorth, 20, ["london-kensington-e-2", "london-queen-gate-south-0"], "travel", [point(-204, 221.7)], ["london-kensington-w-2"], "london-kensington"),
+  laneTrue("london-kensington-e-2", londonNodes.queenGateFarNorth, londonNodes.kensingtonExhibition, 20, ["london-exhibition-north-s"], "travel", [point(-33, 221.7)], ["london-kensington-w-1"], "london-kensington"),
+  laneTrue("london-kensington-w-1", londonNodes.kensingtonExhibition, londonNodes.queenGateFarNorth, 20, ["london-kensington-w-2", "london-queen-gate-south-0"], "travel", [point(-33, 218.3)], ["london-kensington-e-2"], "london-kensington"),
+  laneTrue("london-kensington-w-2", londonNodes.queenGateFarNorth, londonNodes.gloucesterKensington, 20, ["london-gloucester-s-1"], "travel", [point(-204, 218.3)], ["london-kensington-e-1"], "london-kensington"),
+  // Exhibition Road extended north to Kensington Road (two-way).
+  laneTrue("london-exhibition-north-n", londonNodes.exhibitionThurloe, londonNodes.kensingtonExhibition, 20, ["london-kensington-w-1"], "travel", [point(40.3, 150)], ["london-exhibition-north-s"], "london-exhibition-north"),
+  laneTrue("london-exhibition-north-s", londonNodes.kensingtonExhibition, londonNodes.exhibitionThurloe, 20, ["london-thurloe-west-2"], "travel", [point(43.7, 150)], ["london-exhibition-north-n"], "london-exhibition-north"),
 ];
 
 const londonLaneGraph: LaneGraph = {
@@ -829,6 +902,13 @@ const londonLaneGraph: LaneGraph = {
     anchoredSpawn("london-black-cab", "vehicle", "london-thurloe-west-1", 38),
     anchoredSpawn("london-red-bus", "vehicle", "london-cromwell-east-bus", 68),
     anchoredSpawn("london-car-cromwell", "vehicle", "london-cromwell-east-2", 50),
+    anchoredSpawn("london-car-brompton", "vehicle", "london-cromwell-east-3", 90),
+    anchoredSpawn("london-cab-kensington", "vehicle", "london-queen-gate-north-3", 70),
+    anchoredSpawn("london-car-gloucester", "vehicle", "london-gloucester-n-1", 40),
+    anchoredSpawn("london-bus-kensington", "vehicle", "london-kensington-e-1", 90),
+    freeSpawn("london-ped-gloucester", "pedestrian", -292, -68, 0),
+    freeSpawn("london-ped-brompton", "pedestrian", 300, -22, 90),
+    freeSpawn("london-ped-kensington", "pedestrian", -98, 150, 180),
     freeSpawn("london-ped-quiet", "pedestrian", -158, -67, 90),
     freeSpawn("london-ped-museum-1", "pedestrian", 34, 19, 90),
     freeSpawn("london-ped-museum-2", "pedestrian", 50, 77, 270),
@@ -890,25 +970,37 @@ export const LONDON_MAP_PACK: MapPack = {
     licenseUrl: "https://www.openstreetmap.org/copyright",
   },
   geometry: {
-    worldSize: point(380, 270),
+    worldSize: point(800, 540),
     roadWidth: 10,
     shoulderWidth: 1.5,
     roadSurfaces: [
       roadSurface("london-quiet-loop", [londonNodes.queenGateSouth.position, londonNodes.quietWestSouth.position, londonNodes.quietWestNorth.position, londonNodes.queenGateCromwell.position], 7.2, ["london-local-west", "london-quiet-north", "london-cromwell-local-east", "london-local-east-opposite", "london-quiet-south-opposite", "london-cromwell-local-west-opposite"], "standard", [
         roadMarking("london-quiet-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.quietWestSouth.position, londonNodes.quietWestNorth.position, londonNodes.queenGateCromwell.position], "white"),
       ]),
-      roadSurface("london-queen-gate", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position], 7.6, ["london-queen-gate-north-1", "london-queen-gate-north-2", "london-queen-gate-south-1", "london-queen-gate-south-2"], "standard", [
-        roadMarking("london-queen-gate-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position], "white"),
+      roadSurface("london-queen-gate", [londonNodes.queenGateSouth.position, londonNodes.queenGateCromwell.position, londonNodes.queenGateThurloe.position, londonNodes.queenGateFarNorth.position], 7.6, ["london-queen-gate-north-1", "london-queen-gate-north-2", "london-queen-gate-north-3", "london-queen-gate-south-1", "london-queen-gate-south-2", "london-queen-gate-south-0"], "standard", [
+        roadMarking("london-queen-gate-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.queenGateFarNorth.position], "white"),
       ]),
       roadSurface("london-cromwell-west", [point(-108, -30.3), point(42, -30.3)], 11.4, ["london-cromwell-east-1", "london-cromwell-east-bus", "london-cromwell-west-2"], "standard", [
         roadMarking("london-cromwell-bus-divider", "lane_solid", [point(-108, -28.6), point(42, -28.6)], "white"),
         roadMarking("london-cromwell-centre-west", "centre_dashed", [point(-108, -32), point(42, -32)], "white"),
         roadMarking("london-cromwell-box", "box_junction", [point(37, -36), point(47, -36), point(47, -25), point(37, -25), point(37, -36)], "yellow"),
       ]),
-      roadSurface("london-cromwell-east", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], 7.6, ["london-cromwell-east-2", "london-cromwell-west-1"], "standard", [roadMarking("london-cromwell-centre-east", "centre_dashed", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position], "white")]),
+      roadSurface("london-cromwell-east", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellEast.position, londonNodes.cromwellFarEast.position], 7.6, ["london-cromwell-east-2", "london-cromwell-west-1", "london-cromwell-east-3", "london-cromwell-west-0"], "standard", [roadMarking("london-cromwell-centre-east", "centre_dashed", [londonNodes.exhibitionCromwell.position, londonNodes.cromwellFarEast.position], "white")]),
       roadSurface("london-east-road", [londonNodes.cromwellEast.position, londonNodes.thurloeEast.position], 7.2, ["london-east-north"]),
       roadSurface("london-thurloe-place", [londonNodes.thurloeEast.position, londonNodes.exhibitionThurloe.position, londonNodes.queenGateThurloe.position], 7.2, ["london-thurloe-west-1", "london-thurloe-west-2"]),
       roadSurface("london-exhibition-road", [londonNodes.exhibitionCromwell.position, londonNodes.exhibitionMid.position, londonNodes.exhibitionThurloe.position], 7, ["london-exhibition-shared-1", "london-exhibition-shared-2"], "shared_space"),
+      roadSurface("london-cromwell-far-west", [londonNodes.queenGateCromwell.position, londonNodes.gloucesterCromwell.position], 7.2, ["london-cromwell-fw-e", "london-cromwell-fw-w"], "standard", [
+        roadMarking("london-cromwell-far-west-centre", "centre_dashed", [londonNodes.queenGateCromwell.position, londonNodes.gloucesterCromwell.position], "white"),
+      ]),
+      roadSurface("london-gloucester", [londonNodes.gloucesterSouth.position, londonNodes.gloucesterCromwell.position, londonNodes.gloucesterKensington.position], 7.2, ["london-gloucester-n-1", "london-gloucester-n-2", "london-gloucester-s-1", "london-gloucester-s-2"], "standard", [
+        roadMarking("london-gloucester-centre", "centre_dashed", [londonNodes.gloucesterSouth.position, londonNodes.gloucesterKensington.position], "white"),
+      ]),
+      roadSurface("london-kensington", [londonNodes.gloucesterKensington.position, londonNodes.queenGateFarNorth.position, londonNodes.kensingtonExhibition.position], 7.2, ["london-kensington-e-1", "london-kensington-e-2", "london-kensington-w-1", "london-kensington-w-2"], "standard", [
+        roadMarking("london-kensington-centre", "centre_dashed", [londonNodes.gloucesterKensington.position, londonNodes.kensingtonExhibition.position], "white"),
+      ]),
+      roadSurface("london-exhibition-north", [londonNodes.exhibitionThurloe.position, londonNodes.kensingtonExhibition.position], 7.2, ["london-exhibition-north-n", "london-exhibition-north-s"], "standard", [
+        roadMarking("london-exhibition-north-centre", "centre_dashed", [londonNodes.exhibitionThurloe.position, londonNodes.kensingtonExhibition.position], "white"),
+      ]),
     ],
     blocks: [
       {
@@ -1045,7 +1137,7 @@ export const LONDON_LESSONS: readonly LessonDefinition[] = [
       },
     ],
     trafficSeed: 1251,
-    trafficDensity: "light",
+    trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 6, cyclists: 2 },
     checkpoints: [
       "london-quiet-start",
@@ -1245,7 +1337,7 @@ export const LONDON_LESSONS: readonly LessonDefinition[] = [
       },
     ],
     trafficSeed: 1253,
-    trafficDensity: "moderate",
+    trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 16, cyclists: 6 },
     checkpoints: [
       "london-cromwell-signal",
