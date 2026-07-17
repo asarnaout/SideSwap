@@ -1900,9 +1900,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 1,
-    estimatedMinutes: [5, 7],
+    estimatedMinutes: [6, 8],
     startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south"],
+    route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south", "uk-south-west", "uk-entry-west"],
     objectives: [
       { id: "uk-side", label: "Keep left after every turn", ruleCode: "wrong_way" },
       { id: "uk-speed", label: "Match the posted mph limit", ruleCode: "speeding" },
@@ -1911,7 +1911,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1201,
     trafficDensity: "light",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 2 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-finish"],
+    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-south-finish"],
     coachPrompts: [
       prompt("uk-start-coach", { type: "start" }, "Keep left and use the centre line as your right-hand reference.", "uk-highway-code-road"),
       prompt("uk-speed-coach", { type: "route_progress", value: 0.5 }, "These signs are in miles per hour; slow before the next junction.", "uk-highway-code-road"),
@@ -1931,9 +1931,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 2,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-exit-east", "uk-entry-east", "uk-rb-e-s", "uk-exit-south"],
+    route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-exit-east", "uk-entry-east", "uk-rb-e-s", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south"],
     objectives: [
       { id: "uk-yield", label: "Give way to traffic from the right", ruleCode: "roundabout_yield" },
       { id: "uk-clockwise", label: "Circulate clockwise", ruleCode: "wrong_way" },
@@ -1942,7 +1942,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1202,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 2 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-south-finish"],
+    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-south-finish"],
     coachPrompts: [
       prompt("uk-rb-approach", { type: "checkpoint", checkpointId: "uk-roundabout" }, "Look right and wait for a safe gap before joining clockwise traffic.", "uk-highway-code-road"),
       prompt("uk-rb-exit", { type: "route_progress", value: 0.55 }, "Signal left after the exit before yours, then leave into the left lane.", "uk-highway-code-road"),
@@ -1962,9 +1962,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "uk-milton-keynes",
     trafficSide: "left",
     difficulty: 3,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-exit-north", "uk-dual-n-east", "uk-east-north", "uk-entry-east", "uk-rb-e-s", "uk-exit-south"],
+    route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-exit-north", "uk-dual-n-east", "uk-east-north", "uk-entry-east", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south"],
     objectives: [
       { id: "uk-merge", label: "Merge into a safe gap", ruleCode: "merge" },
       { id: "uk-passing", label: "Use the right passing lane only for overtaking", ruleCode: "lane_misuse" },
@@ -1973,7 +1973,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1203,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-dual", "uk-south-finish"],
+    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-dual", "uk-south-finish"],
     coachPrompts: [
       prompt("uk-dual-merge", { type: "checkpoint", checkpointId: "uk-dual" }, "Match the posted limit smoothly, check right and enter only when the passing lane is clear.", "uk-highway-code-general"),
       prompt("uk-dual-observe", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "observe" }, "CHECK RIGHT — mirror, signal and use a quick look before leaving the normal travel lane.", "uk-highway-code-general"),
