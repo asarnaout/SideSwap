@@ -415,6 +415,78 @@ const control = (
   installations,
 });
 
+const laneLengthOf = (lane: LaneSegment): number =>
+  lane.centerline.slice(1).reduce(
+    (total, current, index) =>
+      total + distanceBetweenPoints(lane.centerline[index], current),
+    0,
+  );
+
+/** Heading (deg, 0 = +z) of the lane's travel direction at a given arclength. */
+const laneHeadingAtDistanceDeg = (lane: LaneSegment, distanceAlongM: number): number => {
+  let accumulated = 0;
+  for (let index = 0; index < lane.centerline.length - 1; index += 1) {
+    const a = lane.centerline[index];
+    const b = lane.centerline[index + 1];
+    const segmentLength = distanceBetweenPoints(a, b);
+    if (accumulated + segmentLength >= distanceAlongM || index === lane.centerline.length - 2) {
+      return (Math.atan2(b.x - a.x, b.z - a.z) * 180) / Math.PI;
+    }
+    accumulated += segmentLength;
+  }
+  return 0;
+};
+
+/**
+ * Builds a signalised junction from the lanes that arrive at it. Each arriving
+ * lane gets a stop-line approach 6 m short of the node and a head facing that
+ * lane's travel direction, mounted at the junction corner (clear of every lane).
+ * North/south lanes and east/west lanes sit on alternating phase groups. This is
+ * correct-by-construction, so head headings and stop distances can't drift from
+ * the geometry the way hand-authored signals do.
+ */
+const intersectionSignal = (
+  id: string,
+  center: WorldPoint,
+  arms: readonly { readonly laneId: string; readonly phase: "ns" | "ew" }[],
+  lanes: readonly LaneSegment[],
+): { readonly control: TrafficControl; readonly zone: LaneGraph["conflictZones"][number] } => {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const zoneId = `${id}-zone`;
+  const laneIds = arms.map((arm) => arm.laneId);
+  const approaches: TrafficControlApproach[] = [];
+  const installations: TrafficControlInstallation[] = [];
+  for (const arm of arms) {
+    const lane = laneById.get(arm.laneId);
+    if (!lane) continue;
+    const stopDistance = Math.max(0, laneLengthOf(lane) - 6);
+    const headingDeg = laneHeadingAtDistanceDeg(lane, stopDistance);
+    const rad = (headingDeg * Math.PI) / 180;
+    const dirX = Math.sin(rad);
+    const dirZ = Math.cos(rad);
+    // Mount at the corner diagonally back-right of the approach, well clear of
+    // both carriageways (±8 m from a node whose lanes span only ~±3.4 m).
+    const headX = center.x + dirZ * 8 - dirX * 8;
+    const headZ = center.z - dirX * 8 - dirZ * 8;
+    approaches.push(approach(`${id}-${arm.laneId}-app`, arm.laneId, stopDistance, `${id}-${arm.phase}`, [zoneId]));
+    installations.push(installation(`${id}-${arm.laneId}-head`, headX, headZ, headingDeg, "mast_arm", "nyc_signal", "primary", [`${id}-${arm.laneId}-app`]));
+  }
+  const half = 7;
+  return {
+    control: control(id, "signal", center.x, center.z, 0, laneIds, [zoneId], approaches, installations),
+    zone: {
+      id: zoneId,
+      laneIds,
+      polygon: [
+        point(center.x - half, center.z - half),
+        point(center.x + half, center.z - half),
+        point(center.x + half, center.z + half),
+        point(center.x - half, center.z + half),
+      ],
+    },
+  };
+};
+
 const CONNECTOR_ZONE_RADIUS_M = 2.1;
 
 /**
@@ -931,6 +1003,48 @@ const nycLanes: readonly LaneSegment[] = [
   laneTrue("nyc-col-s-2b", nycNodes.col79, nycNodes.col72, "right", 25, [], "one_way", [point(181.7, -240)], ["nyc-col-s-1b"]),
 ];
 
+// Signalised junctions along the Broadway corridor (the lesson route).
+const nycSignals = [
+  intersectionSignal("nyc-sig-bw72", nycNodes.bw72.position, [
+    { laneId: "nyc-bway-s-2", phase: "ns" },
+    { laneId: "nyc-72-e-1", phase: "ew" },
+    { laneId: "nyc-72-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-bw79", nycNodes.bw79.position, [
+    { laneId: "nyc-bway-n-1", phase: "ns" },
+    { laneId: "nyc-bway-s-1", phase: "ns" },
+    { laneId: "nyc-79-e-1", phase: "ew" },
+    { laneId: "nyc-79-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-bw86", nycNodes.bw86.position, [
+    { laneId: "nyc-bway-n-2", phase: "ns" },
+    { laneId: "nyc-86-e-1", phase: "ew" },
+    { laneId: "nyc-86-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-we79", nycNodes.we79.position, [
+    { laneId: "nyc-we-n-1", phase: "ns" },
+    { laneId: "nyc-we-s-1", phase: "ns" },
+    { laneId: "nyc-79-w-4", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-amst79", nycNodes.amst79.position, [
+    { laneId: "nyc-amst-n-1a", phase: "ns" },
+    { laneId: "nyc-amst-n-2a", phase: "ns" },
+    { laneId: "nyc-79-e-2", phase: "ew" },
+    { laneId: "nyc-79-w-2", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-col79", nycNodes.col79.position, [
+    { laneId: "nyc-col-s-1a", phase: "ns" },
+    { laneId: "nyc-col-s-2a", phase: "ns" },
+    { laneId: "nyc-79-e-3", phase: "ew" },
+    { laneId: "nyc-79-w-1", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-cpw79", nycNodes.cpw79.position, [
+    { laneId: "nyc-cpw-n-1", phase: "ns" },
+    { laneId: "nyc-cpw-s-1", phase: "ns" },
+    { laneId: "nyc-79-e-4", phase: "ew" },
+  ], nycLanes),
+];
+
 const ukNodes = {
   n: node("uk-n", 0, 34),
   e: node("uk-e", 34, 0),
@@ -1165,26 +1279,8 @@ export const MAP_PACKS: readonly MapPack[] = [
     laneGraph: graph(
       Object.values(nycNodes),
       nycLanes,
-      [
-        // One signalised junction for now (Broadway & 79th); more follow.
-        control("nyc-signal-bway-79", "signal", -120, 0, 0, ["nyc-bway-s-1", "nyc-bway-n-1", "nyc-79-e-1", "nyc-79-w-3"], ["nyc-conflict-bway-79"],
-          [
-            approach("nyc-bway-79-s-approach", "nyc-bway-s-1", 470, "nyc-79-ns", ["nyc-conflict-bway-79"]),
-            approach("nyc-bway-79-n-approach", "nyc-bway-n-1", 470, "nyc-79-ns", ["nyc-conflict-bway-79"]),
-            approach("nyc-79-e-approach", "nyc-79-e-1", 190, "nyc-79-ew", ["nyc-conflict-bway-79"]),
-            approach("nyc-79-w-approach", "nyc-79-w-3", 150, "nyc-79-ew", ["nyc-conflict-bway-79"]),
-          ],
-          [
-            // One head per approach, each facing its own oncoming direction.
-            installation("nyc-79-s-head", -128, -8, 180, "mast_arm", "nyc_signal", "primary", ["nyc-bway-79-s-approach"], 90),
-            installation("nyc-79-n-head", -112, 8, 0, "mast_arm", "nyc_signal", "primary", ["nyc-bway-79-n-approach"], 270),
-            installation("nyc-79-e-head", -128, 8, 90, "secondary_pole", "nyc_signal", "primary", ["nyc-79-e-approach"]),
-            installation("nyc-79-w-head", -112, -8, 270, "secondary_pole", "nyc_signal", "primary", ["nyc-79-w-approach"]),
-          ]),
-      ],
-      [
-        { id: "nyc-conflict-bway-79", laneIds: ["nyc-bway-s-1", "nyc-bway-n-1", "nyc-79-e-1", "nyc-79-w-3"], polygon: [point(-127, -7), point(-113, -7), point(-113, 7), point(-127, 7)] },
-      ],
+      nycSignals.map((signal) => signal.control),
+      nycSignals.map((signal) => signal.zone),
       [
         anchoredSpawn("nyc-player", "player", "nyc-bway-s-1", 20),
         anchoredSpawn("nyc-car-1", "vehicle", "nyc-bway-s-1", 130),
