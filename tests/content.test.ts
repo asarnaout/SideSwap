@@ -1499,36 +1499,38 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("routes every NYC lesson along the two-way Broadway corridor", () => {
+  it("gives each NYC lesson its own two-way route with a distinct start", () => {
     const map = getMapPack("nyc-upper-west-side");
-    const expectedRoute = ["nyc-bway-s-1", "nyc-bway-s-2"];
-
-    for (const lessonId of [
-      "us-one-way-grid",
-      "us-signals-crosswalks",
-      "us-lane-choice",
-    ] as const) {
-      expect(getLesson(lessonId).route).toEqual(expectedRoute);
-    }
-
-    const player = map.laneGraph.spawnPoints.find(
-      (spawn) => spawn.id === "nyc-player",
+    const playerSpawnIds = new Set(
+      map.laneGraph.spawnPoints
+        .filter((spawn) => spawn.kind === "player")
+        .map((spawn) => spawn.id),
     );
-    expect(player?.kind).toBe("player");
-    if (player?.kind === "player") {
-      expect(player.anchor).toEqual({
-        laneId: "nyc-bway-s-1",
-        distanceAlongM: 20,
-      });
-    }
 
-    const checkpoints = new Map(
-      map.laneGraph.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]),
-    );
-    expect(checkpoints.get("nyc-79")?.anchor).toEqual({
-      laneId: "nyc-bway-s-2",
-      distanceAlongM: 40,
-    });
+    const expected = [
+      {
+        lessonId: "us-one-way-grid",
+        start: "nyc-player-1way",
+        route: ["nyc-72-e-1", "nyc-72-e-2", "nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-86-e-3", "nyc-col-s-1a", "nyc-col-s-1b"],
+      },
+      {
+        lessonId: "us-signals-crosswalks",
+        start: "nyc-player-signals",
+        route: ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-86-w-4"],
+      },
+      {
+        lessonId: "us-lane-choice",
+        start: "nyc-player-lane",
+        route: ["nyc-we-n-1", "nyc-we-n-2", "nyc-86-e-1", "nyc-86-e-2"],
+      },
+    ] as const;
+
+    for (const { lessonId, start, route } of expected) {
+      const lesson = getLesson(lessonId);
+      expect(lesson.route).toEqual(route);
+      expect(lesson.startSpawnId).toBe(start);
+      expect(playerSpawnIds.has(start)).toBe(true);
+    }
   });
 
   it("authors yield controls for every taught east and west roundabout re-entry", () => {
