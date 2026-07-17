@@ -1055,6 +1055,7 @@ const ukNodes = {
   so: node("uk-so", 0, -118),
   wo: node("uk-wo", -130, 0),
   ne: node("uk-ne", 700, 118),
+  wgo: node("uk-wgo", -320, 0),
 };
 
 const ukLanes: readonly LaneSegment[] = [
@@ -1071,12 +1072,17 @@ const ukLanes: readonly LaneSegment[] = [
   laneTrue("uk-entry-south", ukNodes.so, ukNodes.s, "left", 40, ["uk-rb-s-w"], "entry", [point(-1.7, -76)], ["uk-exit-south"]),
   laneTrue("uk-exit-south", ukNodes.s, ukNodes.so, "left", 40, ["uk-south-west"], "exit", [point(1.7, -76)], ["uk-entry-south"]),
   laneTrue("uk-entry-west", ukNodes.wo, ukNodes.w, "left", 40, ["uk-rb-w-n"], "entry", [point(-82, 1.7)], ["uk-exit-west"]),
-  laneTrue("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south"], "exit", [point(-82, -1.7)], ["uk-entry-west"]),
+  laneTrue("uk-exit-west", ukNodes.w, ukNodes.wo, "left", 40, ["uk-west-south", "uk-westgrid-out"], "exit", [point(-82, -1.7)], ["uk-entry-west"]),
   laneTrue("uk-dual-n-east", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "travel", [point(80, 119.75), point(220, 119.75), point(360, 119.75), point(500, 119.75), point(620, 119.75)], ["uk-dual-n-east-pass"]),
   laneTrue("uk-dual-n-east-pass", ukNodes.no, ukNodes.ne, "left", 60, ["uk-east-north"], "passing", [point(80, 116.25), point(220, 116.25), point(360, 116.25), point(500, 116.25), point(620, 116.25)], ["uk-dual-n-east"]),
   laneTrue("uk-east-north", ukNodes.ne, ukNodes.eo, "left", 40, ["uk-entry-east"], "travel", [point(701.7, 117.5), point(701.7, 70), point(701.34, 28.95), point(600.4, -11.65), point(450.1, -31.7), point(299.86, -26.7), point(199.75, -11.68), point(130.25, -1.75)]),
   laneTrue("uk-south-west", ukNodes.so, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-0.5, -119.7), point(-66.1, -119.3), point(-131.49, -60.82), point(-131.7, -0.5)]),
   laneTrue("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-128.3, -0.5), point(-128.51, -59.18), point(-64.31, -116.45), point(-0.5, -116.3)]),
+  // Westbound grid-road stub off the roundabout's west arm that turns back at
+  // the Oldbrook end (same shared-node turnaround the east link uses). Gives
+  // free-drive somewhere new to roam west, with genuine oncoming traffic.
+  laneTrue("uk-westgrid-out", ukNodes.wo, ukNodes.wgo, "left", 40, ["uk-westgrid-in"], "travel", [point(-225, -1.7)], ["uk-westgrid-in"], "uk-westgrid", 3.2),
+  laneTrue("uk-westgrid-in", ukNodes.wgo, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-225, 1.7)], ["uk-westgrid-out"], "uk-westgrid", 3.2),
 ];
 
 const frNodes = {
@@ -1406,6 +1412,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         ]),
         roadSurface("uk-east-link", [ukNodes.ne.position, point(700, 70), point(700, 30), point(600, -10), point(450, -30), point(300, -25), point(200, -10), ukNodes.eo.position], 7.2, ["uk-east-north"]),
         roadSurface("uk-oldbrook-loop", [ukNodes.so.position, point(-65, -118), point(-130, -60), ukNodes.wo.position], 7.2, ["uk-south-west", "uk-west-south"]),
+        roadSurface("uk-westgrid", [ukNodes.wo.position, ukNodes.wgo.position], 7.2, ["uk-westgrid-out", "uk-westgrid-in"], "standard", [roadMarking("uk-westgrid-centre", "centre_dashed", [ukNodes.wo.position, ukNodes.wgo.position], "white")]),
       ],
       blocks: [
         { id: "uk-oldbrook", center: point(-78, 72), size: point(90, 72), heightRange: [5, 12], density: 0.55, material: "brick" },
@@ -1416,6 +1423,8 @@ export const MAP_PACKS: readonly MapPack[] = [
         // cover the circulating lane at the cardinal approaches.
         { id: "uk-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#608b4e" },
         { id: "uk-station-sign", kind: "station", center: point(82, 82), size: point(15, 8), color: "#d64045" },
+        { id: "uk-retail-parade", kind: "shops", center: point(84, -88), size: point(30, 18), color: "#c9a24b" },
+        { id: "uk-oldbrook-green", kind: "park", center: point(-95, 95), size: point(44, 30), color: "#5f9a4e" },
       ],
     },
     laneGraph: graph(
@@ -1458,6 +1467,8 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("uk-car-12", "vehicle", "uk-east-north", 200),
         anchoredSpawn("uk-car-13", "vehicle", "uk-south-west", 70),
         anchoredSpawn("uk-car-14", "vehicle", "uk-west-south", 130),
+        anchoredSpawn("uk-car-15", "vehicle", "uk-westgrid-in", 95),
+        anchoredSpawn("uk-car-16", "vehicle", "uk-westgrid-out", 110),
         freeSpawn("uk-ped-1", "pedestrian", -104, -92, 0),
         freeSpawn("uk-ped-2", "pedestrian", 78, -58, 180),
         freeSpawn("uk-ped-3", "pedestrian", -68, 58, 0),
