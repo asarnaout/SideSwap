@@ -40,6 +40,7 @@ import {
   isPointInPolygon,
   isRestrictionWindowActive,
   SimulationCore,
+  type NpcVehicleVariant,
   type SimulationInput,
   type SimulationRuleEvent,
   type SimulationScoreSnapshot,
@@ -67,6 +68,14 @@ import {
   type MapVisualPalette,
   type PropKindConfig,
 } from "./visuals";
+import {
+  createVehicleMesh,
+  type VehicleMeshVisual,
+} from "./vehicleMeshes";
+import {
+  resolvePlayerVehicleAppearance,
+  resolveTrafficVehicleAppearance,
+} from "./vehicleVisuals";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -1016,6 +1025,10 @@ interface NpcRenderSnapshot {
 
 interface NpcVehicle {
   node: TransformNode;
+  visual: VehicleMeshVisual;
+  visualKey: string;
+  visualVehicleId: string;
+  visualVariant: NpcVehicleVariant;
   simulationId?: string;
   direction: 1 | -1;
   speed: number;
@@ -1033,6 +1046,67 @@ interface NpcVehicle {
   spawnIndex?: number;
   spawnPathSegment?: number;
   spawnPathDistance?: number;
+  signal?: TurnIndicator;
+  braking?: boolean;
+}
+
+/**
+ * Reconciles authoritative simulation ids with a fixed pool of render roots.
+ * Existing live associations win first, then numeric `npc-N` ids claim their
+ * stable slots, leaving tail slots for scripted/non-numeric vehicles. This
+ * prevents a newly activated ambient car from evicting a maneuver lead.
+ */
+export function resolveNpcVisualSlotAssignments(
+  slots: readonly Readonly<{ simulationId?: string }>[],
+  vehicles: readonly Readonly<{ id: string }>[],
+): readonly number[] {
+  const assignments = Array<number>(vehicles.length).fill(-1);
+  const usedSlots = new Set<number>();
+  const activeIds = new Set(vehicles.map((vehicle) => vehicle.id));
+
+  for (const [vehicleIndex, vehicle] of vehicles.entries()) {
+    const existingIndex = slots.findIndex(
+      (slot, slotIndex) =>
+        !usedSlots.has(slotIndex) && slot.simulationId === vehicle.id,
+    );
+    if (existingIndex < 0) continue;
+    assignments[vehicleIndex] = existingIndex;
+    usedSlots.add(existingIndex);
+  }
+
+  for (const [vehicleIndex, vehicle] of vehicles.entries()) {
+    if (assignments[vehicleIndex] >= 0) continue;
+    const numeric = /^npc-(\d+)$/.exec(vehicle.id);
+    if (!numeric) continue;
+    const preferredIndex = Number.parseInt(numeric[1], 10) - 1;
+    const preferredSlot = slots[preferredIndex];
+    if (
+      !preferredSlot ||
+      usedSlots.has(preferredIndex) ||
+      (preferredSlot.simulationId && activeIds.has(preferredSlot.simulationId))
+    ) {
+      continue;
+    }
+    assignments[vehicleIndex] = preferredIndex;
+    usedSlots.add(preferredIndex);
+  }
+
+  for (const vehicleIndex of vehicles.keys()) {
+    if (assignments[vehicleIndex] >= 0) continue;
+    const availableIndex = slots.findIndex(
+      (slot, slotIndex) =>
+        !usedSlots.has(slotIndex) &&
+        (!slot.simulationId || !activeIds.has(slot.simulationId)),
+    );
+    const fallbackIndex = availableIndex >= 0
+      ? availableIndex
+      : slots.findIndex((_, slotIndex) => !usedSlots.has(slotIndex));
+    if (fallbackIndex < 0) continue;
+    assignments[vehicleIndex] = fallbackIndex;
+    usedSlots.add(fallbackIndex);
+  }
+
+  return assignments;
 }
 
 interface Pedestrian {
@@ -1814,6 +1888,14 @@ function makeMaterial(
   return material;
 }
 
+function inferSpawnVehicleVariant(spawnId?: string): NpcVehicleVariant {
+  const normalized = spawnId?.toLowerCase() ?? "";
+  if (normalized.includes("bus")) return "bus";
+  if (normalized.includes("cab") || normalized.includes("taxi")) return "taxi";
+  if (normalized.includes("van")) return "van";
+  return "car";
+}
+
 function setMeshMaterial(
   mesh: Mesh,
   material: StandardMaterial,
@@ -2156,8 +2238,7 @@ class BabylonGameSession {
   private readonly rearCamera: UniversalCamera;
   private readonly simulation: SimulationCore;
   private simulationSnapshot: SimulationSnapshot;
-  private readonly leftIndicatorMeshes: Mesh[] = [];
-  private readonly rightIndicatorMeshes: Mesh[] = [];
+  private playerVehicleVisual: VehicleMeshVisual | null = null;
   private readonly npcVehicles: NpcVehicle[] = [];
   private readonly pedestrians: Pedestrian[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
@@ -3587,23 +3668,72 @@ class BabylonGameSession {
     }
   }
 
+  private ensureNpcVehicleVisual(
+    npc: NpcVehicle,
+    vehicleId: string,
+    variant: NpcVehicleVariant,
+  ) {
+    if (
+      npc.visualVehicleId === vehicleId &&
+      npc.visualVariant === variant
+    ) {
+      return;
+    }
+    const appearance = resolveTrafficVehicleAppearance({
+      vehicleId,
+      trafficSeed: this.options.lesson?.trafficSeed ?? 0,
+      variant,
+      mapId: this.options.mapPack?.id ?? "orientation-yard",
+    });
+    const visualKey = [
+      appearance.model,
+      appearance.paintHex,
+      appearance.accentHex,
+    ].join("|");
+    npc.visualVehicleId = vehicleId;
+    npc.visualVariant = variant;
+    if (npc.visualKey === visualKey) return;
+    npc.visual.dispose();
+    npc.visual = createVehicleMesh(
+      this.scene,
+      npc.node,
+      `${npc.node.name}-${vehicleId}`,
+      appearance,
+    );
+    npc.visualKey = visualKey;
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
       npc.node.setEnabled(false);
     }
-    for (const vehicle of snapshot.npcs) {
-      const numericIndex = Number.parseInt(vehicle.id.replace(/^npc-/, ""), 10) - 1;
-      const npc =
-        this.npcVehicles.find((candidate) => candidate.simulationId === vehicle.id) ??
-        this.npcVehicles[numericIndex] ??
-        this.npcVehicles.find((candidate) => !candidate.simulationId);
+    const slotAssignments = resolveNpcVisualSlotAssignments(
+      this.npcVehicles,
+      snapshot.npcs,
+    );
+    for (const [vehicleIndex, vehicle] of snapshot.npcs.entries()) {
+      const npc = this.npcVehicles[slotAssignments[vehicleIndex]];
       if (!npc) continue;
+      const previousSpeed = npc.currentSpeed ?? vehicle.speedMps;
       npc.simulationId = vehicle.id;
+      this.ensureNpcVehicleVisual(npc, vehicle.id, vehicle.variant);
       npc.active = true;
       npc.laneId = vehicle.laneId;
       npc.currentSpeed = vehicle.speedMps;
       npc.speed = vehicle.speedMps;
+      npc.signal = vehicle.signal;
+      npc.braking =
+        vehicle.state === "stopping" ||
+        vehicle.state === "yielding" ||
+        vehicle.speedMps < previousSpeed - 0.015;
+      npc.visual.setBraking(npc.braking);
+      npc.visual.setDetailVisible(
+        Math.hypot(
+          vehicle.x - snapshot.player.x,
+          vehicle.z - snapshot.player.z,
+        ) <= 55,
+      );
       npc.laneX = vehicle.x;
       npc.z = vehicle.z;
       npc.node.setEnabled(true);
@@ -3908,17 +4038,13 @@ class BabylonGameSession {
   private updateIndicatorLights(dt: number) {
     this.indicatorBlinkSeconds = (this.indicatorBlinkSeconds + dt) % 0.8;
     const blinkOn = this.indicatorBlinkSeconds < 0.4;
-    const amberOn = new Color3(1, 0.45, 0.03);
-    const amberOff = new Color3(0.18, 0.08, 0.01);
-    for (const mesh of this.leftIndicatorMeshes) {
-      const material = mesh.material as StandardMaterial;
-      material.emissiveColor =
-        this.playerState.indicator === "left" && blinkOn ? amberOn : amberOff;
-    }
-    for (const mesh of this.rightIndicatorMeshes) {
-      const material = mesh.material as StandardMaterial;
-      material.emissiveColor =
-        this.playerState.indicator === "right" && blinkOn ? amberOn : amberOff;
+    this.playerVehicleVisual?.setSignal(this.playerState.indicator, blinkOn);
+    this.playerVehicleVisual?.setBraking(
+      Math.max(this.keyboard.brake, this.touch.brake, this.gamepad.brake) > 0.08,
+    );
+    for (const npc of this.npcVehicles) {
+      npc.visual.setSignal(npc.signal ?? "off", blinkOn);
+      npc.visual.setBraking(Boolean(npc.braking));
     }
   }
 
@@ -6099,14 +6225,16 @@ class BabylonGameSession {
     const shadowMap = this.shadowGenerator?.getShadowMap();
     if (!shadowMap) return;
     const radius = BabylonGameSession.SHADOW_CASTER_RADIUS_M;
-    const list: AbstractMesh[] = [...this.playerExterior.getChildMeshes()];
+    const list: AbstractMesh[] = this.playerVehicleVisual
+      ? [...this.playerVehicleVisual.shadowCasters]
+      : [...this.playerExterior.getChildMeshes()];
     for (const npc of this.npcVehicles) {
       if (npc.active === false) continue;
       const position = npc.node.position;
       if (Math.hypot(position.x - this.displayedX, position.z - this.displayedZ) > radius) {
         continue;
       }
-      list.push(...npc.node.getChildMeshes());
+      list.push(...npc.visual.shadowCasters);
     }
     for (const caster of this.staticShadowCasters) {
       if (
@@ -6327,10 +6455,13 @@ class BabylonGameSession {
 
   private buildPlayerCar() {
     const scene = this.scene;
-    const body = makeMaterial(scene, "player-blue", new Color3(0.08, 0.47, 0.63));
+    this.playerVehicleVisual = createVehicleMesh(
+      scene,
+      this.playerExterior,
+      "player",
+      resolvePlayerVehicleAppearance(),
+    );
     const bodyDark = makeMaterial(scene, "player-blue-dark", new Color3(0.04, 0.23, 0.3));
-    const glass = makeMaterial(scene, "player-glass", new Color3(0.08, 0.14, 0.17));
-    const rubber = makeMaterial(scene, "tire", new Color3(0.025, 0.03, 0.03));
     const steeringRubber = makeMaterial(
       scene,
       "steering-rubber",
@@ -6361,26 +6492,6 @@ class BabylonGameSession {
       new Color3(0.04, 0.13, 0.15),
       new Color3(0.01, 0.035, 0.04),
     );
-    const amberLeft = makeMaterial(scene, "amber-left", new Color3(0.45, 0.16, 0.01));
-    const amberRight = makeMaterial(scene, "amber-right", new Color3(0.45, 0.16, 0.01));
-
-    createBox(scene, "player-body", { width: 1.82, height: 0.55, depth: 4.15 }, new Vector3(0, 0.62, 0), body, this.playerExterior);
-    createBox(scene, "player-cabin", { width: 1.62, height: 0.72, depth: 1.95 }, new Vector3(0, 1.15, -0.2), glass, this.playerExterior);
-    createBox(scene, "player-hood", { width: 1.72, height: 0.2, depth: 1.2 }, new Vector3(0, 0.92, 1.45), bodyDark, this.playerExterior);
-
-    for (const x of [-0.91, 0.91]) {
-      for (const z of [-1.25, 1.3]) {
-        const wheel = createCylinder(scene, `player-wheel-${x}-${z}`, { height: 0.23, diameter: 0.68, tessellation: 12 }, new Vector3(x, 0.48, z), rubber, this.playerExterior);
-        wheel.rotation.z = Math.PI / 2;
-      }
-    }
-    for (const side of [-1, 1]) {
-      const indicatorMaterial = side < 0 ? amberLeft : amberRight;
-      const front = createBox(scene, `front-indicator-${side}`, { width: 0.2, height: 0.18, depth: 0.09 }, new Vector3(side * 0.69, 0.74, 2.09), indicatorMaterial, this.playerExterior);
-      const rear = createBox(scene, `rear-indicator-${side}`, { width: 0.2, height: 0.18, depth: 0.09 }, new Vector3(side * 0.69, 0.74, -2.09), indicatorMaterial, this.playerExterior);
-      (side < 0 ? this.leftIndicatorMeshes : this.rightIndicatorMeshes).push(front, rear);
-    }
-
     createBox(scene, "cockpit-hood", { width: 1.62, height: 0.045, depth: 0.42 }, new Vector3(0, 0.74, 1.55), bodyDark, this.playerCockpit);
     createExtrudedPrism(
       scene,
@@ -6514,12 +6625,6 @@ class BabylonGameSession {
       return;
     }
     const scene = this.scene;
-    const trafficColors = [
-      new Color3(0.86, 0.27, 0.18),
-      new Color3(0.96, 0.72, 0.15),
-      new Color3(0.44, 0.66, 0.45),
-      new Color3(0.68, 0.7, 0.73),
-    ];
     const playerLaneSign = this.options.trafficSide === "right" ? 1 : -1;
     for (let index = 0; index < 8; index += 1) {
       const sameDirection = index % 2 === 0;
@@ -6529,19 +6634,28 @@ class BabylonGameSession {
         : -playerLaneSign * LANE_CENTER;
       const z = -35 + index * 20 + (sameDirection ? 25 : 0);
       const node = new TransformNode(`npc-${index}`, scene);
-      const body = makeMaterial(scene, `npc-body-${index}`, trafficColors[index % trafficColors.length]);
-      const windowMaterial = makeMaterial(scene, `npc-window-${index}`, new Color3(0.07, 0.12, 0.14));
-      const tireMaterial = makeMaterial(scene, `npc-tire-${index}`, new Color3(0.025, 0.03, 0.03));
-      createBox(scene, `npc-car-${index}`, { width: 1.72, height: 0.58, depth: 3.75 }, new Vector3(0, 0.62, 0), body, node);
-      createBox(scene, `npc-cabin-${index}`, { width: 1.48, height: 0.63, depth: 1.65 }, new Vector3(0, 1.12, -0.18), windowMaterial, node);
-      for (const x of [-0.87, 0.87]) {
-        for (const wheelZ of [-1.1, 1.15]) {
-          const wheel = createCylinder(scene, `npc-wheel-${index}-${x}-${wheelZ}`, { height: 0.2, diameter: 0.59 }, new Vector3(x, 0.45, wheelZ), tireMaterial, node);
-          wheel.rotation.z = Math.PI / 2;
-        }
-      }
+      const vehicleId = `npc-${index + 1}`;
+      const initialSnapshot = this.simulationSnapshot.npcs.find(
+        (vehicle) => vehicle.id === vehicleId,
+      );
+      const appearance = resolveTrafficVehicleAppearance({
+        vehicleId,
+        trafficSeed: 0,
+        variant: initialSnapshot?.variant ?? "car",
+        mapId: "orientation-yard",
+      });
+      const visual = createVehicleMesh(
+        scene,
+        node,
+        `fallback-${vehicleId}`,
+        appearance,
+      );
       this.npcVehicles.push({
         node,
+        visual,
+        visualKey: [appearance.model, appearance.paintHex, appearance.accentHex].join("|"),
+        visualVehicleId: vehicleId,
+        visualVariant: initialSnapshot?.variant ?? "car",
         direction,
         speed: 5.5 + (index % 4) * 0.65,
         z,
@@ -6586,7 +6700,6 @@ class BabylonGameSession {
       new Color3(0.38, 0.59, 0.38),
       new Color3(0.67, 0.68, 0.7),
     ];
-    const windowMaterial = makeMaterial(scene, "scenario-npc-window", new Color3(0.055, 0.1, 0.12));
     const tireMaterial = makeMaterial(scene, "scenario-npc-tire", new Color3(0.02, 0.025, 0.025));
 
     for (let index = 0; index < count && usableLanes.length > 0; index += 1) {
@@ -6644,132 +6757,24 @@ class BabylonGameSession {
       const z = start.z + (end.z - start.z) * amount;
       const heading = Math.atan2(end.x - start.x, end.z - start.z);
       const node = new TransformNode(`scenario-npc-${index}`, scene);
-      const isLondonRedBus =
-        mapPack.id.toLowerCase().includes("london") && spawn?.id === "london-red-bus";
-      const isLondonBlackCab =
-        mapPack.id.toLowerCase().includes("london") && spawn?.id === "london-black-cab";
-      const body = makeMaterial(
-        scene,
-        `scenario-npc-body-${index}`,
-        isLondonRedBus
-          ? new Color3(0.68, 0.035, 0.025)
-          : isLondonBlackCab
-            ? new Color3(0.035, 0.04, 0.042)
-            : trafficColors[index % trafficColors.length],
+      const vehicleId = `npc-${index + 1}`;
+      const initialSnapshot = this.simulationSnapshot.npcs.find(
+        (vehicle) => vehicle.id === vehicleId,
       );
-
-      if (isLondonRedBus) {
-        createBox(
-          scene,
-          `scenario-london-bus-lower-${index}`,
-          { width: 2.28, height: 1.05, depth: 7.35 },
-          new Vector3(0, 0.95, 0),
-          body,
-          node,
-        );
-        createBox(
-          scene,
-          `scenario-london-bus-upper-${index}`,
-          { width: 2.18, height: 1.62, depth: 6.75 },
-          new Vector3(0, 2.22, -0.08),
-          body,
-          node,
-        );
-        for (const side of [-1, 1]) {
-          createBox(
-            scene,
-            `scenario-london-bus-windows-${index}-${side}`,
-            { width: 0.055, height: 0.62, depth: 5.3 },
-            new Vector3(side * 1.105, 2.34, -0.05),
-            windowMaterial,
-            node,
-          );
-        }
-        createBox(
-          scene,
-          `scenario-london-bus-front-window-${index}`,
-          { width: 1.78, height: 0.7, depth: 0.06 },
-          new Vector3(0, 2.3, 3.31),
-          windowMaterial,
-          node,
-        );
-        createBox(
-          scene,
-          `scenario-london-bus-rear-window-${index}`,
-          { width: 1.66, height: 0.6, depth: 0.06 },
-          new Vector3(0, 2.3, -3.47),
-          windowMaterial,
-          node,
-        );
-        for (const wheelX of [-1.11, 1.11]) {
-          for (const wheelZ of [-2.35, 2.35]) {
-            const wheel = createCylinder(
-              scene,
-              `scenario-london-bus-wheel-${index}-${wheelX}-${wheelZ}`,
-              { height: 0.22, diameter: 0.82 },
-              new Vector3(wheelX, 0.5, wheelZ),
-              tireMaterial,
-              node,
-            );
-            wheel.rotation.z = Math.PI / 2;
-          }
-        }
-      } else if (isLondonBlackCab) {
-        createBox(
-          scene,
-          `scenario-london-cab-body-${index}`,
-          { width: 1.84, height: 0.68, depth: 4.25 },
-          new Vector3(0, 0.67, 0),
-          body,
-          node,
-        );
-        createBox(
-          scene,
-          `scenario-london-cab-cabin-${index}`,
-          { width: 1.62, height: 0.92, depth: 2.05 },
-          new Vector3(0, 1.27, -0.28),
-          body,
-          node,
-        );
-        createBox(
-          scene,
-          `scenario-london-cab-windows-${index}`,
-          { width: 1.67, height: 0.54, depth: 1.55 },
-          new Vector3(0, 1.35, -0.25),
-          windowMaterial,
-          node,
-        );
-        createBox(
-          scene,
-          `scenario-london-cab-roof-${index}`,
-          { width: 1.42, height: 0.16, depth: 1.7 },
-          new Vector3(0, 1.82, -0.3),
-          body,
-          node,
-        );
-        for (const wheelX of [-0.93, 0.93]) {
-          for (const wheelZ of [-1.32, 1.28]) {
-            const wheel = createCylinder(
-              scene,
-              `scenario-london-cab-wheel-${index}-${wheelX}-${wheelZ}`,
-              { height: 0.2, diameter: 0.62 },
-              new Vector3(wheelX, 0.45, wheelZ),
-              tireMaterial,
-              node,
-            );
-            wheel.rotation.z = Math.PI / 2;
-          }
-        }
-      } else {
-        createBox(scene, `scenario-car-${index}`, { width: 1.72, height: 0.58, depth: 3.7 }, new Vector3(0, 0.62, 0), body, node);
-        createBox(scene, `scenario-cabin-${index}`, { width: 1.46, height: 0.62, depth: 1.6 }, new Vector3(0, 1.12, -0.16), windowMaterial, node);
-        for (const wheelX of [-0.87, 0.87]) {
-          for (const wheelZ of [-1.08, 1.12]) {
-            const wheel = createCylinder(scene, `scenario-wheel-${index}-${wheelX}-${wheelZ}`, { height: 0.2, diameter: 0.58 }, new Vector3(wheelX, 0.45, wheelZ), tireMaterial, node);
-            wheel.rotation.z = Math.PI / 2;
-          }
-        }
-      }
+      const initialVariant =
+        initialSnapshot?.variant ?? inferSpawnVehicleVariant(spawn?.id);
+      const appearance = resolveTrafficVehicleAppearance({
+        vehicleId,
+        trafficSeed: lesson.trafficSeed,
+        variant: initialVariant,
+        mapId: mapPack.id,
+      });
+      const visual = createVehicleMesh(
+        scene,
+        node,
+        `scenario-${vehicleId}`,
+        appearance,
+      );
       const displayLimit = lane.speedLimit ?? (this.options.speedUnit === "mph" ? 30 : 50);
       const limitMps = this.options.speedUnit === "mph"
         ? displayLimit / 2.236936
@@ -6777,6 +6782,10 @@ class BabylonGameSession {
       const cruiseSpeed = Math.max(3.5, limitMps * (0.58 + random() * 0.22));
       const npc: NpcVehicle = {
         node,
+        visual,
+        visualKey: [appearance.model, appearance.paintHex, appearance.accentHex].join("|"),
+        visualVehicleId: vehicleId,
+        visualVariant: initialVariant,
         direction: 1,
         speed: cruiseSpeed,
         currentSpeed: cruiseSpeed,

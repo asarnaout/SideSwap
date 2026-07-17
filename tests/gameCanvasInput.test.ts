@@ -26,10 +26,60 @@ import {
   resolveAuthoritativeRouteIndex,
   resolveCheckpointTargetWidth,
   resolveRouteChevronHalfSpan,
+  resolveNpcVisualSlotAssignments,
   resolveSteeringWheelSpin,
   smoothClosedRoadCenterline,
   type AdaptiveInputPresentation,
 } from "../app/game/GameCanvas";
+
+describe("authoritative NPC visual slots", () => {
+  it("preserves live ids regardless of snapshot order", () => {
+    const slots = [
+      { simulationId: "npc-1" },
+      { simulationId: "scripted-lead" },
+      { simulationId: "npc-3" },
+      {},
+    ];
+    const vehicles = [
+      { id: "npc-3" },
+      { id: "npc-1" },
+      { id: "scripted-lead" },
+      { id: "npc-4" },
+    ];
+
+    expect(resolveNpcVisualSlotAssignments(slots, vehicles)).toEqual([2, 0, 1, 3]);
+  });
+
+  it("reserves numeric slots before placing a new scripted vehicle", () => {
+    const slots = [{}, {}, {}, {}];
+    const vehicles = [
+      { id: "scripted-lead" },
+      { id: "npc-1" },
+      { id: "npc-2" },
+      { id: "npc-3" },
+    ];
+
+    expect(resolveNpcVisualSlotAssignments(slots, vehicles)).toEqual([3, 0, 1, 2]);
+  });
+
+  it("does not evict a scripted lead when its preferred numeric slot activates", () => {
+    const slots = [
+      { simulationId: "scripted-lead" },
+      { simulationId: "npc-2" },
+      {},
+      {},
+    ];
+    const vehicles = [
+      { id: "scripted-lead" },
+      { id: "npc-1" },
+      { id: "npc-2" },
+    ];
+
+    const assignments = resolveNpcVisualSlotAssignments(slots, vehicles);
+    expect(assignments).toEqual([0, 2, 1]);
+    expect(new Set(assignments).size).toBe(assignments.length);
+  });
+});
 
 describe("lane-contained driving guidance", () => {
   const lane = {
