@@ -3972,7 +3972,7 @@ export class SimulationCore {
       // short-cuts out (see routeGuidanceSimulation tests).
       const establishedOnTarget =
         currentProjection.lane.id === targetLane.id &&
-        (fromLane === null || this.visitedRouteLaneIds.has(fromLane.id));
+        (!fromLane || this.visitedRouteLaneIds.has(fromLane.id));
       if (
         (crossedInitialAnchor ||
           crossedSuccessorBoundary ||

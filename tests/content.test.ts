@@ -1499,58 +1499,38 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("uses the legal left-turn lanes throughout the authored NYC loop", () => {
+  it("gives each NYC lesson its own two-way route with a distinct start", () => {
     const map = getMapPack("nyc-upper-west-side");
-    const expectedRoute = [
-      "nyc-72-east-2",
-      "nyc-72-east-2-after-bway",
-      "nyc-columbus-n-1",
-      "nyc-columbus-n-1-after-72",
-      "nyc-79-west-2",
-      "nyc-79-west-2-after-bway",
-      "nyc-west-end-s-2",
-      "nyc-west-end-s-2-after-79",
-    ];
+    const playerSpawnIds = new Set(
+      map.laneGraph.spawnPoints
+        .filter((spawn) => spawn.kind === "player")
+        .map((spawn) => spawn.id),
+    );
 
-    for (const lessonId of [
-      "us-one-way-grid",
-      "us-signals-crosswalks",
-      "us-lane-choice",
-    ] as const) {
-      expect(getLesson(lessonId).route).toEqual(expectedRoute);
+    const expected = [
+      {
+        lessonId: "us-one-way-grid",
+        start: "nyc-player-1way",
+        route: ["nyc-72-e-1", "nyc-72-e-2", "nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-86-e-3", "nyc-col-s-1a", "nyc-col-s-1b"],
+      },
+      {
+        lessonId: "us-signals-crosswalks",
+        start: "nyc-player-signals",
+        route: ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-86-w-4"],
+      },
+      {
+        lessonId: "us-lane-choice",
+        start: "nyc-player-lane",
+        route: ["nyc-we-n-1", "nyc-we-n-2", "nyc-86-e-1", "nyc-86-e-2"],
+      },
+    ] as const;
+
+    for (const { lessonId, start, route } of expected) {
+      const lesson = getLesson(lessonId);
+      expect(lesson.route).toEqual(route);
+      expect(lesson.startSpawnId).toBe(start);
+      expect(playerSpawnIds.has(start)).toBe(true);
     }
-
-    const player = map.laneGraph.spawnPoints.find(
-      (spawn) => spawn.id === "nyc-player",
-    );
-    expect(player?.kind).toBe("player");
-    if (player?.kind === "player") {
-      expect(player.anchor).toEqual({
-        laneId: "nyc-72-east-2",
-        distanceAlongM: 17,
-      });
-    }
-
-    const controls = new Map(
-      map.laneGraph.controls.map((control) => [control.id, control]),
-    );
-    expect(controls.get("nyc-signal-72-bway")?.laneIds).toContain(
-      "nyc-72-east-2",
-    );
-    expect(controls.get("nyc-crosswalk-79")?.laneIds).toContain(
-      "nyc-79-west-2",
-    );
-    expect(controls.get("nyc-signal-columbus")?.laneIds).toContain(
-      "nyc-columbus-n-2",
-    );
-
-    const checkpoints = new Map(
-      map.laneGraph.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]),
-    );
-    expect(checkpoints.get("nyc-79")?.anchor).toEqual({
-      laneId: "nyc-79-west-2",
-      distanceAlongM: 96,
-    });
   });
 
   it("authors yield controls for every taught east and west roundabout re-entry", () => {

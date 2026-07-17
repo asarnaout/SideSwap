@@ -109,9 +109,12 @@ const roadIdForLane = (id: string): string => {
   if (id.startsWith("yard-l-")) return "yard-left-loop";
   if (id.startsWith("nyc-72-")) return "nyc-west-72";
   if (id.startsWith("nyc-79-")) return "nyc-west-79";
+  if (id.startsWith("nyc-86-")) return "nyc-west-86";
   if (id.startsWith("nyc-bway-")) return "nyc-broadway";
-  if (id.startsWith("nyc-columbus-")) return "nyc-columbus";
-  if (id.startsWith("nyc-west-end-")) return "nyc-west-end";
+  if (id.startsWith("nyc-we-")) return "nyc-west-end";
+  if (id.startsWith("nyc-cpw-")) return "nyc-central-park-west";
+  if (id.startsWith("nyc-amst-")) return "nyc-amsterdam";
+  if (id.startsWith("nyc-col-")) return "nyc-columbus";
   if (id.startsWith("uk-rb-")) return "uk-roundabout";
   if (id.includes("entry-north") || id.includes("exit-north")) return id.startsWith("fr-") ? "fr-north-approach" : "uk-north-approach";
   if (id.includes("entry-east") || id.includes("exit-east")) return id.startsWith("fr-") ? "fr-east-approach" : "uk-east-approach";
@@ -411,6 +414,78 @@ const control = (
   approaches,
   installations,
 });
+
+const laneLengthOf = (lane: LaneSegment): number =>
+  lane.centerline.slice(1).reduce(
+    (total, current, index) =>
+      total + distanceBetweenPoints(lane.centerline[index], current),
+    0,
+  );
+
+/** Heading (deg, 0 = +z) of the lane's travel direction at a given arclength. */
+const laneHeadingAtDistanceDeg = (lane: LaneSegment, distanceAlongM: number): number => {
+  let accumulated = 0;
+  for (let index = 0; index < lane.centerline.length - 1; index += 1) {
+    const a = lane.centerline[index];
+    const b = lane.centerline[index + 1];
+    const segmentLength = distanceBetweenPoints(a, b);
+    if (accumulated + segmentLength >= distanceAlongM || index === lane.centerline.length - 2) {
+      return (Math.atan2(b.x - a.x, b.z - a.z) * 180) / Math.PI;
+    }
+    accumulated += segmentLength;
+  }
+  return 0;
+};
+
+/**
+ * Builds a signalised junction from the lanes that arrive at it. Each arriving
+ * lane gets a stop-line approach 6 m short of the node and a head facing that
+ * lane's travel direction, mounted at the junction corner (clear of every lane).
+ * North/south lanes and east/west lanes sit on alternating phase groups. This is
+ * correct-by-construction, so head headings and stop distances can't drift from
+ * the geometry the way hand-authored signals do.
+ */
+const intersectionSignal = (
+  id: string,
+  center: WorldPoint,
+  arms: readonly { readonly laneId: string; readonly phase: "ns" | "ew" }[],
+  lanes: readonly LaneSegment[],
+): { readonly control: TrafficControl; readonly zone: LaneGraph["conflictZones"][number] } => {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const zoneId = `${id}-zone`;
+  const laneIds = arms.map((arm) => arm.laneId);
+  const approaches: TrafficControlApproach[] = [];
+  const installations: TrafficControlInstallation[] = [];
+  for (const arm of arms) {
+    const lane = laneById.get(arm.laneId);
+    if (!lane) continue;
+    const stopDistance = Math.max(0, laneLengthOf(lane) - 6);
+    const headingDeg = laneHeadingAtDistanceDeg(lane, stopDistance);
+    const rad = (headingDeg * Math.PI) / 180;
+    const dirX = Math.sin(rad);
+    const dirZ = Math.cos(rad);
+    // Mount at the corner diagonally back-right of the approach, well clear of
+    // both carriageways (±8 m from a node whose lanes span only ~±3.4 m).
+    const headX = center.x + dirZ * 8 - dirX * 8;
+    const headZ = center.z - dirX * 8 - dirZ * 8;
+    approaches.push(approach(`${id}-${arm.laneId}-app`, arm.laneId, stopDistance, `${id}-${arm.phase}`, [zoneId]));
+    installations.push(installation(`${id}-${arm.laneId}-head`, headX, headZ, headingDeg, "mast_arm", "nyc_signal", "primary", [`${id}-${arm.laneId}-app`]));
+  }
+  const half = 7;
+  return {
+    control: control(id, "signal", center.x, center.z, 0, laneIds, [zoneId], approaches, installations),
+    zone: {
+      id: zoneId,
+      laneIds,
+      polygon: [
+        point(center.x - half, center.z - half),
+        point(center.x + half, center.z - half),
+        point(center.x + half, center.z + half),
+        point(center.x - half, center.z + half),
+      ],
+    },
+  };
+};
 
 const CONNECTOR_ZONE_RADIUS_M = 2.1;
 
@@ -848,41 +923,126 @@ const orientationLanes: readonly LaneSegment[] = [
   laneTrue("yard-l-north", orientationNodes.l3, orientationNodes.l0, "left", 20, ["yard-l-west"], "travel", [point(0, 20.2)]),
 ];
 
+// Upper West Side grid. x = east, z = north. Three two-way avenues — West End
+// (x=-320), Broadway (x=-120), Central Park West (x=320) — cross three two-way
+// streets — West 72nd (z=-480), 79th (z=0), 86th (z=480). ~640 m x 960 m.
 const nycNodes = {
-  a: node("nyc-a", -105, -72),
-  b: node("nyc-b", 0, -72),
-  c: node("nyc-c", 105, -72),
-  d: node("nyc-d", 105, 0),
-  e: node("nyc-e", 0, 0),
-  f: node("nyc-f", -105, 0),
-  g: node("nyc-g", -105, 72),
-  h: node("nyc-h", 0, 72),
-  i: node("nyc-i", 105, 72),
+  we72: node("nyc-we-72", -320, -480),
+  bw72: node("nyc-bw-72", -120, -480),
+  amst72: node("nyc-amst-72", 40, -480),
+  col72: node("nyc-col-72", 180, -480),
+  cpw72: node("nyc-cpw-72", 320, -480),
+  we79: node("nyc-we-79", -320, 0),
+  bw79: node("nyc-bw-79", -120, 0),
+  amst79: node("nyc-amst-79", 40, 0),
+  col79: node("nyc-col-79", 180, 0),
+  cpw79: node("nyc-cpw-79", 320, 0),
+  we86: node("nyc-we-86", -320, 480),
+  bw86: node("nyc-bw-86", -120, 480),
+  amst86: node("nyc-amst-86", 40, 480),
+  col86: node("nyc-col-86", 180, 480),
+  cpw86: node("nyc-cpw-86", 320, 480),
 };
 
+// Two-way pattern: opposing lanes ride ±1.7 m off the carriageway centreline
+// (right-hand traffic: north/east-bound on the +offset side) and converge to the
+// shared junction node only over laneTrue's short connector. Straight-ahead
+// successors keep each avenue/street flowing; a couple of turns feed the lessons.
 const nycLanes: readonly LaneSegment[] = [
-  // Each NYC block has two genuinely parallel one-way lanes. Intersections
-  // remain explicit graph nodes so free drive can branch onto Broadway.
-  laneTrue("nyc-72-east-1", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-1-after-bway"], "one_way", [point(-52, -73.7)], ["nyc-72-east-2"]),
-  laneTrue("nyc-72-east-2", nycNodes.a, nycNodes.b, "right", 25, ["nyc-72-east-2-after-bway", "nyc-bway-n-1"], "one_way", [point(-52, -70.3)], ["nyc-72-east-1"]),
-  laneTrue("nyc-72-east-1-after-bway", nycNodes.b, nycNodes.c, "right", 25, [], "one_way", [point(52, -73.7)], ["nyc-72-east-2-after-bway"]),
-  laneTrue("nyc-72-east-2-after-bway", nycNodes.b, nycNodes.c, "right", 25, ["nyc-columbus-n-1"], "one_way", [point(52, -70.3)], ["nyc-72-east-1-after-bway"]),
-  laneTrue("nyc-bway-n-1", nycNodes.b, nycNodes.e, "right", 25, ["nyc-bway-n-2"], "travel", [point(1.7, -36)], ["nyc-bway-s-2"]),
-  laneTrue("nyc-bway-n-2", nycNodes.e, nycNodes.h, "right", 25, ["nyc-79-west-1-after-bway"], "travel", [point(1.7, 36)], ["nyc-bway-s-1"]),
-  laneTrue("nyc-columbus-n-1", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-1-after-72"], "one_way", [point(103.3, -36)], ["nyc-columbus-n-2"]),
-  laneTrue("nyc-columbus-n-2", nycNodes.c, nycNodes.d, "right", 25, ["nyc-columbus-n-2-after-72"], "one_way", [point(106.7, -36)], ["nyc-columbus-n-1"]),
-  laneTrue("nyc-columbus-n-1-after-72", nycNodes.d, nycNodes.i, "right", 25, ["nyc-79-west-2"], "one_way", [point(103.3, 36)], ["nyc-columbus-n-2-after-72"]),
-  laneTrue("nyc-columbus-n-2-after-72", nycNodes.d, nycNodes.i, "right", 25, [], "one_way", [point(106.7, 36)], ["nyc-columbus-n-1-after-72"]),
-  laneTrue("nyc-79-west-1", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-1-after-bway"], "one_way", [point(52, 73.7)], ["nyc-79-west-2"]),
-  laneTrue("nyc-79-west-2", nycNodes.i, nycNodes.h, "right", 25, ["nyc-79-west-2-after-bway", "nyc-bway-s-1"], "one_way", [point(52, 70.3)], ["nyc-79-west-1"]),
-  laneTrue("nyc-79-west-1-after-bway", nycNodes.h, nycNodes.g, "right", 25, [], "one_way", [point(-52, 73.7)], ["nyc-79-west-2-after-bway"]),
-  laneTrue("nyc-79-west-2-after-bway", nycNodes.h, nycNodes.g, "right", 25, ["nyc-west-end-s-2"], "one_way", [point(-52, 70.3)], ["nyc-79-west-1-after-bway"]),
-  laneTrue("nyc-west-end-s-1", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-1-after-79"], "one_way", [point(-106.7, 36)], ["nyc-west-end-s-2"]),
-  laneTrue("nyc-west-end-s-2", nycNodes.g, nycNodes.f, "right", 25, ["nyc-west-end-s-2-after-79"], "one_way", [point(-103.3, 36)], ["nyc-west-end-s-1"]),
-  laneTrue("nyc-west-end-s-1-after-79", nycNodes.f, nycNodes.a, "right", 25, [], "one_way", [point(-106.7, -36)], ["nyc-west-end-s-2-after-79"]),
-  laneTrue("nyc-west-end-s-2-after-79", nycNodes.f, nycNodes.a, "right", 25, ["nyc-72-east-2"], "one_way", [point(-103.3, -36)], ["nyc-west-end-s-1-after-79"]),
-  laneTrue("nyc-bway-s-1", nycNodes.h, nycNodes.e, "right", 25, ["nyc-bway-s-2"], "travel", [point(-1.7, 36)], ["nyc-bway-n-2"]),
-  laneTrue("nyc-bway-s-2", nycNodes.e, nycNodes.b, "right", 25, ["nyc-72-east-1-after-bway"], "travel", [point(-1.7, -36)], ["nyc-bway-n-1"]),
+  // West End Avenue (two-way, x=-320)
+  laneTrue("nyc-we-n-1", nycNodes.we72, nycNodes.we79, "right", 25, ["nyc-we-n-2"], "travel", [point(-318.3, -240)], ["nyc-we-s-2"]),
+  laneTrue("nyc-we-n-2", nycNodes.we79, nycNodes.we86, "right", 25, ["nyc-86-e-1"], "travel", [point(-318.3, 240)], ["nyc-we-s-1"]),
+  laneTrue("nyc-we-s-1", nycNodes.we86, nycNodes.we79, "right", 25, ["nyc-we-s-2"], "travel", [point(-321.7, 240)], ["nyc-we-n-2"]),
+  laneTrue("nyc-we-s-2", nycNodes.we79, nycNodes.we72, "right", 25, [], "travel", [point(-321.7, -240)], ["nyc-we-n-1"]),
+  // Broadway (two-way, x=-120) — the hero avenue
+  laneTrue("nyc-bway-n-1", nycNodes.bw72, nycNodes.bw79, "right", 25, ["nyc-bway-n-2"], "travel", [point(-118.3, -240)], ["nyc-bway-s-2"]),
+  laneTrue("nyc-bway-n-2", nycNodes.bw79, nycNodes.bw86, "right", 25, ["nyc-86-w-4"], "travel", [point(-118.3, 240)], ["nyc-bway-s-1"]),
+  laneTrue("nyc-bway-s-1", nycNodes.bw86, nycNodes.bw79, "right", 25, ["nyc-bway-s-2"], "travel", [point(-121.7, 240)], ["nyc-bway-n-2"]),
+  laneTrue("nyc-bway-s-2", nycNodes.bw79, nycNodes.bw72, "right", 25, [], "travel", [point(-121.7, -240)], ["nyc-bway-n-1"]),
+  // Central Park West (two-way, x=320)
+  laneTrue("nyc-cpw-n-1", nycNodes.cpw72, nycNodes.cpw79, "right", 25, ["nyc-cpw-n-2"], "travel", [point(321.7, -240)], ["nyc-cpw-s-2"]),
+  laneTrue("nyc-cpw-n-2", nycNodes.cpw79, nycNodes.cpw86, "right", 25, [], "travel", [point(321.7, 240)], ["nyc-cpw-s-1"]),
+  laneTrue("nyc-cpw-s-1", nycNodes.cpw86, nycNodes.cpw79, "right", 25, ["nyc-cpw-s-2"], "travel", [point(318.3, 240)], ["nyc-cpw-n-2"]),
+  laneTrue("nyc-cpw-s-2", nycNodes.cpw79, nycNodes.cpw72, "right", 25, [], "travel", [point(318.3, -240)], ["nyc-cpw-n-1"]),
+  // West 72nd Street (two-way, z=-480), split across Amsterdam & Columbus
+  laneTrue("nyc-72-e-1", nycNodes.we72, nycNodes.bw72, "right", 25, ["nyc-72-e-2", "nyc-bway-n-1"], "travel", [point(-220, -481.7)], ["nyc-72-w-4"]),
+  laneTrue("nyc-72-e-2", nycNodes.bw72, nycNodes.amst72, "right", 25, ["nyc-72-e-3", "nyc-amst-n-1a"], "travel", [point(-40, -481.7)], ["nyc-72-w-3"]),
+  laneTrue("nyc-72-e-3", nycNodes.amst72, nycNodes.col72, "right", 25, ["nyc-72-e-4"], "travel", [point(110, -481.7)], ["nyc-72-w-2"]),
+  laneTrue("nyc-72-e-4", nycNodes.col72, nycNodes.cpw72, "right", 25, [], "travel", [point(250, -481.7)], ["nyc-72-w-1"]),
+  laneTrue("nyc-72-w-1", nycNodes.cpw72, nycNodes.col72, "right", 25, ["nyc-72-w-2"], "travel", [point(250, -478.3)], ["nyc-72-e-4"]),
+  laneTrue("nyc-72-w-2", nycNodes.col72, nycNodes.amst72, "right", 25, ["nyc-72-w-3"], "travel", [point(110, -478.3)], ["nyc-72-e-3"]),
+  laneTrue("nyc-72-w-3", nycNodes.amst72, nycNodes.bw72, "right", 25, ["nyc-72-w-4"], "travel", [point(-40, -478.3)], ["nyc-72-e-2"]),
+  laneTrue("nyc-72-w-4", nycNodes.bw72, nycNodes.we72, "right", 25, [], "travel", [point(-220, -478.3)], ["nyc-72-e-1"]),
+  // West 79th Street (two-way, z=0)
+  laneTrue("nyc-79-e-1", nycNodes.we79, nycNodes.bw79, "right", 25, ["nyc-79-e-2"], "travel", [point(-220, -1.7)], ["nyc-79-w-4"]),
+  laneTrue("nyc-79-e-2", nycNodes.bw79, nycNodes.amst79, "right", 25, ["nyc-79-e-3"], "travel", [point(-40, -1.7)], ["nyc-79-w-3"]),
+  laneTrue("nyc-79-e-3", nycNodes.amst79, nycNodes.col79, "right", 25, ["nyc-79-e-4"], "travel", [point(110, -1.7)], ["nyc-79-w-2"]),
+  laneTrue("nyc-79-e-4", nycNodes.col79, nycNodes.cpw79, "right", 25, [], "travel", [point(250, -1.7)], ["nyc-79-w-1"]),
+  laneTrue("nyc-79-w-1", nycNodes.cpw79, nycNodes.col79, "right", 25, ["nyc-79-w-2"], "travel", [point(250, 1.7)], ["nyc-79-e-4"]),
+  laneTrue("nyc-79-w-2", nycNodes.col79, nycNodes.amst79, "right", 25, ["nyc-79-w-3"], "travel", [point(110, 1.7)], ["nyc-79-e-3"]),
+  laneTrue("nyc-79-w-3", nycNodes.amst79, nycNodes.bw79, "right", 25, ["nyc-79-w-4"], "travel", [point(-40, 1.7)], ["nyc-79-e-2"]),
+  laneTrue("nyc-79-w-4", nycNodes.bw79, nycNodes.we79, "right", 25, [], "travel", [point(-220, 1.7)], ["nyc-79-e-1"]),
+  // West 86th Street (two-way, z=480)
+  laneTrue("nyc-86-e-1", nycNodes.we86, nycNodes.bw86, "right", 25, ["nyc-86-e-2"], "travel", [point(-220, 478.3)], ["nyc-86-w-4"]),
+  laneTrue("nyc-86-e-2", nycNodes.bw86, nycNodes.amst86, "right", 25, ["nyc-86-e-3"], "travel", [point(-40, 478.3)], ["nyc-86-w-3"]),
+  laneTrue("nyc-86-e-3", nycNodes.amst86, nycNodes.col86, "right", 25, ["nyc-86-e-4", "nyc-col-s-1a"], "travel", [point(110, 478.3)], ["nyc-86-w-2"]),
+  laneTrue("nyc-86-e-4", nycNodes.col86, nycNodes.cpw86, "right", 25, [], "travel", [point(250, 478.3)], ["nyc-86-w-1"]),
+  laneTrue("nyc-86-w-1", nycNodes.cpw86, nycNodes.col86, "right", 25, ["nyc-86-w-2"], "travel", [point(250, 481.7)], ["nyc-86-e-4"]),
+  laneTrue("nyc-86-w-2", nycNodes.col86, nycNodes.amst86, "right", 25, ["nyc-86-w-3"], "travel", [point(110, 481.7)], ["nyc-86-e-3"]),
+  laneTrue("nyc-86-w-3", nycNodes.amst86, nycNodes.bw86, "right", 25, ["nyc-86-w-4"], "travel", [point(-40, 481.7)], ["nyc-86-e-2"]),
+  laneTrue("nyc-86-w-4", nycNodes.bw86, nycNodes.we86, "right", 25, [], "travel", [point(-220, 481.7)], ["nyc-86-e-1"]),
+  // Amsterdam Avenue (one-way northbound, x=40) — two parallel lanes
+  laneTrue("nyc-amst-n-1a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-1b"], "one_way", [point(38.3, -240)], ["nyc-amst-n-2a"]),
+  laneTrue("nyc-amst-n-1b", nycNodes.amst79, nycNodes.amst86, "right", 25, ["nyc-86-e-3"], "one_way", [point(38.3, 240)], ["nyc-amst-n-2b"]),
+  laneTrue("nyc-amst-n-2a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-2b"], "one_way", [point(41.7, -240)], ["nyc-amst-n-1a"]),
+  laneTrue("nyc-amst-n-2b", nycNodes.amst79, nycNodes.amst86, "right", 25, [], "one_way", [point(41.7, 240)], ["nyc-amst-n-1b"]),
+  // Columbus Avenue (one-way southbound, x=180) — two parallel lanes
+  laneTrue("nyc-col-s-1a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-1b"], "one_way", [point(178.3, 240)], ["nyc-col-s-2a"]),
+  laneTrue("nyc-col-s-1b", nycNodes.col79, nycNodes.col72, "right", 25, [], "one_way", [point(178.3, -240)], ["nyc-col-s-2b"]),
+  laneTrue("nyc-col-s-2a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-2b"], "one_way", [point(181.7, 240)], ["nyc-col-s-1a"]),
+  laneTrue("nyc-col-s-2b", nycNodes.col79, nycNodes.col72, "right", 25, [], "one_way", [point(181.7, -240)], ["nyc-col-s-1b"]),
+];
+
+// Signalised junctions along the Broadway corridor (the lesson route).
+const nycSignals = [
+  intersectionSignal("nyc-sig-bw72", nycNodes.bw72.position, [
+    { laneId: "nyc-bway-s-2", phase: "ns" },
+    { laneId: "nyc-72-e-1", phase: "ew" },
+    { laneId: "nyc-72-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-bw79", nycNodes.bw79.position, [
+    { laneId: "nyc-bway-n-1", phase: "ns" },
+    { laneId: "nyc-bway-s-1", phase: "ns" },
+    { laneId: "nyc-79-e-1", phase: "ew" },
+    { laneId: "nyc-79-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-bw86", nycNodes.bw86.position, [
+    { laneId: "nyc-bway-n-2", phase: "ns" },
+    { laneId: "nyc-86-e-1", phase: "ew" },
+    { laneId: "nyc-86-w-3", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-we79", nycNodes.we79.position, [
+    { laneId: "nyc-we-n-1", phase: "ns" },
+    { laneId: "nyc-we-s-1", phase: "ns" },
+    { laneId: "nyc-79-w-4", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-amst79", nycNodes.amst79.position, [
+    { laneId: "nyc-amst-n-1a", phase: "ns" },
+    { laneId: "nyc-amst-n-2a", phase: "ns" },
+    { laneId: "nyc-79-e-2", phase: "ew" },
+    { laneId: "nyc-79-w-2", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-col79", nycNodes.col79.position, [
+    { laneId: "nyc-col-s-1a", phase: "ns" },
+    { laneId: "nyc-col-s-2a", phase: "ns" },
+    { laneId: "nyc-79-e-3", phase: "ew" },
+    { laneId: "nyc-79-w-1", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-cpw79", nycNodes.cpw79.position, [
+    { laneId: "nyc-cpw-n-1", phase: "ns" },
+    { laneId: "nyc-cpw-s-1", phase: "ns" },
+    { laneId: "nyc-79-e-4", phase: "ew" },
+  ], nycLanes),
 ];
 
 const ukNodes = {
@@ -1075,87 +1235,87 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:nyc-uws-2026-07-10",
     ),
     geometry: {
-      worldSize: point(250, 190),
+      worldSize: point(760, 1080),
       roadWidth: 11,
       shoulderWidth: 1.5,
       roadSurfaces: [
-        roadSurface("nyc-west-72", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], 10.2, ["nyc-72-east-1", "nyc-72-east-2", "nyc-72-east-1-after-bway", "nyc-72-east-2-after-bway"], "standard", [
-          roadMarking("nyc-west-72-divider", "lane_dashed", [nycNodes.a.position, nycNodes.b.position, nycNodes.c.position], "white"),
+        roadSurface("nyc-west-72", [nycNodes.we72.position, nycNodes.bw72.position, nycNodes.amst72.position, nycNodes.col72.position, nycNodes.cpw72.position], 10.4, ["nyc-72-e-1", "nyc-72-e-2", "nyc-72-e-3", "nyc-72-e-4", "nyc-72-w-1", "nyc-72-w-2", "nyc-72-w-3", "nyc-72-w-4"], "standard", [
+          roadMarking("nyc-72-centre", "centre_dashed", [nycNodes.we72.position, nycNodes.cpw72.position], "white"),
         ]),
-        roadSurface("nyc-west-79", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], 10.2, ["nyc-79-west-1", "nyc-79-west-2", "nyc-79-west-1-after-bway", "nyc-79-west-2-after-bway"], "standard", [
-          roadMarking("nyc-west-79-divider", "lane_dashed", [nycNodes.g.position, nycNodes.h.position, nycNodes.i.position], "white"),
+        roadSurface("nyc-west-79", [nycNodes.we79.position, nycNodes.bw79.position, nycNodes.amst79.position, nycNodes.col79.position, nycNodes.cpw79.position], 10.4, ["nyc-79-e-1", "nyc-79-e-2", "nyc-79-e-3", "nyc-79-e-4", "nyc-79-w-1", "nyc-79-w-2", "nyc-79-w-3", "nyc-79-w-4"], "standard", [
+          roadMarking("nyc-79-centre", "centre_dashed", [nycNodes.we79.position, nycNodes.cpw79.position], "white"),
         ]),
-        roadSurface("nyc-broadway", [nycNodes.b.position, nycNodes.e.position, nycNodes.h.position], 10.8, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"], "standard", [
-          roadMarking("nyc-broadway-centre", "centre_solid", [point(0, -66), nycNodes.e.position, point(0, 66)], "yellow"),
+        roadSurface("nyc-west-86", [nycNodes.we86.position, nycNodes.bw86.position, nycNodes.amst86.position, nycNodes.col86.position, nycNodes.cpw86.position], 10.4, ["nyc-86-e-1", "nyc-86-e-2", "nyc-86-e-3", "nyc-86-e-4", "nyc-86-w-1", "nyc-86-w-2", "nyc-86-w-3", "nyc-86-w-4"], "standard", [
+          roadMarking("nyc-86-centre", "centre_dashed", [nycNodes.we86.position, nycNodes.cpw86.position], "white"),
         ]),
-        roadSurface("nyc-columbus", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], 10.2, ["nyc-columbus-n-1", "nyc-columbus-n-2", "nyc-columbus-n-1-after-72", "nyc-columbus-n-2-after-72"], "standard", [
-          roadMarking("nyc-columbus-divider", "lane_dashed", [nycNodes.c.position, nycNodes.d.position, nycNodes.i.position], "white"),
+        roadSurface("nyc-west-end", [nycNodes.we72.position, nycNodes.we79.position, nycNodes.we86.position], 11, ["nyc-we-n-1", "nyc-we-n-2", "nyc-we-s-1", "nyc-we-s-2"], "standard", [
+          roadMarking("nyc-west-end-centre", "centre_solid", [nycNodes.we72.position, nycNodes.we86.position], "yellow"),
         ]),
-        roadSurface("nyc-west-end", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], 10.2, ["nyc-west-end-s-1", "nyc-west-end-s-2", "nyc-west-end-s-1-after-79", "nyc-west-end-s-2-after-79"], "standard", [
-          roadMarking("nyc-west-end-divider", "lane_dashed", [nycNodes.a.position, nycNodes.f.position, nycNodes.g.position], "white"),
+        roadSurface("nyc-broadway", [nycNodes.bw72.position, nycNodes.bw79.position, nycNodes.bw86.position], 11, ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-bway-s-1", "nyc-bway-s-2"], "standard", [
+          roadMarking("nyc-broadway-centre", "centre_solid", [nycNodes.bw72.position, nycNodes.bw86.position], "yellow"),
+        ]),
+        roadSurface("nyc-central-park-west", [nycNodes.cpw72.position, nycNodes.cpw79.position, nycNodes.cpw86.position], 11, ["nyc-cpw-n-1", "nyc-cpw-n-2", "nyc-cpw-s-1", "nyc-cpw-s-2"], "standard", [
+          roadMarking("nyc-cpw-centre", "centre_solid", [nycNodes.cpw72.position, nycNodes.cpw86.position], "yellow"),
+        ]),
+        roadSurface("nyc-amsterdam", [nycNodes.amst72.position, nycNodes.amst79.position, nycNodes.amst86.position], 9, ["nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-amst-n-2a", "nyc-amst-n-2b"], "standard", [
+          roadMarking("nyc-amsterdam-lane", "lane_dashed", [nycNodes.amst72.position, nycNodes.amst86.position], "white"),
+        ]),
+        roadSurface("nyc-columbus", [nycNodes.col72.position, nycNodes.col79.position, nycNodes.col86.position], 9, ["nyc-col-s-1a", "nyc-col-s-1b", "nyc-col-s-2a", "nyc-col-s-2b"], "standard", [
+          roadMarking("nyc-columbus-lane", "lane_dashed", [nycNodes.col72.position, nycNodes.col86.position], "white"),
         ]),
       ],
       blocks: [
-        { id: "nyc-block-nw", center: point(-52, 36), size: point(82, 48), heightRange: [18, 42], density: 0.8, material: "brick" },
-        { id: "nyc-block-ne", center: point(52, 36), size: point(82, 48), heightRange: [22, 48], density: 0.85, material: "sandstone" },
-        { id: "nyc-block-sw", center: point(-52, -36), size: point(82, 48), heightRange: [16, 38], density: 0.78, material: "brick" },
-        { id: "nyc-block-se", center: point(52, -36), size: point(82, 48), heightRange: [20, 44], density: 0.82, material: "stone" },
+        // One building cluster per grid cell, fitted between the avenues so none
+        // sits on Amsterdam or Columbus.
+        { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(150, 420), heightRange: [18, 42], density: 0.8, material: "brick" },
+        { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(150, 420), heightRange: [20, 46], density: 0.82, material: "sandstone" },
+        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(120, 420), heightRange: [16, 40], density: 0.78, material: "stone" },
+        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(120, 420), heightRange: [20, 44], density: 0.8, material: "brick" },
+        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(100, 420), heightRange: [18, 46], density: 0.82, material: "sandstone" },
+        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone" },
+        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
       ],
       landmarks: [
-        // Keep scenery adjacent to Broadway rather than letting it sit on the
-        // physical carriageway.
-        { id: "nyc-verdi-green", kind: "park", center: point(16, 20), size: point(10, 30), color: "#5c8c4b" },
-        { id: "nyc-subway", kind: "station", center: point(-14, -6), size: point(8, 5), color: "#2d2f33" },
+        // Kept clear of the carriageways (a content test enforces this).
+        { id: "nyc-verdi-green", kind: "park", center: point(-40, -455), size: point(40, 24), color: "#5c8c4b" },
+        { id: "nyc-subway", kind: "station", center: point(-92, -455), size: point(8, 5), color: "#2d2f33" },
+        { id: "nyc-central-park", kind: "park", center: point(358, 0), size: point(38, 940), color: "#4f7a3d" },
+        { id: "nyc-amnh", kind: "shops", center: point(250, 240), size: point(100, 420), color: "#caa76f" },
       ],
     },
     laneGraph: graph(
       Object.values(nycNodes),
       nycLanes,
+      nycSignals.map((signal) => signal.control),
+      nycSignals.map((signal) => signal.zone),
       [
-        control("nyc-signal-72-bway", "signal", 0, -72, 90, ["nyc-72-east-1", "nyc-72-east-2", "nyc-bway-n-1"], ["nyc-conflict-72-bway"],
-          [
-            approach("nyc-72-east-approach", "nyc-72-east-1", 97, "nyc-72-east", ["nyc-conflict-72-bway"]),
-            approach("nyc-72-east-left-lane-approach", "nyc-72-east-2", 97, "nyc-72-east", ["nyc-conflict-72-bway"]),
-            approach("nyc-bway-north-approach", "nyc-bway-n-1", 8, "nyc-bway-north", ["nyc-conflict-72-bway"]),
-          ],
-          [
-            installation("nyc-72-bway-mast", 8.5, -80.5, 90, "mast_arm", "nyc_signal", "primary", ["nyc-72-east-approach", "nyc-72-east-left-lane-approach"], 270),
-            installation("nyc-72-bway-companion", -8.5, -63.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-bway-north-approach"]),
-          ]),
-        control("nyc-crosswalk-79", "crosswalk", 0, 72, 270, ["nyc-79-west-1", "nyc-79-west-2", "nyc-bway-n-2"], ["nyc-conflict-79-bway"],
-          [
-            approach("nyc-79-west-crosswalk", "nyc-79-west-1", 97, "crosswalk", ["nyc-conflict-79-bway"]),
-            approach("nyc-79-west-left-lane-crosswalk", "nyc-79-west-2", 97, "crosswalk", ["nyc-conflict-79-bway"]),
-            approach("nyc-bway-north-crosswalk", "nyc-bway-n-2", 64, "crosswalk", ["nyc-conflict-79-bway"]),
-          ],
-          [installation("nyc-79-crosswalk-marking", 0, 72, 270, "road_marking", "crosswalk", "marking")]),
-        control("nyc-signal-columbus", "signal", 105, 0, 0, ["nyc-columbus-n-1", "nyc-columbus-n-2"], ["nyc-conflict-columbus"],
-          [
-            approach("nyc-columbus-north-approach", "nyc-columbus-n-1", 64, "nyc-columbus-north", ["nyc-conflict-columbus"]),
-            approach("nyc-columbus-north-right-lane-approach", "nyc-columbus-n-2", 64, "nyc-columbus-north", ["nyc-conflict-columbus"]),
-          ],
-          [
-            installation("nyc-columbus-mast", 113.5, -8.5, 0, "mast_arm", "nyc_signal", "primary", ["nyc-columbus-north-approach", "nyc-columbus-north-right-lane-approach"], 180),
-            installation("nyc-columbus-companion", 96.5, 8.5, 0, "secondary_pole", "nyc_signal", "companion", ["nyc-columbus-north-approach", "nyc-columbus-north-right-lane-approach"]),
-          ]),
+        anchoredSpawn("nyc-player-1way", "player", "nyc-72-e-1", 30),
+        anchoredSpawn("nyc-player-signals", "player", "nyc-bway-n-1", 30),
+        anchoredSpawn("nyc-player-lane", "player", "nyc-we-n-1", 30),
+        anchoredSpawn("nyc-car-1", "vehicle", "nyc-bway-s-1", 130),
+        anchoredSpawn("nyc-car-2", "vehicle", "nyc-79-e-1", 60),
+        anchoredSpawn("nyc-car-3", "vehicle", "nyc-we-n-1", 130),
+        anchoredSpawn("nyc-cab-4", "vehicle", "nyc-amst-n-1a", 120),
+        anchoredSpawn("nyc-car-5", "vehicle", "nyc-col-s-1a", 120),
+        freeSpawn("nyc-ped-1", "pedestrian", -100, 12, 0),
+        freeSpawn("nyc-ped-2", "pedestrian", -132, -10, 180),
+        freeSpawn("nyc-ped-3", "pedestrian", 28, 12, 0),
+        freeSpawn("nyc-ped-4", "pedestrian", 168, -12, 180),
+        freeSpawn("nyc-ped-5", "pedestrian", -308, 10, 0),
+        freeSpawn("nyc-cyclist-1", "cyclist", -318, -200, 0, "nyc-we-n-1"),
+        freeSpawn("nyc-cyclist-2", "cyclist", 38.3, -200, 0, "nyc-amst-n-1a"),
       ],
       [
-        { id: "nyc-conflict-72-bway", laneIds: ["nyc-72-east-1", "nyc-72-east-2", "nyc-bway-n-1"], polygon: [point(-8, -80), point(8, -80), point(8, -64), point(-8, -64)] },
-        { id: "nyc-conflict-79-bway", laneIds: ["nyc-79-west-1", "nyc-79-west-2", "nyc-bway-n-2"], polygon: [point(-8, 64), point(8, 64), point(8, 80), point(-8, 80)] },
-        { id: "nyc-conflict-columbus", laneIds: ["nyc-columbus-n-1", "nyc-columbus-n-2"], polygon: [point(97, -8), point(113, -8), point(113, 8), point(97, 8)] },
-      ],
-      [
-        anchoredSpawn("nyc-player", "player", "nyc-72-east-2", 17),
-        anchoredSpawn("nyc-car-1", "vehicle", "nyc-72-east-1", 34),
-        anchoredSpawn("nyc-car-2", "vehicle", "nyc-columbus-n-2", 34),
-        freeSpawn("nyc-ped-1", "pedestrian", -6, 64, 0),
-        freeSpawn("nyc-cyclist-1", "cyclist", -62, 0, 90, "nyc-west-end-s-1"),
-      ],
-      [
-        checkpoint("nyc-start", "West 72nd left-turn lane start", "nyc-72-east-2", 17),
-        checkpoint("nyc-broadway", "Broadway signal", "nyc-72-east-2", 96),
-        checkpoint("nyc-79", "West 79th crosswalk", "nyc-79-west-2", 96),
-        checkpoint("nyc-finish", "West End finish", "nyc-west-end-s-2-after-79", 42),
+        checkpoint("nyc-r1-start", "West 72nd & West End", "nyc-72-e-1", 30),
+        checkpoint("nyc-r1-amst", "Amsterdam Avenue northbound", "nyc-amst-n-1a", 240),
+        checkpoint("nyc-r1-86", "West 86th Street", "nyc-86-e-3", 70),
+        checkpoint("nyc-r1-finish", "Columbus & 72nd", "nyc-col-s-1b", 445),
+        checkpoint("nyc-r2-start", "Broadway & 72nd", "nyc-bway-n-1", 30),
+        checkpoint("nyc-r2-signal", "Broadway & 79th signal", "nyc-bway-n-1", 445),
+        checkpoint("nyc-r2-finish", "West 86th & Broadway", "nyc-86-w-4", 180),
+        checkpoint("nyc-r3-start", "West End & 72nd", "nyc-we-n-1", 30),
+        checkpoint("nyc-r3-mid", "West End & 79th", "nyc-we-n-2", 240),
+        checkpoint("nyc-r3-finish", "West 86th & Central Park West", "nyc-86-e-2", 145),
       ],
     ),
   },
@@ -1526,17 +1686,17 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 1,
     estimatedMinutes: [5, 7],
-    startSpawnId: "nyc-player",
-    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
+    startSpawnId: "nyc-player-1way",
+    route: ["nyc-72-e-1", "nyc-72-e-2", "nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-86-e-3", "nyc-col-s-1a", "nyc-col-s-1b"],
     objectives: [
       { id: "us-correct-side", label: "Keep right on two-way roads and read one-way lane signs separately", ruleCode: "wrong_way" },
       { id: "us-one-way", label: "Follow one-way street arrows", ruleCode: "one_way" },
       { id: "us-indicate", label: "Signal every turn", ruleCode: "missing_indicator" },
     ],
     trafficSeed: 1101,
-    trafficDensity: "light",
+    trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 6, cyclists: 2 },
-    checkpoints: ["nyc-start", "nyc-broadway", "nyc-finish"],
+    checkpoints: ["nyc-r1-start", "nyc-r1-amst", "nyc-r1-86", "nyc-r1-finish"],
     coachPrompts: [
       prompt("us-grid-start", { type: "start" }, "This route uses the left lane because each upcoming turn is left. That lane choice does not change the city's right-side traffic rule.", "us-ny-dmv-turns"),
       prompt("us-grid-arrow", { type: "route_progress", value: 0.48 }, "This cross street is one-way. Turn only in the signed direction.", "us-nyc-traffic-rules"),
@@ -1557,17 +1717,17 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 2,
     estimatedMinutes: [6, 8],
-    startSpawnId: "nyc-player",
-    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
+    startSpawnId: "nyc-player-signals",
+    route: ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-86-w-4"],
     objectives: [
       { id: "us-red", label: "Stop before a red-light conflict zone", ruleCode: "red_light" },
       { id: "us-crosswalk", label: "Yield to pedestrians in crosswalks", ruleCode: "pedestrian_priority" },
       { id: "us-gap", label: "Choose a safe turning gap", ruleCode: "unsafe_gap" },
     ],
     trafficSeed: 1102,
-    trafficDensity: "moderate",
+    trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 10, cyclists: 3 },
-    checkpoints: ["nyc-start", "nyc-broadway", "nyc-79", "nyc-finish"],
+    checkpoints: ["nyc-r2-start", "nyc-r2-signal", "nyc-r2-finish"],
     coachPrompts: [
       prompt("us-signal", { type: "checkpoint", checkpointId: "nyc-broadway" }, "Stop before the crosswalk on red; green still requires a clear junction.", "us-nyc-traffic-rules"),
       prompt("us-ped", { type: "checkpoint", checkpointId: "nyc-79" }, "Scan both sidewalks and wait until the crosswalk is clear.", "us-nyc-traffic-rules"),
@@ -1588,8 +1748,8 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSide: "right",
     difficulty: 3,
     estimatedMinutes: [6, 8],
-    startSpawnId: "nyc-player",
-    route: ["nyc-72-east-2", "nyc-72-east-2-after-bway", "nyc-columbus-n-1", "nyc-columbus-n-1-after-72", "nyc-79-west-2", "nyc-79-west-2-after-bway", "nyc-west-end-s-2", "nyc-west-end-s-2-after-79"],
+    startSpawnId: "nyc-player-lane",
+    route: ["nyc-we-n-1", "nyc-we-n-2", "nyc-86-e-1", "nyc-86-e-2"],
     objectives: [
       { id: "us-observe", label: "Mirror, signal and scan before every turn", ruleCode: "observation" },
       { id: "us-position", label: "Choose the appropriate lane before each turn", ruleCode: "one_way" },
@@ -1598,7 +1758,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1103,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: ["nyc-start", "nyc-broadway", "nyc-79", "nyc-finish"],
+    checkpoints: ["nyc-r3-start", "nyc-r3-mid", "nyc-r3-finish"],
     coachPrompts: [
       prompt("us-lane-check", { type: "route_progress", value: 0.2 }, "You are already in the left-turn lane. Hold it predictably, check mirrors and signal before the turn instead of weaving for a temporary gap.", "us-ny-dmv-turns"),
       prompt("us-weaving", { type: "rule_event", ruleCode: "one_way" }, "Read the one-way signs early and hold a predictable lane instead of weaving between gaps.", "us-nyc-traffic-rules"),
@@ -1964,7 +2124,7 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     title: "Free Drive — New York City",
     description: "Explore the Upper West Side miniature with coaching available but no fixed route.",
     unlockAfter: "us-one-way-grid",
-    startSpawnId: "nyc-player",
+    startSpawnId: "nyc-player-1way",
     trafficSeed: 2101,
   },
   {
