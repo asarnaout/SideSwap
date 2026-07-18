@@ -76,6 +76,11 @@ import {
   resolvePlayerVehicleAppearance,
   resolveTrafficVehicleAppearance,
 } from "./vehicleVisuals";
+import {
+  disposeModels,
+  preloadModels,
+  vehicleModelUrls,
+} from "./modelLibrary";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -2477,6 +2482,8 @@ class BabylonGameSession {
       this.emit("ready", "Training yard ready.");
       this.publishHud(true);
     });
+
+    void this.preloadVehicleModels();
   }
 
   updateCallbacks(callbacks: SessionCallbacks) {
@@ -2653,8 +2660,59 @@ class BabylonGameSession {
     }
     this.effectsPipeline?.dispose();
     this.effectsPipeline = null;
+    disposeModels(this.scene);
     this.scene.dispose();
     this.engine.dispose();
+  }
+
+  /**
+   * Loads the vehicle glbs off the critical path. Vehicles are built with their
+   * procedural fallback during construction and upgraded to the imported models
+   * here once the containers arrive; a failed load simply leaves them procedural.
+   */
+  private async preloadVehicleModels() {
+    try {
+      await preloadModels(this.scene, vehicleModelUrls());
+    } catch {
+      return;
+    }
+    if (this.disposed) return;
+    this.upgradeVehiclesToModels();
+  }
+
+  /**
+   * Swaps every vehicle from its procedural fallback onto its imported model in
+   * place. Rebuilds the player exterior (the first-person cockpit is a separate
+   * node, so it is untouched) and each pooled NPC visual. Paint/variant keys are
+   * unchanged, so later `ensureNpcVehicleVisual` reconciliation is unaffected.
+   */
+  private upgradeVehiclesToModels() {
+    if (this.playerVehicleVisual) {
+      this.playerVehicleVisual.dispose();
+      this.playerVehicleVisual = createVehicleMesh(
+        this.scene,
+        this.playerExterior,
+        "player",
+        resolvePlayerVehicleAppearance(),
+      );
+    }
+    const trafficSeed = this.options.lesson?.trafficSeed ?? 0;
+    const mapId = this.options.mapPack?.id ?? "orientation-yard";
+    for (const npc of this.npcVehicles) {
+      if (!npc.visualVehicleId) continue;
+      npc.visual.dispose();
+      npc.visual = createVehicleMesh(
+        this.scene,
+        npc.node,
+        `${npc.node.name}-${npc.visualVehicleId}`,
+        resolveTrafficVehicleAppearance({
+          vehicleId: npc.visualVehicleId,
+          trafficSeed,
+          variant: npc.visualVariant,
+          mapId,
+        }),
+      );
+    }
   }
 
   private readonly renderFrame = () => {

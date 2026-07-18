@@ -73,7 +73,7 @@ describe("modern fleet variety", () => {
     expect(resolvePlayerVehicleAppearance()).toMatchObject({
       model: "electric-fastback",
       role: "player",
-      paintHex: "#18a5d1",
+      paintHex: "#1b4f8f",
     });
     expect(resolvePlayerVehicleAppearance()).toEqual(resolvePlayerVehicleAppearance());
   });
