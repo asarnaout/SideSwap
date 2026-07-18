@@ -4062,7 +4062,6 @@ class BabylonGameSession {
     for (const pedestrian of this.pedestrians) {
       pedestrian.phase = (pedestrian.phase + pedestrian.speed * dt) % 18;
       const progress = pedestrian.phase / 18;
-      pedestrian.visual?.spinWheels?.(pedestrian.speed * dt);
       if (pedestrian.origin && pedestrian.heading !== undefined) {
         const span = pedestrian.span ?? 16;
         const along = -span / 2 + progress * span;

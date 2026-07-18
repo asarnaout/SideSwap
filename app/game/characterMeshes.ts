@@ -23,8 +23,6 @@ import {
 
 export interface CharacterVisual {
   readonly root: TransformNode;
-  /** Rolls the bike wheels by a ground distance (cyclists only; peds omit it). */
-  spinWheels?(distanceMeters: number): void;
   dispose(): void;
 }
 
@@ -236,38 +234,11 @@ export function buildCyclistVisual(
   );
   const sit = playClip(riderInstance.animationGroups, "Sitting", 1);
 
-  // Spin the bike wheels so it reads as rolling (the seated rider can't pedal —
-  // no CC0 cycling clip). Each tire mesh sits at the glb origin with its geometry
-  // offset, so pivot it about its own centre and roll it about the local Z axle.
-  const wheelHubs: TransformNode[] = [];
-  let wheelRadius = 0.33;
-  for (const mesh of bikeWrap.getChildMeshes(false)) {
-    if (!/tire/i.test(mesh.name)) continue;
-    const box = mesh.getBoundingInfo().boundingBox;
-    const centre = box.center.clone();
-    const hub = new TransformNode(`${name}-wheelhub`, scene);
-    hub.parent = mesh.parent;
-    hub.position.copyFrom(centre);
-    mesh.parent = hub;
-    mesh.position.copyFrom(centre.scale(-1));
-    wheelHubs.push(hub);
-    wheelRadius = Math.max(
-      0.05,
-      ((box.maximum.y - box.minimum.y) / 2) * BICYCLE_MODEL.scale,
-    );
-  }
-  let wheelAngle = 0;
-
   addContactShadow(scene, name, root, 0.7, 1.7);
 
   let disposed = false;
   return {
     root,
-    spinWheels(distanceMeters) {
-      if (disposed) return;
-      wheelAngle += distanceMeters / wheelRadius;
-      for (const hub of wheelHubs) hub.rotation.z = wheelAngle;
-    },
     dispose() {
       if (disposed) return;
       disposed = true;
