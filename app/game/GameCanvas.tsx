@@ -22,6 +22,7 @@ import {
   TransformNode,
   UniversalCamera,
   Vector3,
+  Vector4,
   VertexData,
   Viewport,
 } from "@babylonjs/core";
@@ -2191,6 +2192,193 @@ function createCylinder(
   );
   mesh.position.copyFrom(position);
   mesh.parent = parent ?? null;
+  setMeshMaterial(mesh, material);
+  return mesh;
+}
+
+function createIcoSphere(
+  scene: Scene,
+  name: string,
+  radius: number,
+  position: Vector3,
+  material: StandardMaterial,
+  parent?: TransformNode,
+): Mesh {
+  const mesh = MeshBuilder.CreateIcoSphere(
+    name,
+    { radius, subdivisions: 1 },
+    scene,
+  );
+  mesh.position.copyFrom(position);
+  mesh.parent = parent ?? null;
+  setMeshMaterial(mesh, material);
+  return mesh;
+}
+
+// --- Building facades ------------------------------------------------------
+// Boxes get windows from a tiled facade texture: one "tile" is a grid of window
+// cells, and each box repeats it via faceUV so window size stays roughly
+// constant regardless of building size. The wall colour is baked into a
+// per-palette diffuse texture (dark glass + warm lit panes); a single shared
+// emissive texture lights the same lit panes so cities glow at dusk.
+const FACADE_COLS = 4;
+const FACADE_ROWS = 6;
+const FACADE_WIN_W_M = 3;
+const FACADE_WIN_H_M = 3.2;
+const FACADE_TEX_W = 256;
+const FACADE_TEX_H = 384;
+
+interface FacadeCell {
+  readonly row: number;
+  readonly col: number;
+  readonly lit: boolean;
+  readonly shade: number;
+}
+
+function buildFacadeLayout(seed: number): readonly FacadeCell[] {
+  let state = seed >>> 0;
+  const rand = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const cells: FacadeCell[] = [];
+  for (let row = 0; row < FACADE_ROWS; row += 1) {
+    for (let col = 0; col < FACADE_COLS; col += 1) {
+      cells.push({
+        row,
+        col,
+        lit: rand() < 0.26,
+        shade: 40 + Math.floor(rand() * 26),
+      });
+    }
+  }
+  return cells;
+}
+
+// Fixed so every building's window grid + lit pattern is stable and the diffuse
+// and emissive tiles line up.
+const FACADE_LAYOUT = buildFacadeLayout(0x9e3779b1);
+
+function facadeColorHex(color: Color3): string {
+  const channel = (value: number) =>
+    Math.max(0, Math.min(255, Math.round(value * 255)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}`;
+}
+
+function facadeCellMetrics() {
+  const cellW = FACADE_TEX_W / FACADE_COLS;
+  const cellH = FACADE_TEX_H / FACADE_ROWS;
+  const marginX = cellW * 0.24;
+  const marginY = cellH * 0.2;
+  return { cellW, cellH, marginX, marginY, winW: cellW - marginX * 2, winH: cellH - marginY * 2 };
+}
+
+function makeFacadeEmissiveTexture(scene: Scene): DynamicTexture {
+  const texture = new DynamicTexture(
+    "facade-emissive",
+    { width: FACADE_TEX_W, height: FACADE_TEX_H },
+    scene,
+    true,
+  );
+  const ctx = textureContext(texture);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, FACADE_TEX_W, FACADE_TEX_H);
+  const { cellW, cellH, marginX, marginY, winW, winH } = facadeCellMetrics();
+  for (const cell of FACADE_LAYOUT) {
+    if (!cell.lit) continue;
+    ctx.fillStyle = "rgb(255,208,138)";
+    ctx.fillRect(cell.col * cellW + marginX, cell.row * cellH + marginY, winW, winH);
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
+}
+
+function makeFacadeDiffuseTexture(
+  scene: Scene,
+  name: string,
+  wallColor: Color3,
+): DynamicTexture {
+  const texture = new DynamicTexture(
+    name,
+    { width: FACADE_TEX_W, height: FACADE_TEX_H },
+    scene,
+    true,
+  );
+  const ctx = textureContext(texture);
+  ctx.fillStyle = facadeColorHex(wallColor);
+  ctx.fillRect(0, 0, FACADE_TEX_W, FACADE_TEX_H);
+  const { cellW, cellH, marginX, marginY, winW, winH } = facadeCellMetrics();
+  for (const cell of FACADE_LAYOUT) {
+    const x = cell.col * cellW + marginX;
+    const y = cell.row * cellH + marginY;
+    if (cell.lit) {
+      ctx.fillStyle = "#e8c684";
+    } else {
+      const s = cell.shade;
+      ctx.fillStyle = `rgb(${s},${s + 8},${s + 18})`;
+    }
+    ctx.fillRect(x, y, winW, winH);
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
+}
+
+function facadeFaceUV(width: number, height: number, depth: number): Vector4[] {
+  // Whole window rows/cols sized in real-world metres, so windows stay a
+  // consistent size whether the building is short or a tower (the V/U ranges
+  // land on exact row/column boundaries, so no half-windows at the roofline).
+  const rows = Math.max(2, Math.round(height / FACADE_WIN_H_M));
+  const cols = (span: number) => Math.max(2, Math.round(span / FACADE_WIN_W_M));
+  const v = rows / FACADE_ROWS;
+  const faceUV: Vector4[] = [];
+  for (let i = 0; i < 6; i += 1) faceUV.push(new Vector4(0, 0, 0, 0));
+  faceUV[0] = new Vector4(0, 0, cols(width) / FACADE_COLS, v);
+  faceUV[1] = new Vector4(0, 0, cols(width) / FACADE_COLS, v);
+  faceUV[2] = new Vector4(0, 0, cols(depth) / FACADE_COLS, v);
+  faceUV[3] = new Vector4(0, 0, cols(depth) / FACADE_COLS, v);
+  faceUV[4] = new Vector4(0, 0, 0.02, 0.02);
+  faceUV[5] = new Vector4(0, 0, 0.02, 0.02);
+  return faceUV;
+}
+
+function makeFacadeMaterial(
+  scene: Scene,
+  name: string,
+  wallColor: Color3,
+  emissive: DynamicTexture,
+): StandardMaterial {
+  const material = new StandardMaterial(name, scene);
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.diffuseTexture = makeFacadeDiffuseTexture(scene, `${name}-diffuse`, wallColor);
+  material.emissiveTexture = emissive;
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.specularColor = new Color3(0.05, 0.05, 0.05);
+  return material;
+}
+
+function createFacadeBox(
+  scene: Scene,
+  name: string,
+  dimensions: { width: number; height: number; depth: number },
+  position: Vector3,
+  material: StandardMaterial,
+): Mesh {
+  const mesh = MeshBuilder.CreateBox(
+    name,
+    {
+      ...dimensions,
+      faceUV: facadeFaceUV(dimensions.width, dimensions.height, dimensions.depth),
+      wrap: true,
+    },
+    scene,
+  );
+  mesh.position.copyFrom(position);
   setMeshMaterial(mesh, material);
   return mesh;
 }
@@ -4464,9 +4652,24 @@ class BabylonGameSession {
       "london-brick": new Color3(0.49, 0.32, 0.27),
       "white-stucco": new Color3(0.82, 0.81, 0.75),
     };
+    const facadeEmissive = makeFacadeEmissiveTexture(scene);
+    const facadeMaterials = new Map<string, StandardMaterial>();
+    const facadeMaterialFor = (materialKey: string): StandardMaterial => {
+      const cached = facadeMaterials.get(materialKey);
+      if (cached) return cached;
+      const wallColor =
+        buildingPalette[materialKey] ?? new Color3(0.56, 0.5, 0.43);
+      const created = makeFacadeMaterial(
+        scene,
+        `facade-${materialKey}`,
+        wallColor,
+        facadeEmissive,
+      );
+      facadeMaterials.set(materialKey, created);
+      return created;
+    };
     for (const block of mapPack.geometry.blocks) {
-      const baseColor = buildingPalette[block.material] ?? new Color3(0.56, 0.5, 0.43);
-      const material = makeMaterial(scene, `block-${block.id}`, baseColor);
+      const material = facadeMaterialFor(block.material);
       const isLondonMuseumBlock =
         mapId.includes("london") && block.material.endsWith("-museum");
       if (isLondonMuseumBlock) {
@@ -4475,7 +4678,7 @@ class BabylonGameSession {
         for (const side of [-1, 1]) {
           const wingX = block.center.x + side * block.size.x * 0.37;
           this.registerShadowCaster(
-            createBox(
+            createFacadeBox(
               scene,
               `building-${block.id}-wing-${side}`,
               { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
@@ -4502,7 +4705,7 @@ class BabylonGameSession {
         const x = block.center.x - block.size.x / 2 + cellWidth * (column + 0.5);
         const z = block.center.z - block.size.z / 2 + cellDepth * (row + 0.5);
         this.registerShadowCaster(
-          createBox(
+          createFacadeBox(
             scene,
             `building-${block.id}-${index}`,
             { width, height, depth },
@@ -4591,13 +4794,17 @@ class BabylonGameSession {
           material,
         );
       } else {
+        // Station / terminal / other building-like landmarks: give them the
+        // same windowed facade as regular buildings, in their landmark colour,
+        // so they read as buildings rather than featureless blocks beside the
+        // now-windowed skyline.
         const height = landmark.kind === "terminal" ? 8 : 5;
-        createBox(
+        createFacadeBox(
           scene,
           landmark.id,
           { width: landmark.size.x, height, depth: landmark.size.z },
           new Vector3(landmark.center.x, height / 2, landmark.center.z),
-          material,
+          makeFacadeMaterial(scene, `landmark-facade-${landmark.id}`, color, facadeEmissive),
         );
       }
     }
@@ -5072,6 +5279,7 @@ class BabylonGameSession {
     interface PropPart {
       readonly master: Mesh;
       readonly offset: Vector3;
+      readonly castShadow?: boolean;
     }
     const masterBox = (
       name: string,
@@ -5102,6 +5310,20 @@ class BabylonGameSession {
       mesh.isVisible = false;
       return mesh;
     };
+    const masterIcoSphere = (
+      name: string,
+      radius: number,
+      partMaterial: StandardMaterial,
+    ): Mesh => {
+      const mesh = MeshBuilder.CreateIcoSphere(
+        `prop-master-${name}`,
+        { radius, subdivisions: 1 },
+        scene,
+      );
+      setMeshMaterial(mesh, partMaterial);
+      mesh.isVisible = false;
+      return mesh;
+    };
 
     const masters = new Map<string, readonly PropPart[]>();
     const partsFor = (kind: string, variant: number): readonly PropPart[] => {
@@ -5111,38 +5333,84 @@ class BabylonGameSession {
       let parts: readonly PropPart[];
       switch (kind) {
         case "tree": {
-          const crown =
-            variant === 1
-              ? masterCylinder(
-                  cacheKey,
-                  { height: 4.2, diameterTop: 0, diameterBottom: 2.2 },
-                  leaves[variant],
-                )
-              : variant === 2
-                ? masterCylinder(
-                    cacheKey,
-                    { height: 2.9, diameterTop: 0, diameterBottom: 2.6 },
-                    leaves[variant],
-                  )
-                : masterCylinder(
-                    cacheKey,
-                    { height: 3.2, diameterTop: 0, diameterBottom: 2.9 },
-                    leaves[variant],
-                  );
-          parts = [
-            {
-              master: masterCylinder(
-                `${cacheKey}-trunk`,
-                { height: 2.2, diameter: 0.34 },
-                trunk,
-              ),
-              offset: new Vector3(0, 1.1, 0),
-            },
-            {
-              master: crown,
-              offset: new Vector3(0, variant === 1 ? 4 : variant === 2 ? 3.3 : 3.6, 0),
-            },
-          ];
+          // Leafy canopy from overlapping faceted lobes (variants 0/2) or a
+          // stacked-cone conifer (variant 1); secondary lobes skip shadow
+          // casting since they sit inside the primary crown's shadow.
+          const leaf =
+            variant === 1 ? leaves[2] : variant === 2 ? leaves[1] : leaves[0];
+          const lobe = (
+            suffix: string,
+            radius: number,
+            offset: Vector3,
+            castShadow?: boolean,
+          ): PropPart => ({
+            master: masterIcoSphere(`${cacheKey}-${suffix}`, radius, leaf),
+            offset,
+            castShadow,
+          });
+          if (variant === 1) {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 1.5, diameter: 0.28 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 0.75, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t0`,
+                  { height: 2, diameterTop: 0, diameterBottom: 2.5 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 2.2, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t1`,
+                  { height: 1.7, diameterTop: 0, diameterBottom: 1.9 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 3.29, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t2`,
+                  { height: 1.3, diameterTop: 0, diameterBottom: 1.2 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 4.14, 0),
+              },
+            ];
+          } else if (variant === 2) {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 2.4, diameterTop: 0.24, diameterBottom: 0.35 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 1.2, 0),
+              },
+              lobe("c0", 1.4, new Vector3(0, 3.17, 0)),
+              lobe("c1", 1.05, new Vector3(0.59, 3.87, -0.25), false),
+            ];
+          } else {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 2, diameterTop: 0.27, diameterBottom: 0.39 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 1, 0),
+              },
+              lobe("c0", 1.7, new Vector3(0, 2.94, 0)),
+              lobe("c1", 1.15, new Vector3(0.71, 3.79, -0.31), false),
+              lobe("c2", 1, new Vector3(-0.77, 3.42, 0.51), false),
+            ];
+          }
           break;
         }
         case "streetlight":
@@ -5303,7 +5571,9 @@ class BabylonGameSession {
         instance.rotation.y = placement.rotationY;
         instance.scaling.setAll(placement.scale);
         instance.isPickable = false;
-        this.registerShadowCaster(instance, placement.x, placement.z);
+        if (part.castShadow !== false) {
+          this.registerShadowCaster(instance, placement.x, placement.z);
+        }
       }
     }
 
@@ -6557,23 +6827,22 @@ class BabylonGameSession {
       new Color3(0.35, 0.53, 0.59),
       new Color3(0.57, 0.43, 0.61),
     ];
+    const skylineEmissive = makeFacadeEmissiveTexture(scene);
+    const skylineMaterials = buildingColors.map((color, index) =>
+      makeFacadeMaterial(scene, `skyline-facade-${index}`, color, skylineEmissive),
+    );
     for (let index = 0; index < 24; index += 1) {
       const side = index % 2 === 0 ? -1 : 1;
       const z = -68 + Math.floor(index / 2) * 13;
       const height = 6 + ((index * 7) % 9);
-      const buildingMaterial = makeMaterial(
-        scene,
-        `building-material-${index}`,
-        buildingColors[index % buildingColors.length],
-      );
       const buildingX = side * (13 + (index % 3) * 2);
       this.registerShadowCaster(
-        createBox(
+        createFacadeBox(
           scene,
           `building-${index}`,
           { width: 8 + (index % 3), height, depth: 8 },
           new Vector3(buildingX, height / 2, z),
-          buildingMaterial,
+          skylineMaterials[index % skylineMaterials.length],
         ),
         buildingX,
         z,
@@ -6586,22 +6855,17 @@ class BabylonGameSession {
       const tree = new TransformNode(`tree-${index}`, scene);
       tree.position.set(side * 8.7, 0, z);
       this.registerShadowCaster(
-        createCylinder(scene, `trunk-${index}`, { height: 2.3, diameter: 0.38 }, new Vector3(0, 1.15, 0), trunk, tree),
+        createCylinder(scene, `trunk-${index}`, { height: 2, diameterTop: 0.27, diameterBottom: 0.39 }, new Vector3(0, 1, 0), trunk, tree),
         side * 8.7,
         z,
       );
       this.registerShadowCaster(
-        createCylinder(
-          scene,
-          `crown-${index}`,
-          { height: 3.4, diameterTop: 0, diameterBottom: 3.2, tessellation: 8 },
-          new Vector3(0, 3.4, 0),
-          leaves,
-          tree,
-        ),
+        createIcoSphere(scene, `crown-${index}`, 1.7, new Vector3(0, 2.94, 0), leaves, tree),
         side * 8.7,
         z,
       );
+      createIcoSphere(scene, `crown-b-${index}`, 1.15, new Vector3(0.71, 3.79, -0.31), leaves, tree);
+      createIcoSphere(scene, `crown-c-${index}`, 1, new Vector3(-0.77, 3.42, 0.51), leaves, tree);
     }
   }
 
