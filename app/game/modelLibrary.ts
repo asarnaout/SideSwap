@@ -19,10 +19,20 @@ import {
   LoadAssetContainerAsync,
   Scene,
 } from "@babylonjs/core";
-// Side-effect import: registers the glTF 2.0 loader so LoadAssetContainerAsync
-// can parse our .glb assets. We only author glTF 2.0, so avoid pulling in 1.0.
-import "@babylonjs/loaders/glTF/2.0";
+import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
 import type { VehicleModel } from "./vehicleVisuals";
+
+// Babylon 9 registers loaders as dynamic factories: the old
+// `import "@babylonjs/loaders/glTF/2.0"` side effect no longer registers a
+// plugin for LoadAssetContainerAsync (it silently returns no plugin, so every
+// load throws and the caller falls back to procedural geometry). Register
+// explicitly instead — once, lazily, on first preload.
+let loadersRegistered = false;
+function ensureLoadersRegistered(): void {
+  if (loadersRegistered) return;
+  registerBuiltInLoaders();
+  loadersRegistered = true;
+}
 
 const CONTAINERS_BY_SCENE = new WeakMap<Scene, Map<string, AssetContainer>>();
 
@@ -44,6 +54,7 @@ export async function preloadModels(
   scene: Scene,
   urls: readonly string[],
 ): Promise<void> {
+  ensureLoadersRegistered();
   const map = containersFor(scene);
   await Promise.all(
     [...new Set(urls)].map(async (url) => {
