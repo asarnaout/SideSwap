@@ -210,19 +210,25 @@ export function buildCyclistVisual(
   const root = new TransformNode(`${name}-cyclist`, scene);
   root.parent = parent;
 
-  bikeRoot.parent = root;
+  // Both glb roots carry a rotationQuaternion (glTF handedness), so `.rotation`
+  // on them is ignored — wrap each in a fresh node and rotate/place that.
+  const bikeWrap = new TransformNode(`${name}-bikewrap`, scene);
+  bikeWrap.parent = root;
+  bikeWrap.rotation.y = BICYCLE_MODEL.yawOffset;
+  bikeRoot.parent = bikeWrap;
   bikeRoot.scaling.setAll(BICYCLE_MODEL.scale);
-  bikeRoot.rotation.y = BICYCLE_MODEL.yawOffset;
-  const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeRoot, new Set(), clothing);
+  const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Set(), clothing);
 
-  riderRoot.parent = root;
+  const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
+  riderWrap.parent = root;
+  riderWrap.rotation.y = riderConfig.yawOffset;
+  riderWrap.position.set(0, 0.5, -0.12); // seated toward the saddle (tunable)
+  riderRoot.parent = riderWrap;
   riderRoot.scaling.setAll(riderConfig.scale);
-  riderRoot.rotation.y = riderConfig.yawOffset;
-  riderRoot.position.set(0, 0.5, -0.12); // lowered onto the saddle, toward the rear (tunable)
   const riderMaterials = convertMaterials(
     scene,
     `${name}-rider`,
-    riderRoot,
+    riderWrap,
     new Set(riderConfig.clothingMaterialNames),
     clothing,
   );

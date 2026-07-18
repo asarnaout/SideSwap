@@ -2752,7 +2752,9 @@ class BabylonGameSession {
           name,
           variant,
           clothingColor,
-          clamp(speed / 1.3, 0.4, 1),
+          // Match the walk cadence to ground speed to cut foot-sliding; the
+          // 1.4 divisor is the clip's natural m/s at speedRatio 1 (tunable).
+          clamp(speed / 1.4, 0.5, 1.6),
         );
     if (model) return model;
 
@@ -6818,7 +6820,7 @@ class BabylonGameSession {
     for (let index = 0; index < 4; index += 1) {
       const node = new TransformNode(`pedestrian-${index}`, scene);
       const clothingColor = clothes[index % clothes.length];
-      const speed = 0.7 + index * 0.08;
+      const speed = 1.2 + index * 0.12;
       const visual = this.buildRoadUserVisual(node, `yard-pedestrian-${index}`, false, index, clothingColor, speed);
       const z = index < 2 ? 4.5 : -10.5;
       const phase = index * 4.1;
@@ -6980,7 +6982,7 @@ class BabylonGameSession {
       const node = new TransformNode(`scenario-road-user-${index}`, scene);
       const variant = index;
       const clothingColor = trafficColors[(index + 1) % trafficColors.length];
-      const speed = isCyclist ? 2.2 + random() : 0.65 + random() * 0.25;
+      const speed = isCyclist ? 3 + random() : 1.2 + random() * 0.5;
       const visual = this.buildRoadUserVisual(
         node,
         `scenario-road-user-${index}`,
