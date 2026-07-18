@@ -1544,7 +1544,25 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("fr-player", "player", "fr-entry-south", 22),
         anchoredSpawn("fr-car-1", "vehicle", "fr-rb-s-e", 28),
         anchoredSpawn("fr-car-2", "vehicle", "fr-south-east", 59),
+        // Oncoming/cross traffic on every two-way road. Live NPC count stays
+        // capped by density (npcCount); these anchors only guarantee the player
+        // meets cars in both directions and vary the opening scene. All sit
+        // >=25 m from every checkpoint so stationary-safety staging is clean.
+        anchoredSpawn("fr-car-3", "vehicle", "fr-exit-north", 30),
+        anchoredSpawn("fr-car-4", "vehicle", "fr-entry-north", 50),
+        anchoredSpawn("fr-car-5", "vehicle", "fr-exit-east", 45),
+        anchoredSpawn("fr-car-6", "vehicle", "fr-entry-east", 40),
+        anchoredSpawn("fr-car-7", "vehicle", "fr-exit-west", 45),
+        anchoredSpawn("fr-car-8", "vehicle", "fr-entry-west", 50),
+        anchoredSpawn("fr-car-9", "vehicle", "fr-rb-w-s", 14),
+        anchoredSpawn("fr-car-10", "vehicle", "fr-rb-n-w", 20),
+        anchoredSpawn("fr-car-11", "vehicle", "fr-south-east-pass", 40),
+        anchoredSpawn("fr-car-12", "vehicle", "fr-east-south", 120),
+        anchoredSpawn("fr-car-13", "vehicle", "fr-north-west", 40),
         freeSpawn("fr-cyclist-1", "cyclist", -74, 80, 225, "fr-north-west"),
+        freeSpawn("fr-ped-1", "pedestrian", -95, 96, 180),
+        freeSpawn("fr-ped-2", "pedestrian", 112, -92, 270),
+        freeSpawn("fr-cyclist-2", "cyclist", -70, -70, 45),
       ],
       [
         checkpoint("fr-start", "Coquelles start", "fr-entry-south", 22),
