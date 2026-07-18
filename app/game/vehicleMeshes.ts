@@ -1,5 +1,6 @@
 import {
   Color3,
+  DynamicTexture,
   Mesh,
   MeshBuilder,
   PBRMaterial,
@@ -1133,6 +1134,53 @@ function modelHierarchyBounds(root: TransformNode): {
   return { min, max };
 }
 
+const BLOB_SHADOW_BY_SCENE = new WeakMap<Scene, StandardMaterial>();
+
+/**
+ * Shared soft radial-gradient "blob" shadow material, used to ground vehicles
+ * with a contact shadow directly beneath them. The dynamic sun shadow falls
+ * offset from the body at a low angle, which reads as "floating" from the
+ * top-down chase camera; the blob keeps the car grounded in every view. Cached
+ * once per scene (one texture + material shared by the whole fleet).
+ */
+function blobShadowMaterial(scene: Scene): StandardMaterial {
+  const existing = BLOB_SHADOW_BY_SCENE.get(scene);
+  if (existing) return existing;
+  const size = 128;
+  const texture = new DynamicTexture(
+    "contact-shadow-texture",
+    size,
+    scene,
+    false,
+  );
+  const context = texture.getContext();
+  const gradient = context.createRadialGradient(
+    size / 2,
+    size / 2,
+    size * 0.06,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  gradient.addColorStop(0, "rgba(0,0,0,0.5)");
+  gradient.addColorStop(0.55, "rgba(0,0,0,0.26)");
+  gradient.addColorStop(1, "rgba(0,0,0,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+  texture.hasAlpha = true;
+  texture.update();
+  const material = new StandardMaterial("contact-shadow-material", scene);
+  material.diffuseTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.diffuseColor = Color3.Black();
+  material.specularColor = Color3.Black();
+  material.emissiveColor = Color3.Black();
+  material.disableLighting = true;
+  material.backFaceCulling = false;
+  BLOB_SHADOW_BY_SCENE.set(scene, material);
+  return material;
+}
+
 /**
  * Builds a vehicle from a preloaded glb, honouring the same VehicleMeshVisual
  * contract as the procedural path. Returns null when no model is registered for
@@ -1198,42 +1246,29 @@ function buildModelVehicle(
     mesh.material = standard;
   }
 
-  // Synthesize the toggleable indicator + brake lamps the models omit, anchored
-  // to the model's own (pre-scale) body corners so they scale with it.
+  // Soft blob contact shadow directly under the car so it reads as grounded in
+  // the top-down chase view. Anchored in the model's own (pre-scale) space just
+  // above its lowest point, so it scales + moves with the car, sits on the road,
+  // and disposes with it.
   root.computeWorldMatrix(true);
   const bounds = modelHierarchyBounds(root);
-  const halfWidth = (bounds.max.x - bounds.min.x) / 2;
-  const frontZ = bounds.max.z;
-  const rearZ = bounds.min.z;
-  const lampY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.32;
-  const cache = materialsForScene(scene);
-  const makeLamp = (x: number, z: number, material: StandardMaterial): Mesh => {
-    const lamp = MeshBuilder.CreateBox(
-      `${name}-lamp`,
-      { width: 0.16, height: 0.13, depth: 0.1 },
-      scene,
-    );
-    lamp.material = material;
-    lamp.position.set(x, lampY, z);
-    lamp.parent = root;
-    lamp.isPickable = false;
-    lamp.setEnabled(false);
-    return lamp;
-  };
-  const leftX = -halfWidth * 0.82;
-  const rightX = halfWidth * 0.82;
-  const leftIndicators = [
-    makeLamp(leftX, frontZ * 0.9, cache.indicator),
-    makeLamp(leftX, rearZ * 0.92, cache.indicator),
-  ];
-  const rightIndicators = [
-    makeLamp(rightX, frontZ * 0.9, cache.indicator),
-    makeLamp(rightX, rearZ * 0.92, cache.indicator),
-  ];
-  const brakeLights = [
-    makeLamp(-halfWidth * 0.66, rearZ * 0.99, cache.brakeLamp),
-    makeLamp(halfWidth * 0.66, rearZ * 0.99, cache.brakeLamp),
-  ];
+  const contactShadow = MeshBuilder.CreateGround(
+    `${name}-contact-shadow`,
+    {
+      width: (bounds.max.x - bounds.min.x) * 1.18,
+      height: (bounds.max.z - bounds.min.z) * 1.12,
+    },
+    scene,
+  );
+  contactShadow.material = blobShadowMaterial(scene);
+  contactShadow.position.set(
+    (bounds.min.x + bounds.max.x) / 2,
+    bounds.min.y + 0.01,
+    (bounds.min.z + bounds.max.z) / 2,
+  );
+  contactShadow.parent = root;
+  contactShadow.isPickable = false;
+  contactShadow.receiveShadows = false;
 
   // Normalise scale, facing and ground contact (lowest point at LOCAL_GROUND_Y).
   root.scaling.setAll(config.scale);
@@ -1247,19 +1282,18 @@ function buildModelVehicle(
   return {
     root,
     shadowCasters,
-    leftIndicators,
-    rightIndicators,
-    brakeLights,
-    setSignal(signal, blinkOn) {
-      if (disposed) return;
-      const leftOn = signal === "left" && blinkOn;
-      const rightOn = signal === "right" && blinkOn;
-      for (const lamp of leftIndicators) lamp.setEnabled(leftOn);
-      for (const lamp of rightIndicators) lamp.setEnabled(rightOn);
+    leftIndicators: [],
+    rightIndicators: [],
+    brakeLights: [],
+    setSignal() {
+      // Imported models have no separate indicator geometry, and their single
+      // tail-lamp material can't blink one side; the player's signal state is
+      // shown in the HUD. (A later pass could add modelled corner blinkers.)
     },
     setBraking(active) {
       if (disposed) return;
-      for (const lamp of brakeLights) lamp.setEnabled(active);
+      // No toggleable brake mesh on the models — brighten their own tail-lamp
+      // material instead, which reads as real brake lights.
       for (const material of taillightMaterials) {
         material.emissiveColor = active ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
       }
