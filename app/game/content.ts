@@ -469,7 +469,14 @@ const intersectionSignal = (
     const headX = center.x + dirZ * 8 - dirX * 8;
     const headZ = center.z - dirX * 8 - dirZ * 8;
     approaches.push(approach(`${id}-${arm.laneId}-app`, arm.laneId, stopDistance, `${id}-${arm.phase}`, [zoneId]));
-    installations.push(installation(`${id}-${arm.laneId}-head`, headX, headZ, headingDeg, "mast_arm", "nyc_signal", "primary", [`${id}-${arm.laneId}-app`]));
+    // The pole stands at the back-right corner, offset to the right of the
+    // approach. Its mast arm has to reach back the other way — in over the
+    // carriageway — so the head hangs above the lane instead of out over the
+    // grass. The renderer extends the arm along `armHeadingDeg`, whose zero
+    // direction points the same way the pole is offset, so aim it opposite:
+    // headingDeg + 180.
+    const armHeadingDeg = headingDeg + 180;
+    installations.push(installation(`${id}-${arm.laneId}-head`, headX, headZ, headingDeg, "mast_arm", "nyc_signal", "primary", [`${id}-${arm.laneId}-app`], armHeadingDeg));
   }
   const half = 7;
   return {
