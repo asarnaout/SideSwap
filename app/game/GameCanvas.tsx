@@ -81,6 +81,12 @@ import {
   preloadModels,
   vehicleModelUrls,
 } from "./modelLibrary";
+import {
+  buildCyclistVisual,
+  buildPedestrianVisual,
+  characterModelUrls,
+  type CharacterVisual,
+} from "./characterMeshes";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -1123,6 +1129,11 @@ interface Pedestrian {
   heading?: number;
   span?: number;
   kind?: "pedestrian" | "cyclist";
+  /** Model (or procedural-fallback) visual under `node`; null before build. */
+  visual?: CharacterVisual | null;
+  /** Which character model + clothing, so it can rebuild on model upgrade. */
+  variant?: number;
+  clothingColor?: Color3;
 }
 
 interface AuthoredCheckpoint {
@@ -2672,12 +2683,16 @@ class BabylonGameSession {
    */
   private async preloadVehicleModels() {
     try {
-      await preloadModels(this.scene, vehicleModelUrls());
+      await preloadModels(this.scene, [
+        ...vehicleModelUrls(),
+        ...characterModelUrls(),
+      ]);
     } catch {
       return;
     }
     if (this.disposed) return;
     this.upgradeVehiclesToModels();
+    this.upgradeRoadUsersToModels();
   }
 
   /**
@@ -2711,6 +2726,71 @@ class BabylonGameSession {
           variant: npc.visualVariant,
           mapId,
         }),
+      );
+    }
+  }
+
+  /**
+   * Builds a pedestrian/cyclist visual under `node`: the imported character
+   * model when its glbs have loaded, else the procedural cylinder fallback
+   * (shown briefly during preload, or if the models fail to load).
+   */
+  private buildRoadUserVisual(
+    node: TransformNode,
+    name: string,
+    isCyclist: boolean,
+    variant: number,
+    clothingColor: Color3,
+    speed: number,
+  ): CharacterVisual {
+    const scene = this.scene;
+    const model = isCyclist
+      ? buildCyclistVisual(scene, node, name, variant, clothingColor)
+      : buildPedestrianVisual(
+          scene,
+          node,
+          name,
+          variant,
+          clothingColor,
+          // Match the walk cadence to ground speed to cut foot-sliding; the
+          // 1.4 divisor is the clip's natural m/s at speedRatio 1 (tunable).
+          clamp(speed / 1.4, 0.5, 1.6),
+        );
+    if (model) return model;
+
+    const root = new TransformNode(`${name}-proc`, scene);
+    root.parent = node;
+    const clothing = makeMaterial(scene, `${name}-clothing`, clothingColor);
+    const skin = makeMaterial(scene, `${name}-skin`, new Color3(0.71, 0.49, 0.36));
+    if (isCyclist) {
+      const tire = makeMaterial(scene, `${name}-tire`, new Color3(0.05, 0.05, 0.06));
+      createBox(scene, `${name}-frame`, { width: 0.18, height: 0.48, depth: 1.15 }, new Vector3(0, 0.63, 0), clothing, root);
+      for (const wheelZ of [-0.58, 0.58]) {
+        const wheel = createCylinder(scene, `${name}-wheel-${wheelZ}`, { height: 0.1, diameter: 0.66, tessellation: 12 }, new Vector3(0, 0.38, wheelZ), tire, root);
+        wheel.rotation.z = Math.PI / 2;
+      }
+      createCylinder(scene, `${name}-body`, { height: 0.78, diameterTop: 0.3, diameterBottom: 0.42 }, new Vector3(0, 1.08, 0), clothing, root);
+      createCylinder(scene, `${name}-head`, { height: 0.35, diameter: 0.34 }, new Vector3(0, 1.63, 0), skin, root);
+    } else {
+      createCylinder(scene, `${name}-body`, { height: 1.02, diameterTop: 0.34, diameterBottom: 0.48 }, new Vector3(0, 0.9, 0), clothing, root);
+      createCylinder(scene, `${name}-head`, { height: 0.4, diameter: 0.38 }, new Vector3(0, 1.59, 0), skin, root);
+    }
+    return { root, dispose: () => root.dispose(false, false) };
+  }
+
+  /** Once the character glbs preload, swap every road user from its procedural
+   * fallback onto its walking/riding model in place (keeps the node + pathing). */
+  private upgradeRoadUsersToModels() {
+    for (const pedestrian of this.pedestrians) {
+      if (pedestrian.variant === undefined || !pedestrian.clothingColor) continue;
+      pedestrian.visual?.dispose();
+      pedestrian.visual = this.buildRoadUserVisual(
+        pedestrian.node,
+        pedestrian.node.name,
+        pedestrian.kind === "cyclist",
+        pedestrian.variant,
+        pedestrian.clothingColor,
+        pedestrian.speed,
       );
     }
   }
@@ -3982,6 +4062,7 @@ class BabylonGameSession {
     for (const pedestrian of this.pedestrians) {
       pedestrian.phase = (pedestrian.phase + pedestrian.speed * dt) % 18;
       const progress = pedestrian.phase / 18;
+      pedestrian.visual?.advancePedals?.(pedestrian.speed * dt);
       if (pedestrian.origin && pedestrian.heading !== undefined) {
         const span = pedestrian.span ?? 16;
         const along = -span / 2 + progress * span;
@@ -6737,15 +6818,14 @@ class BabylonGameSession {
     }
 
     const clothes = [new Color3(0.83, 0.38, 0.22), new Color3(0.2, 0.45, 0.72), new Color3(0.68, 0.28, 0.62)];
-    const skin = makeMaterial(scene, "pedestrian-skin", new Color3(0.74, 0.52, 0.38));
     for (let index = 0; index < 4; index += 1) {
       const node = new TransformNode(`pedestrian-${index}`, scene);
-      const shirt = makeMaterial(scene, `pedestrian-shirt-${index}`, clothes[index % clothes.length]);
-      createCylinder(scene, `pedestrian-body-${index}`, { height: 1.05, diameterTop: 0.36, diameterBottom: 0.5 }, new Vector3(0, 0.92, 0), shirt, node);
-      createCylinder(scene, `pedestrian-head-${index}`, { height: 0.42, diameter: 0.4 }, new Vector3(0, 1.64, 0), skin, node);
+      const clothingColor = clothes[index % clothes.length];
+      const speed = 1.2 + index * 0.12;
+      const visual = this.buildRoadUserVisual(node, `yard-pedestrian-${index}`, false, index, clothingColor, speed);
       const z = index < 2 ? 4.5 : -10.5;
       const phase = index * 4.1;
-      this.pedestrians.push({ node, phase, speed: 0.7 + index * 0.08, z });
+      this.pedestrians.push({ node, phase, speed, z, visual, variant: index, clothingColor });
       node.position.set(-8 + (phase / 18) * 16, 0.08, z);
     }
   }
@@ -6771,7 +6851,6 @@ class BabylonGameSession {
       new Color3(0.38, 0.59, 0.38),
       new Color3(0.67, 0.68, 0.7),
     ];
-    const tireMaterial = makeMaterial(scene, "scenario-npc-tire", new Color3(0.02, 0.025, 0.025));
 
     for (let index = 0; index < count && usableLanes.length > 0; index += 1) {
       const spawn = vehicleSpawns[index % Math.max(1, vehicleSpawns.length)];
@@ -6889,7 +6968,6 @@ class BabylonGameSession {
     const crosswalks = mapPack.laneGraph.controls.filter(
       (control) => control.type === "crosswalk",
     );
-    const skin = makeMaterial(scene, "scenario-road-user-skin", new Color3(0.71, 0.49, 0.36));
     const roadUserCount = requestedPedestrians + requestedCyclists;
     for (let index = 0; index < roadUserCount; index += 1) {
       const isCyclist = index >= requestedPedestrians;
@@ -6903,35 +6981,32 @@ class BabylonGameSession {
           ? degreesToRadians(crosswalk.headingDeg + 90)
           : (index % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
       const node = new TransformNode(`scenario-road-user-${index}`, scene);
-      const clothing = makeMaterial(
-        scene,
-        `scenario-road-user-color-${index}`,
-        trafficColors[(index + 1) % trafficColors.length],
+      const variant = index;
+      const clothingColor = trafficColors[(index + 1) % trafficColors.length];
+      const speed = isCyclist ? 3 + random() : 1.2 + random() * 0.5;
+      const visual = this.buildRoadUserVisual(
+        node,
+        `scenario-road-user-${index}`,
+        isCyclist,
+        variant,
+        clothingColor,
+        speed,
       );
-      if (isCyclist) {
-        createBox(scene, `cyclist-frame-${index}`, { width: 0.18, height: 0.48, depth: 1.15 }, new Vector3(0, 0.63, 0), clothing, node);
-        for (const wheelZ of [-0.58, 0.58]) {
-          const wheel = createCylinder(scene, `cycle-wheel-${index}-${wheelZ}`, { height: 0.1, diameter: 0.66, tessellation: 12 }, new Vector3(0, 0.38, wheelZ), tireMaterial, node);
-          wheel.rotation.z = Math.PI / 2;
-        }
-        createCylinder(scene, `cyclist-body-${index}`, { height: 0.78, diameterTop: 0.3, diameterBottom: 0.42 }, new Vector3(0, 1.08, 0), clothing, node);
-        createCylinder(scene, `cyclist-head-${index}`, { height: 0.35, diameter: 0.34 }, new Vector3(0, 1.63, 0), skin, node);
-      } else {
-        createCylinder(scene, `pedestrian-body-${index}`, { height: 1.02, diameterTop: 0.34, diameterBottom: 0.48 }, new Vector3(0, 0.9, 0), clothing, node);
-        createCylinder(scene, `pedestrian-head-${index}`, { height: 0.4, diameter: 0.38 }, new Vector3(0, 1.59, 0), skin, node);
-      }
       const phase = random() * 18;
       node.position.set(source.x, 0.08, source.z);
       node.rotation.y = heading;
       this.pedestrians.push({
         node,
         phase,
-        speed: isCyclist ? 2.2 + random() : 0.65 + random() * 0.25,
+        speed,
         z: source.z,
         origin: { x: source.x, z: source.z },
         heading,
         span: isCyclist ? 34 : mapPack.geometry.roadWidth + 6,
         kind: isCyclist ? "cyclist" : "pedestrian",
+        visual,
+        variant,
+        clothingColor,
       });
     }
   }
