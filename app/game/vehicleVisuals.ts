@@ -62,7 +62,7 @@ const PASSENGER_STYLES: readonly PassengerVehicleStyle[] = [
 /** Contemporary factory paint colors with enough contrast against the road. */
 const PASSENGER_PAINTS = [
   "#f1f3f4", // pearl white
-  "#171c22", // obsidian
+  "#2b333c", // obsidian (lifted off near-black so it reads against the road)
   "#59616a", // graphite
   "#aeb7bf", // liquid silver
   "#183f6d", // midnight blue
@@ -250,7 +250,7 @@ export function resolveTrafficVehicleAppearance(
     return {
       model: "electric-taxi",
       role: "taxi",
-      paintHex: london ? "#10151a" : newYork ? "#f2bb24" : "#e9edef",
+      paintHex: london ? "#20262d" : newYork ? "#f2bb24" : "#e9edef",
       accentHex: london ? "#aeb8bf" : newYork ? "#202830" : "#276b78",
       dimensions: VEHICLE_DIMENSIONS["electric-taxi"],
     };

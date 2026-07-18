@@ -4170,7 +4170,9 @@ class BabylonGameSession {
     asphalt.diffuseTexture = createAsphaltTexture(
       scene,
       "scenario-asphalt-texture",
-      "#1b2125",
+      // Medium-dark grey (was near-black #1b2125) so dark/black vehicles read
+      // against the road instead of vanishing into it.
+      "#383d42",
       hashStringToSeed(`${mapId}-asphalt`),
     );
     const sharedSpace = makeMaterial(scene, "scenario-shared-space", Color3.White());
@@ -6347,7 +6349,7 @@ class BabylonGameSession {
     imageProcessing.contrast = 1.12;
     imageProcessing.exposure = 1.2;
     imageProcessing.vignetteEnabled = true;
-    imageProcessing.vignetteWeight = 1.25;
+    imageProcessing.vignetteWeight = 0.9;
     imageProcessing.vignetteColor = new Color4(0.03, 0.02, 0, 0);
     imageProcessing.vignetteBlendMode =
       ImageProcessingConfiguration.VIGNETTEMODE_MULTIPLY;
@@ -6382,8 +6384,8 @@ class BabylonGameSession {
     grass.diffuseTexture = yardGrassTexture;
     // Yard roads are stretched boxes whose 0..1 face UVs would smear a wear
     // texture across their full length; the yard keeps clean flat asphalt.
-    const asphalt = makeMaterial(scene, "asphalt", new Color3(0.12, 0.15, 0.17));
-    const paleAsphalt = makeMaterial(scene, "junction-asphalt", new Color3(0.15, 0.18, 0.19));
+    const asphalt = makeMaterial(scene, "asphalt", new Color3(0.21, 0.24, 0.26));
+    const paleAsphalt = makeMaterial(scene, "junction-asphalt", new Color3(0.25, 0.28, 0.3));
     const white = makeMaterial(scene, "road-white", new Color3(0.88, 0.87, 0.76));
     const yellow = makeMaterial(scene, "road-yellow", new Color3(0.96, 0.67, 0.13));
     const curb = makeMaterial(scene, "curb", new Color3(0.62, 0.64, 0.61));
