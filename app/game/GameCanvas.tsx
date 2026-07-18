@@ -22,6 +22,7 @@ import {
   TransformNode,
   UniversalCamera,
   Vector3,
+  Vector4,
   VertexData,
   Viewport,
 } from "@babylonjs/core";
@@ -2210,6 +2211,174 @@ function createIcoSphere(
   );
   mesh.position.copyFrom(position);
   mesh.parent = parent ?? null;
+  setMeshMaterial(mesh, material);
+  return mesh;
+}
+
+// --- Building facades ------------------------------------------------------
+// Boxes get windows from a tiled facade texture: one "tile" is a grid of window
+// cells, and each box repeats it via faceUV so window size stays roughly
+// constant regardless of building size. The wall colour is baked into a
+// per-palette diffuse texture (dark glass + warm lit panes); a single shared
+// emissive texture lights the same lit panes so cities glow at dusk.
+const FACADE_COLS = 4;
+const FACADE_ROWS = 6;
+const FACADE_WIN_W_M = 3;
+const FACADE_WIN_H_M = 3.2;
+const FACADE_TEX_W = 256;
+const FACADE_TEX_H = 384;
+
+interface FacadeCell {
+  readonly row: number;
+  readonly col: number;
+  readonly lit: boolean;
+  readonly shade: number;
+}
+
+function buildFacadeLayout(seed: number): readonly FacadeCell[] {
+  let state = seed >>> 0;
+  const rand = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const cells: FacadeCell[] = [];
+  for (let row = 0; row < FACADE_ROWS; row += 1) {
+    for (let col = 0; col < FACADE_COLS; col += 1) {
+      cells.push({
+        row,
+        col,
+        lit: rand() < 0.26,
+        shade: 40 + Math.floor(rand() * 26),
+      });
+    }
+  }
+  return cells;
+}
+
+// Fixed so every building's window grid + lit pattern is stable and the diffuse
+// and emissive tiles line up.
+const FACADE_LAYOUT = buildFacadeLayout(0x9e3779b1);
+
+function facadeColorHex(color: Color3): string {
+  const channel = (value: number) =>
+    Math.max(0, Math.min(255, Math.round(value * 255)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}`;
+}
+
+function facadeCellMetrics() {
+  const cellW = FACADE_TEX_W / FACADE_COLS;
+  const cellH = FACADE_TEX_H / FACADE_ROWS;
+  const marginX = cellW * 0.24;
+  const marginY = cellH * 0.2;
+  return { cellW, cellH, marginX, marginY, winW: cellW - marginX * 2, winH: cellH - marginY * 2 };
+}
+
+function makeFacadeEmissiveTexture(scene: Scene): DynamicTexture {
+  const texture = new DynamicTexture(
+    "facade-emissive",
+    { width: FACADE_TEX_W, height: FACADE_TEX_H },
+    scene,
+    true,
+  );
+  const ctx = textureContext(texture);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, FACADE_TEX_W, FACADE_TEX_H);
+  const { cellW, cellH, marginX, marginY, winW, winH } = facadeCellMetrics();
+  for (const cell of FACADE_LAYOUT) {
+    if (!cell.lit) continue;
+    ctx.fillStyle = "rgb(255,208,138)";
+    ctx.fillRect(cell.col * cellW + marginX, cell.row * cellH + marginY, winW, winH);
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
+}
+
+function makeFacadeDiffuseTexture(
+  scene: Scene,
+  name: string,
+  wallColor: Color3,
+): DynamicTexture {
+  const texture = new DynamicTexture(
+    name,
+    { width: FACADE_TEX_W, height: FACADE_TEX_H },
+    scene,
+    true,
+  );
+  const ctx = textureContext(texture);
+  ctx.fillStyle = facadeColorHex(wallColor);
+  ctx.fillRect(0, 0, FACADE_TEX_W, FACADE_TEX_H);
+  const { cellW, cellH, marginX, marginY, winW, winH } = facadeCellMetrics();
+  for (const cell of FACADE_LAYOUT) {
+    const x = cell.col * cellW + marginX;
+    const y = cell.row * cellH + marginY;
+    if (cell.lit) {
+      ctx.fillStyle = "#e8c684";
+    } else {
+      const s = cell.shade;
+      ctx.fillStyle = `rgb(${s},${s + 8},${s + 18})`;
+    }
+    ctx.fillRect(x, y, winW, winH);
+  }
+  texture.update();
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  return texture;
+}
+
+function facadeFaceUV(width: number, height: number, depth: number): Vector4[] {
+  // Whole window rows/cols sized in real-world metres, so windows stay a
+  // consistent size whether the building is short or a tower (the V/U ranges
+  // land on exact row/column boundaries, so no half-windows at the roofline).
+  const rows = Math.max(2, Math.round(height / FACADE_WIN_H_M));
+  const cols = (span: number) => Math.max(2, Math.round(span / FACADE_WIN_W_M));
+  const v = rows / FACADE_ROWS;
+  const faceUV: Vector4[] = [];
+  for (let i = 0; i < 6; i += 1) faceUV.push(new Vector4(0, 0, 0, 0));
+  faceUV[0] = new Vector4(0, 0, cols(width) / FACADE_COLS, v);
+  faceUV[1] = new Vector4(0, 0, cols(width) / FACADE_COLS, v);
+  faceUV[2] = new Vector4(0, 0, cols(depth) / FACADE_COLS, v);
+  faceUV[3] = new Vector4(0, 0, cols(depth) / FACADE_COLS, v);
+  faceUV[4] = new Vector4(0, 0, 0.02, 0.02);
+  faceUV[5] = new Vector4(0, 0, 0.02, 0.02);
+  return faceUV;
+}
+
+function makeFacadeMaterial(
+  scene: Scene,
+  name: string,
+  wallColor: Color3,
+  emissive: DynamicTexture,
+): StandardMaterial {
+  const material = new StandardMaterial(name, scene);
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.diffuseTexture = makeFacadeDiffuseTexture(scene, `${name}-diffuse`, wallColor);
+  material.emissiveTexture = emissive;
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.specularColor = new Color3(0.05, 0.05, 0.05);
+  return material;
+}
+
+function createFacadeBox(
+  scene: Scene,
+  name: string,
+  dimensions: { width: number; height: number; depth: number },
+  position: Vector3,
+  material: StandardMaterial,
+): Mesh {
+  const mesh = MeshBuilder.CreateBox(
+    name,
+    {
+      ...dimensions,
+      faceUV: facadeFaceUV(dimensions.width, dimensions.height, dimensions.depth),
+      wrap: true,
+    },
+    scene,
+  );
+  mesh.position.copyFrom(position);
   setMeshMaterial(mesh, material);
   return mesh;
 }
@@ -4483,9 +4652,24 @@ class BabylonGameSession {
       "london-brick": new Color3(0.49, 0.32, 0.27),
       "white-stucco": new Color3(0.82, 0.81, 0.75),
     };
+    const facadeEmissive = makeFacadeEmissiveTexture(scene);
+    const facadeMaterials = new Map<string, StandardMaterial>();
+    const facadeMaterialFor = (materialKey: string): StandardMaterial => {
+      const cached = facadeMaterials.get(materialKey);
+      if (cached) return cached;
+      const wallColor =
+        buildingPalette[materialKey] ?? new Color3(0.56, 0.5, 0.43);
+      const created = makeFacadeMaterial(
+        scene,
+        `facade-${materialKey}`,
+        wallColor,
+        facadeEmissive,
+      );
+      facadeMaterials.set(materialKey, created);
+      return created;
+    };
     for (const block of mapPack.geometry.blocks) {
-      const baseColor = buildingPalette[block.material] ?? new Color3(0.56, 0.5, 0.43);
-      const material = makeMaterial(scene, `block-${block.id}`, baseColor);
+      const material = facadeMaterialFor(block.material);
       const isLondonMuseumBlock =
         mapId.includes("london") && block.material.endsWith("-museum");
       if (isLondonMuseumBlock) {
@@ -4494,7 +4678,7 @@ class BabylonGameSession {
         for (const side of [-1, 1]) {
           const wingX = block.center.x + side * block.size.x * 0.37;
           this.registerShadowCaster(
-            createBox(
+            createFacadeBox(
               scene,
               `building-${block.id}-wing-${side}`,
               { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
@@ -4521,7 +4705,7 @@ class BabylonGameSession {
         const x = block.center.x - block.size.x / 2 + cellWidth * (column + 0.5);
         const z = block.center.z - block.size.z / 2 + cellDepth * (row + 0.5);
         this.registerShadowCaster(
-          createBox(
+          createFacadeBox(
             scene,
             `building-${block.id}-${index}`,
             { width, height, depth },
@@ -6639,23 +6823,22 @@ class BabylonGameSession {
       new Color3(0.35, 0.53, 0.59),
       new Color3(0.57, 0.43, 0.61),
     ];
+    const skylineEmissive = makeFacadeEmissiveTexture(scene);
+    const skylineMaterials = buildingColors.map((color, index) =>
+      makeFacadeMaterial(scene, `skyline-facade-${index}`, color, skylineEmissive),
+    );
     for (let index = 0; index < 24; index += 1) {
       const side = index % 2 === 0 ? -1 : 1;
       const z = -68 + Math.floor(index / 2) * 13;
       const height = 6 + ((index * 7) % 9);
-      const buildingMaterial = makeMaterial(
-        scene,
-        `building-material-${index}`,
-        buildingColors[index % buildingColors.length],
-      );
       const buildingX = side * (13 + (index % 3) * 2);
       this.registerShadowCaster(
-        createBox(
+        createFacadeBox(
           scene,
           `building-${index}`,
           { width: 8 + (index % 3), height, depth: 8 },
           new Vector3(buildingX, height / 2, z),
-          buildingMaterial,
+          skylineMaterials[index % skylineMaterials.length],
         ),
         buildingX,
         z,
