@@ -4794,13 +4794,17 @@ class BabylonGameSession {
           material,
         );
       } else {
+        // Station / terminal / other building-like landmarks: give them the
+        // same windowed facade as regular buildings, in their landmark colour,
+        // so they read as buildings rather than featureless blocks beside the
+        // now-windowed skyline.
         const height = landmark.kind === "terminal" ? 8 : 5;
-        createBox(
+        createFacadeBox(
           scene,
           landmark.id,
           { width: landmark.size.x, height, depth: landmark.size.z },
           new Vector3(landmark.center.x, height / 2, landmark.center.z),
-          material,
+          makeFacadeMaterial(scene, `landmark-facade-${landmark.id}`, color, facadeEmissive),
         );
       }
     }
