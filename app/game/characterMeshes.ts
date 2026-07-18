@@ -42,13 +42,14 @@ const C = "/models/characters";
 /** CC0 Quaternius "Animated Men" — one shared HumanArmature rig, flat baseColor
  * materials (easy recolour), each with a Man_Walk clip. */
 export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
-  { url: `${C}/person-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: 0, walkClip: "Walk" },
-  { url: `${C}/person-b.glb`, clothingMaterialNames: ["Shirt", "Shirt2", "Pants"], scale: 0.374, yawOffset: 0, walkClip: "Walk" },
-  { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], scale: 0.374, yawOffset: 0, walkClip: "Walk" },
+  { url: `${C}/person-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-b.glb`, clothingMaterialNames: ["Shirt", "Shirt2", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
 ];
 
-/** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge. */
-const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: 0 } as const;
+/** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
+ * facing +X (tires along X), so it yaws -90° to point down SideSwap's +Z. */
+const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: -Math.PI / 2 } as const;
 
 export function characterModelUrls(): string[] {
   return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
@@ -217,7 +218,7 @@ export function buildCyclistVisual(
   riderRoot.parent = root;
   riderRoot.scaling.setAll(riderConfig.scale);
   riderRoot.rotation.y = riderConfig.yawOffset;
-  riderRoot.position.y = 0.92; // seat height (tunable)
+  riderRoot.position.set(0, 0.5, -0.12); // lowered onto the saddle, toward the rear (tunable)
   const riderMaterials = convertMaterials(
     scene,
     `${name}-rider`,
