@@ -184,8 +184,9 @@ const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
 const PLAYER_APPEARANCE: VehicleAppearance = {
   model: "electric-fastback",
   role: "player",
-  paintHex: "#18a5d1",
-  accentHex: "#082c3a",
+  // Premium royal-blue flagship — retires the old radioactive cyan.
+  paintHex: "#1b4f8f",
+  accentHex: "#0d2436",
   dimensions: VEHICLE_DIMENSIONS["electric-fastback"],
 };
 

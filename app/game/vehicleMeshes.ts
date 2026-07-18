@@ -1,16 +1,26 @@
 import {
   Color3,
   Mesh,
+  MeshBuilder,
+  PBRMaterial,
   Scene,
   StandardMaterial,
   TransformNode,
+  Vector3,
   VertexData,
 } from "@babylonjs/core";
+import type { Material } from "@babylonjs/core";
 import type {
   VehicleAppearance,
   VehicleDimensions,
   VehicleModel,
 } from "./vehicleVisuals";
+import {
+  instantiateModel,
+  isModelReady,
+  VEHICLE_MODEL_REGISTRY,
+  type VehicleModelConfig,
+} from "./modelLibrary";
 
 /** Signals are expressed in vehicle space: -X is left and +X is right. */
 export type VehicleMeshSignal = "left" | "right" | "off";
@@ -1087,10 +1097,192 @@ function buildBus(
   };
 }
 
+// Emissive glow for the small toggleable lamps the imported models lack, plus a
+// resting/braking tail tint so brakes actually read on a modelled car.
+const MODEL_TAIL_GLOW = new Color3(0.32, 0.03, 0.02);
+const MODEL_BRAKE_GLOW = new Color3(0.95, 0.06, 0.03);
+const MODEL_HEAD_GLOW = new Color3(0.5, 0.46, 0.3);
+
+function readAlbedo(material: Material): Color3 {
+  if (material instanceof PBRMaterial) return material.albedoColor;
+  if (material instanceof StandardMaterial) return material.diffuseColor;
+  return Color3.White();
+}
+
+function readAlbedoTexture(material: Material) {
+  if (material instanceof PBRMaterial) return material.albedoTexture;
+  if (material instanceof StandardMaterial) return material.diffuseTexture;
+  return null;
+}
+
+/** World-space AABB of every mesh under a node (root is at the origin here, so
+ * world extents equal local extents). Avoids relying on a hierarchy-bounds
+ * helper that TransformNode may not expose. */
+function modelHierarchyBounds(root: TransformNode): {
+  min: Vector3;
+  max: Vector3;
+} {
+  const min = new Vector3(Infinity, Infinity, Infinity);
+  const max = new Vector3(-Infinity, -Infinity, -Infinity);
+  for (const mesh of root.getChildMeshes(false)) {
+    mesh.computeWorldMatrix(true);
+    const box = mesh.getBoundingInfo().boundingBox;
+    min.minimizeInPlace(box.minimumWorld);
+    max.maximizeInPlace(box.maximumWorld);
+  }
+  return { min, max };
+}
+
+/**
+ * Builds a vehicle from a preloaded glb, honouring the same VehicleMeshVisual
+ * contract as the procedural path. Returns null when no model is registered for
+ * this appearance or its container has not loaded, so the caller falls back to
+ * procedural geometry.
+ *
+ * Flow: instantiate independent clones -> convert each glTF material to a
+ * scene-consistent StandardMaterial (recolouring the body to the paint colour,
+ * giving head/tail lamps a gentle glow) -> synthesize the small toggleable
+ * indicator + brake lamps the models omit -> normalise scale, facing and ground
+ * contact so the model sits like the procedural cars it replaces.
+ */
+function buildModelVehicle(
+  scene: Scene,
+  parent: TransformNode,
+  name: string,
+  appearance: VehicleAppearance,
+): VehicleMeshVisual | null {
+  const config: VehicleModelConfig | undefined =
+    VEHICLE_MODEL_REGISTRY[appearance.model];
+  if (!config || !isModelReady(scene, config.url)) return null;
+  const instance = instantiateModel(scene, config.url);
+  const modelRoot = instance?.rootNodes[0];
+  if (!modelRoot) return null;
+
+  const root = new TransformNode(`${name}-model-root`, scene);
+  modelRoot.parent = root;
+
+  const paint = parseColor(appearance.paintHex, "#c9ccce");
+  const bodyNames = new Set(config.bodyMaterialNames);
+  const converted = new Map<Material, StandardMaterial>();
+  const ownedMaterials: StandardMaterial[] = [];
+  const taillightMaterials: StandardMaterial[] = [];
+  const shadowCasters: Mesh[] = [];
+
+  for (const mesh of root.getChildMeshes(false)) {
+    if (!/wheel/i.test(mesh.name) && mesh instanceof Mesh) {
+      shadowCasters.push(mesh);
+    }
+    const source = mesh.material;
+    if (!source) continue;
+    let standard = converted.get(source);
+    if (!standard) {
+      standard = new StandardMaterial(`${name}-${source.name}`, scene);
+      const texture = readAlbedoTexture(source);
+      if (texture) standard.diffuseTexture = texture;
+      standard.diffuseColor = bodyNames.has(source.name)
+        ? paint
+        : texture
+          ? Color3.White()
+          : readAlbedo(source).clone();
+      standard.specularColor = new Color3(0.16, 0.16, 0.16);
+      standard.specularPower = 44;
+      if (/headlight/i.test(source.name)) {
+        standard.emissiveColor = MODEL_HEAD_GLOW;
+      } else if (/taillight/i.test(source.name)) {
+        standard.emissiveColor = MODEL_TAIL_GLOW;
+        taillightMaterials.push(standard);
+      }
+      converted.set(source, standard);
+      ownedMaterials.push(standard);
+    }
+    mesh.material = standard;
+  }
+
+  // Synthesize the toggleable indicator + brake lamps the models omit, anchored
+  // to the model's own (pre-scale) body corners so they scale with it.
+  root.computeWorldMatrix(true);
+  const bounds = modelHierarchyBounds(root);
+  const halfWidth = (bounds.max.x - bounds.min.x) / 2;
+  const frontZ = bounds.max.z;
+  const rearZ = bounds.min.z;
+  const lampY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.32;
+  const cache = materialsForScene(scene);
+  const makeLamp = (x: number, z: number, material: StandardMaterial): Mesh => {
+    const lamp = MeshBuilder.CreateBox(
+      `${name}-lamp`,
+      { width: 0.16, height: 0.13, depth: 0.1 },
+      scene,
+    );
+    lamp.material = material;
+    lamp.position.set(x, lampY, z);
+    lamp.parent = root;
+    lamp.isPickable = false;
+    lamp.setEnabled(false);
+    return lamp;
+  };
+  const leftX = -halfWidth * 0.82;
+  const rightX = halfWidth * 0.82;
+  const leftIndicators = [
+    makeLamp(leftX, frontZ * 0.9, cache.indicator),
+    makeLamp(leftX, rearZ * 0.92, cache.indicator),
+  ];
+  const rightIndicators = [
+    makeLamp(rightX, frontZ * 0.9, cache.indicator),
+    makeLamp(rightX, rearZ * 0.92, cache.indicator),
+  ];
+  const brakeLights = [
+    makeLamp(-halfWidth * 0.66, rearZ * 0.99, cache.brakeLamp),
+    makeLamp(halfWidth * 0.66, rearZ * 0.99, cache.brakeLamp),
+  ];
+
+  // Normalise scale, facing and ground contact (lowest point at LOCAL_GROUND_Y).
+  root.scaling.setAll(config.scale);
+  root.rotation.y = config.yawOffset;
+  root.computeWorldMatrix(true);
+  const scaled = modelHierarchyBounds(root);
+  root.position.y = LOCAL_GROUND_Y - scaled.min.y;
+  root.parent = parent;
+
+  let disposed = false;
+  return {
+    root,
+    shadowCasters,
+    leftIndicators,
+    rightIndicators,
+    brakeLights,
+    setSignal(signal, blinkOn) {
+      if (disposed) return;
+      const leftOn = signal === "left" && blinkOn;
+      const rightOn = signal === "right" && blinkOn;
+      for (const lamp of leftIndicators) lamp.setEnabled(leftOn);
+      for (const lamp of rightIndicators) lamp.setEnabled(rightOn);
+    },
+    setBraking(active) {
+      if (disposed) return;
+      for (const lamp of brakeLights) lamp.setEnabled(active);
+      for (const material of taillightMaterials) {
+        material.emissiveColor = active ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
+      }
+    },
+    setDetailVisible() {
+      // Imported low-poly models carry no removable trim, so nothing to cull.
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      // Keep the shared source materials/textures (owned by the container);
+      // dispose only this instance's geometry and the materials we created.
+      root.dispose(false, false);
+      for (const material of ownedMaterials) material.dispose(true, false);
+    },
+  };
+}
+
 /**
  * Builds one contemporary procedural vehicle. Geometry is expressed in local
  * metres with FRONT at +Z and the returned root at Y=0; the caller owns world
- * placement and heading.
+ * placement and heading. Used as the fallback when the imported model for this
+ * appearance has not loaded (or none is registered for it).
  */
 export function createVehicleMesh(
   scene: Scene,
@@ -1098,6 +1290,8 @@ export function createVehicleMesh(
   name: string,
   appearance: VehicleAppearance,
 ): VehicleMeshVisual {
+  const modelVisual = buildModelVehicle(scene, parent, name, appearance);
+  if (modelVisual) return modelVisual;
   const root = new TransformNode(`${name}-visual-root`, scene);
   root.parent = parent;
   const cache = materialsForScene(scene);
