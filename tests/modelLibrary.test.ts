@@ -84,4 +84,13 @@ describe("character model assets", () => {
     scene.dispose();
     engine.dispose();
   });
+
+  // Self-contained cyclist (rider + bike). Uses KHR_mesh_quantization, so this
+  // also guards that the loader dequantizes it.
+  it("loads the self-contained cyclist model", async () => {
+    const { container, scene, engine } = await load("cyclist.glb");
+    expect(container.meshes.length).toBeGreaterThan(0);
+    scene.dispose();
+    engine.dispose();
+  });
 });
