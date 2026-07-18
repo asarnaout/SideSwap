@@ -208,6 +208,12 @@ const DESTINATION_PREVIEW_IMAGES: Record<DestinationId, string> = {
   "jp-tokyo": "/landing/tokyo.webp",
 };
 
+// Horizontal focus for the cover-cropped preview. Defaults to centre; Calais is
+// nudged right so the lighthouse on the image's right edge stays in frame.
+const DESTINATION_PREVIEW_FOCUS: Partial<Record<DestinationId, string>> = {
+  "fr-calais": "64% center",
+};
+
 const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
   scenarioId.startsWith("free-");
 
@@ -837,6 +843,7 @@ export default function SideSwapApp() {
             <img
               className="launcher-photo"
               src={DESTINATION_PREVIEW_IMAGES[destination.id]}
+              style={{ objectPosition: DESTINATION_PREVIEW_FOCUS[destination.id] }}
               alt=""
               aria-hidden="true"
               draggable={false}
