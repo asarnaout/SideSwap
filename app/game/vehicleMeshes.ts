@@ -1119,7 +1119,7 @@ export function readAlbedoTexture(material: Material) {
 /** World-space AABB of every mesh under a node (root is at the origin here, so
  * world extents equal local extents). Avoids relying on a hierarchy-bounds
  * helper that TransformNode may not expose. */
-export function modelHierarchyBounds(root: TransformNode): {
+function modelHierarchyBounds(root: TransformNode): {
   min: Vector3;
   max: Vector3;
 } {

@@ -17,7 +17,6 @@ import {
 import { instantiateModel, isModelReady } from "./modelLibrary";
 import {
   blobShadowMaterial,
-  modelHierarchyBounds,
   readAlbedo,
   readAlbedoTexture,
 } from "./vehicleMeshes";
@@ -48,13 +47,12 @@ export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
   { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
 ];
 
-/** CC-BY "Carl out for a cruise" self-contained cyclist (rider + bike posed
- * correctly — hands on bars, feet on pedals), by Matt Connors; credited in
- * CREDITS.md. Authored near real-world scale. */
-const CYCLIST_MODEL = { url: `${C}/cyclist.glb`, scale: 1.15, yawOffset: 0 } as const;
+/** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
+ * facing +X (tires along X), so it yaws -90° to point down SideSwap's +Z. */
+const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: -Math.PI / 2 } as const;
 
 export function characterModelUrls(): string[] {
-  return [...CHARACTER_MODELS.map((config) => config.url), CYCLIST_MODEL.url];
+  return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
 }
 
 /**
@@ -183,9 +181,10 @@ export function buildPedestrianVisual(
 }
 
 /**
- * A cyclist built from the self-contained, correctly-posed "Carl" model (rider +
- * bike together — hands on the bars, feet on the pedals, leaning forward). Static
- * (no pedalling clip). Returns null when the model has not loaded.
+ * A cyclist: the bicycle prop with a rider seated on it. The rider plays the
+ * Sitting clip (no dedicated cycling clip ships CC0), so the pose is an
+ * approximation — recognisably a person on a bike, a big step up from the
+ * box+cylinder cyclist. Seat height/lean are tunable constants.
  */
 export function buildCyclistVisual(
   scene: Scene,
@@ -194,33 +193,48 @@ export function buildCyclistVisual(
   variant: number,
   clothing: Color3,
 ): CharacterVisual | null {
-  void variant; // one shared cyclist model; no per-instance variety yet
-  if (!isModelReady(scene, CYCLIST_MODEL.url)) return null;
-  const instance = instantiateModel(scene, CYCLIST_MODEL.url);
-  const modelRoot = instance?.rootNodes[0] as TransformNode | undefined;
-  if (!instance || !modelRoot) return null;
+  const riderConfig = CHARACTER_MODELS[Math.abs(variant) % CHARACTER_MODELS.length];
+  if (!isModelReady(scene, BICYCLE_MODEL.url) || !isModelReady(scene, riderConfig.url)) {
+    return null;
+  }
+  const bikeInstance = instantiateModel(scene, BICYCLE_MODEL.url);
+  const riderInstance = instantiateModel(scene, riderConfig.url);
+  const bikeRoot = bikeInstance?.rootNodes[0] as TransformNode | undefined;
+  const riderRoot = riderInstance?.rootNodes[0] as TransformNode | undefined;
+  if (!bikeInstance || !riderInstance || !bikeRoot || !riderRoot) {
+    bikeInstance?.rootNodes[0]?.dispose();
+    riderInstance?.rootNodes[0]?.dispose();
+    return null;
+  }
 
   const root = new TransformNode(`${name}-cyclist`, scene);
-  root.rotation.y = CYCLIST_MODEL.yawOffset;
-  modelRoot.parent = root;
-  modelRoot.scaling.setAll(CYCLIST_MODEL.scale);
-  const owned = convertMaterials(scene, name, root, new Set(), clothing);
-
-  // Ground the wheels to the road, then park the blob shadow under them.
-  root.computeWorldMatrix(true);
-  const bounds = modelHierarchyBounds(root);
-  root.position.y = -bounds.min.y;
   root.parent = parent;
-  const blob = MeshBuilder.CreateGround(
-    `${name}-shadow`,
-    { width: 0.8, height: 1.7 },
+
+  // Both glb roots carry a rotationQuaternion (glTF handedness), so `.rotation`
+  // on them is ignored — wrap each in a fresh node and rotate/place that.
+  const bikeWrap = new TransformNode(`${name}-bikewrap`, scene);
+  bikeWrap.parent = root;
+  bikeWrap.rotation.y = BICYCLE_MODEL.yawOffset;
+  bikeRoot.parent = bikeWrap;
+  bikeRoot.scaling.setAll(BICYCLE_MODEL.scale);
+  const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Set(), clothing);
+
+  const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
+  riderWrap.parent = root;
+  riderWrap.rotation.y = riderConfig.yawOffset;
+  riderWrap.position.set(0, 0.5, -0.12); // seated toward the saddle (tunable)
+  riderRoot.parent = riderWrap;
+  riderRoot.scaling.setAll(riderConfig.scale);
+  const riderMaterials = convertMaterials(
     scene,
+    `${name}-rider`,
+    riderWrap,
+    new Set(riderConfig.clothingMaterialNames),
+    clothing,
   );
-  blob.material = blobShadowMaterial(scene);
-  blob.parent = root;
-  blob.position.y = bounds.min.y + 0.01;
-  blob.isPickable = false;
-  blob.receiveShadows = false;
+  const sit = playClip(riderInstance.animationGroups, "Sitting", 1);
+
+  addContactShadow(scene, name, root, 0.7, 1.7);
 
   let disposed = false;
   return {
@@ -228,8 +242,11 @@ export function buildCyclistVisual(
     dispose() {
       if (disposed) return;
       disposed = true;
+      sit?.dispose();
       root.dispose(false, false);
-      for (const material of owned) material.dispose(true, false);
+      for (const material of [...bikeMaterials, ...riderMaterials]) {
+        material.dispose(true, false);
+      }
     },
   };
 }
