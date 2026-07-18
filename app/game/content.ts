@@ -1095,6 +1095,7 @@ const frNodes = {
   so: node("fr-so", 0, -118),
   wo: node("fr-wo", -138, 0),
   se: node("fr-se", 92, -82),
+  wgo: node("fr-wgo", -300, 0),
 };
 
 const frLanes: readonly LaneSegment[] = [
@@ -1111,11 +1112,16 @@ const frLanes: readonly LaneSegment[] = [
   laneTrue("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry", [point(1.7, -76)], ["fr-exit-south"]),
   laneTrue("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [point(-1.7, -76)], ["fr-entry-south"]),
   laneTrue("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry", [point(-86, -1.7)], ["fr-exit-west"]),
-  laneTrue("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
+  laneTrue("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west", "fr-westgrid-out"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
   laneTrue("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(0.5, -119.7), point(53, -100.7), point(94, -80.7), point(139.25, -1.25)], ["fr-south-east-pass"]),
   laneTrue("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(-0.5, -116.3), point(53, -97.3), point(94, -77.3), point(136.25, 0.4)], ["fr-south-east"]),
   laneTrue("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(136.5, -0.95), point(148.31, -42.18), point(148.49, -109.21), point(103.74, -128.32), point(20.2, -128.31), point(1.3, -116.8)]),
   laneTrue("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-1.23, 119.27), point(-81.1, 77.3), point(-139.05, 1.43)]),
+  // Westbound local-road stub off the roundabout's west arm that turns back at
+  // the Coquelles end the same way fr-exit-west already turns at fr-wo. Gives
+  // right-side free-drive somewhere new to roam west, with oncoming traffic.
+  laneTrue("fr-westgrid-out", frNodes.wo, frNodes.wgo, "right", 50, ["fr-westgrid-in"], "travel", [point(-219, 1.7)], ["fr-westgrid-in"], "fr-westgrid", 3.2),
+  laneTrue("fr-westgrid-in", frNodes.wgo, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-219, -1.7)], ["fr-westgrid-out"], "fr-westgrid", 3.2),
 ];
 
 const jpNodes = {
@@ -1494,7 +1500,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:calais-coquelles-2026-07-10",
     ),
     geometry: {
-      worldSize: point(310, 270),
+      worldSize: point(680, 300),
       roadWidth: 9,
       shoulderWidth: 2,
       roadSurfaces: [
@@ -1506,6 +1512,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("fr-south-east-road", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], 7.4, ["fr-south-east", "fr-south-east-pass"], "standard", [roadMarking("fr-south-east-divider", "lane_dashed", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], "white")]),
         roadSurface("fr-east-south-road", [frNodes.eo.position, point(150, -42), point(150, -110), point(104, -130), point(20, -130), frNodes.so.position], 7.2, ["fr-east-south"]),
         roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
+        roadSurface("fr-westgrid", [frNodes.wo.position, frNodes.wgo.position], 7.2, ["fr-westgrid-out", "fr-westgrid-in"], "standard", [roadMarking("fr-westgrid-centre", "centre_dashed", [frNodes.wo.position, frNodes.wgo.position], "white")]),
       ],
       blocks: [
         // Keep compact scenery beside the two curved links; neither block may
@@ -1516,6 +1523,8 @@ export const MAP_PACKS: readonly MapPack[] = [
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
         { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#6d914f" },
+        { id: "fr-commercial-parade", kind: "shops", center: point(124, -106), size: point(24, 14), color: "#b6803f" },
+        { id: "fr-parkway-green", kind: "park", center: point(55, 75), size: point(34, 26), color: "#5f9a4e" },
       ],
     },
     laneGraph: graph(
@@ -1559,6 +1568,8 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("fr-car-11", "vehicle", "fr-south-east-pass", 40),
         anchoredSpawn("fr-car-12", "vehicle", "fr-east-south", 120),
         anchoredSpawn("fr-car-13", "vehicle", "fr-north-west", 40),
+        anchoredSpawn("fr-car-14", "vehicle", "fr-westgrid-in", 85),
+        anchoredSpawn("fr-car-15", "vehicle", "fr-westgrid-out", 100),
         freeSpawn("fr-cyclist-1", "cyclist", -74, 80, 225, "fr-north-west"),
         freeSpawn("fr-ped-1", "pedestrian", -95, 96, 180),
         freeSpawn("fr-ped-2", "pedestrian", 112, -92, 270),
