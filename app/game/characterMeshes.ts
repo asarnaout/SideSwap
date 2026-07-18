@@ -7,12 +7,15 @@
  */
 import {
   AnimationGroup,
+  Axis,
   Color3,
   type Material,
   MeshBuilder,
+  Quaternion,
   Scene,
   StandardMaterial,
   TransformNode,
+  Vector3,
 } from "@babylonjs/core";
 import { instantiateModel, isModelReady } from "./modelLibrary";
 import {
@@ -23,6 +26,8 @@ import {
 
 export interface CharacterVisual {
   readonly root: TransformNode;
+  /** Advances the cyclist's pedal cycle by a ground distance (cyclists only). */
+  advancePedals?(distanceMeters: number): void;
   dispose(): void;
 }
 
@@ -180,11 +185,64 @@ export function buildPedestrianVisual(
   };
 }
 
+/** Pedal radians advanced per metre the cyclist travels. */
+const PEDAL_RATE = 2.2;
+
 /**
- * A cyclist: the bicycle prop with a rider seated on it. The rider plays the
- * Sitting clip (no dedicated cycling clip ships CC0), so the pose is an
- * approximation — recognisably a person on a bike, a big step up from the
- * box+cylinder cyclist. Seat height/lean are tunable constants.
+ * Poses a rider's HumanArmature skeleton into a cycling posture (seated, hands
+ * forward on the bars, torso leaned) and returns `update(phase)` to pedal the
+ * legs. The bone rotations were dialled in against real renders of this rig; the
+ * legs oscillate on their local X axis, arms swing forward on Z. Bones are named
+ * "Clone of <bone>" after instantiation.
+ */
+function setupCyclistPose(riderRoot: TransformNode): (phase: number) => void {
+  const bones: Record<string, TransformNode> = {};
+  for (const node of riderRoot.getChildTransformNodes(false)) {
+    bones[node.name.replace(/^Clone of /, "")] = node;
+  }
+  const restQ: Record<string, Quaternion> = {};
+  for (const name of [
+    "UpperLeg.L", "UpperLeg.R", "LowerLeg.L", "LowerLeg.R",
+    "UpperArm.L", "UpperArm.R", "LowerArm.L", "LowerArm.R", "Abdomen",
+  ]) {
+    const node = bones[name];
+    if (!node) continue;
+    if (!node.rotationQuaternion) {
+      node.rotationQuaternion = Quaternion.FromEulerVector(node.rotation);
+    }
+    restQ[name] = node.rotationQuaternion.clone();
+  }
+  const set = (name: string, axis: Vector3, angle: number): void => {
+    const node = bones[name];
+    const rest = restQ[name];
+    if (!node || !rest) return;
+    node.rotationQuaternion = rest.multiply(Quaternion.RotationAxis(axis, angle));
+  };
+  const applyStatic = (): void => {
+    set("UpperArm.L", Axis.Z, -1.5);
+    set("UpperArm.R", Axis.Z, 1.5);
+    set("LowerArm.L", Axis.X, -0.15);
+    set("LowerArm.R", Axis.X, -0.15);
+    set("Abdomen", Axis.X, 0.55);
+  };
+  const leg = (side: "L" | "R", phase: number): void => {
+    set(`UpperLeg.${side}`, Axis.X, 1.0 + 0.32 * Math.sin(phase));
+    set(`LowerLeg.${side}`, Axis.X, -1.4 + 0.5 * Math.sin(phase - 0.7));
+  };
+  const update = (phase: number): void => {
+    applyStatic();
+    leg("L", phase);
+    leg("R", phase + Math.PI);
+  };
+  update(0);
+  return update;
+}
+
+/**
+ * A cyclist: the bicycle prop with a rider posed correctly on it — seated, hands
+ * on the bars, feet on the pedals, legs pedalling as it moves. The rider is one
+ * of the pedestrian character models, skeleton-posed into a riding posture (no
+ * cycling clip ships CC0), with clothing recoloured for crowd variety.
  */
 export function buildCyclistVisual(
   scene: Scene,
@@ -210,8 +268,8 @@ export function buildCyclistVisual(
   const root = new TransformNode(`${name}-cyclist`, scene);
   root.parent = parent;
 
-  // Both glb roots carry a rotationQuaternion (glTF handedness), so `.rotation`
-  // on them is ignored — wrap each in a fresh node and rotate/place that.
+  // Bike faces +X (tires along X); wrap + yaw so it points +Z. (Rotating the glb
+  // __root__ directly is ignored — it carries a rotationQuaternion.)
   const bikeWrap = new TransformNode(`${name}-bikewrap`, scene);
   bikeWrap.parent = root;
   bikeWrap.rotation.y = BICYCLE_MODEL.yawOffset;
@@ -219,30 +277,38 @@ export function buildCyclistVisual(
   bikeRoot.scaling.setAll(BICYCLE_MODEL.scale);
   const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Set(), clothing);
 
+  // Rider faces +Z (rig faces -Z), lifted onto the saddle and skeleton-posed.
   const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
   riderWrap.parent = root;
   riderWrap.rotation.y = riderConfig.yawOffset;
-  riderWrap.position.set(0, 0.5, -0.12); // seated toward the saddle (tunable)
+  riderWrap.position.set(0, 0.32, -0.1);
   riderRoot.parent = riderWrap;
   riderRoot.scaling.setAll(riderConfig.scale);
   const riderMaterials = convertMaterials(
     scene,
     `${name}-rider`,
-    riderWrap,
+    riderRoot,
     new Set(riderConfig.clothingMaterialNames),
     clothing,
   );
-  const sit = playClip(riderInstance.animationGroups, "Sitting", 1);
+  // We pose the skeleton manually, so drop the rider's imported walk/idle clips.
+  for (const group of riderInstance.animationGroups) group.dispose();
+  const updatePose = setupCyclistPose(riderRoot);
+  let phase = 0;
 
   addContactShadow(scene, name, root, 0.7, 1.7);
 
   let disposed = false;
   return {
     root,
+    advancePedals(distanceMeters) {
+      if (disposed) return;
+      phase += distanceMeters * PEDAL_RATE;
+      updatePose(phase);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
-      sit?.dispose();
       root.dispose(false, false);
       for (const material of [...bikeMaterials, ...riderMaterials]) {
         material.dispose(true, false);
