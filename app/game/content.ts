@@ -1095,6 +1095,7 @@ const frNodes = {
   so: node("fr-so", 0, -118),
   wo: node("fr-wo", -138, 0),
   se: node("fr-se", 92, -82),
+  wgo: node("fr-wgo", -300, 0),
 };
 
 const frLanes: readonly LaneSegment[] = [
@@ -1111,11 +1112,16 @@ const frLanes: readonly LaneSegment[] = [
   laneTrue("fr-entry-south", frNodes.so, frNodes.s, "right", 50, ["fr-rb-s-e"], "entry", [point(1.7, -76)], ["fr-exit-south"]),
   laneTrue("fr-exit-south", frNodes.s, frNodes.so, "right", 50, ["fr-south-east"], "exit", [point(-1.7, -76)], ["fr-entry-south"]),
   laneTrue("fr-entry-west", frNodes.wo, frNodes.w, "right", 50, ["fr-rb-w-s"], "entry", [point(-86, -1.7)], ["fr-exit-west"]),
-  laneTrue("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
+  laneTrue("fr-exit-west", frNodes.w, frNodes.wo, "right", 50, ["fr-entry-west", "fr-westgrid-out"], "exit", [point(-86, 1.7)], ["fr-entry-west"]),
   laneTrue("fr-south-east", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "travel", [point(0.5, -119.7), point(53, -100.7), point(94, -80.7), point(139.25, -1.25)], ["fr-south-east-pass"]),
   laneTrue("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(-0.5, -116.3), point(53, -97.3), point(94, -77.3), point(136.25, 0.4)], ["fr-south-east"]),
   laneTrue("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(136.5, -0.95), point(148.31, -42.18), point(148.49, -109.21), point(103.74, -128.32), point(20.2, -128.31), point(1.3, -116.8)]),
   laneTrue("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-1.23, 119.27), point(-81.1, 77.3), point(-139.05, 1.43)]),
+  // Westbound local-road stub off the roundabout's west arm that turns back at
+  // the Coquelles end the same way fr-exit-west already turns at fr-wo. Gives
+  // right-side free-drive somewhere new to roam west, with oncoming traffic.
+  laneTrue("fr-westgrid-out", frNodes.wo, frNodes.wgo, "right", 50, ["fr-westgrid-in"], "travel", [point(-219, 1.7)], ["fr-westgrid-in"], "fr-westgrid", 3.2),
+  laneTrue("fr-westgrid-in", frNodes.wgo, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-219, -1.7)], ["fr-westgrid-out"], "fr-westgrid", 3.2),
 ];
 
 const jpNodes = {
@@ -1494,7 +1500,7 @@ export const MAP_PACKS: readonly MapPack[] = [
       "manifest-v1:calais-coquelles-2026-07-10",
     ),
     geometry: {
-      worldSize: point(310, 270),
+      worldSize: point(680, 300),
       roadWidth: 9,
       shoulderWidth: 2,
       roadSurfaces: [
@@ -1506,6 +1512,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("fr-south-east-road", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], 7.4, ["fr-south-east", "fr-south-east-pass"], "standard", [roadMarking("fr-south-east-divider", "lane_dashed", [frNodes.so.position, point(53, -99), point(94, -79), frNodes.eo.position], "white")]),
         roadSurface("fr-east-south-road", [frNodes.eo.position, point(150, -42), point(150, -110), point(104, -130), point(20, -130), frNodes.so.position], 7.2, ["fr-east-south"]),
         roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
+        roadSurface("fr-westgrid", [frNodes.wo.position, frNodes.wgo.position], 7.2, ["fr-westgrid-out", "fr-westgrid-in"], "standard", [roadMarking("fr-westgrid-centre", "centre_dashed", [frNodes.wo.position, frNodes.wgo.position], "white")]),
       ],
       blocks: [
         // Keep compact scenery beside the two curved links; neither block may
@@ -1516,6 +1523,8 @@ export const MAP_PACKS: readonly MapPack[] = [
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
         { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#6d914f" },
+        { id: "fr-commercial-parade", kind: "shops", center: point(124, -106), size: point(24, 14), color: "#b6803f" },
+        { id: "fr-parkway-green", kind: "park", center: point(55, 75), size: point(34, 26), color: "#5f9a4e" },
       ],
     },
     laneGraph: graph(
@@ -1544,7 +1553,27 @@ export const MAP_PACKS: readonly MapPack[] = [
         anchoredSpawn("fr-player", "player", "fr-entry-south", 22),
         anchoredSpawn("fr-car-1", "vehicle", "fr-rb-s-e", 28),
         anchoredSpawn("fr-car-2", "vehicle", "fr-south-east", 59),
+        // Oncoming/cross traffic on every two-way road. Live NPC count stays
+        // capped by density (npcCount); these anchors only guarantee the player
+        // meets cars in both directions and vary the opening scene. All sit
+        // >=25 m from every checkpoint so stationary-safety staging is clean.
+        anchoredSpawn("fr-car-3", "vehicle", "fr-exit-north", 30),
+        anchoredSpawn("fr-car-4", "vehicle", "fr-entry-north", 50),
+        anchoredSpawn("fr-car-5", "vehicle", "fr-exit-east", 45),
+        anchoredSpawn("fr-car-6", "vehicle", "fr-entry-east", 40),
+        anchoredSpawn("fr-car-7", "vehicle", "fr-exit-west", 45),
+        anchoredSpawn("fr-car-8", "vehicle", "fr-entry-west", 50),
+        anchoredSpawn("fr-car-9", "vehicle", "fr-rb-w-s", 14),
+        anchoredSpawn("fr-car-10", "vehicle", "fr-rb-n-w", 20),
+        anchoredSpawn("fr-car-11", "vehicle", "fr-south-east-pass", 40),
+        anchoredSpawn("fr-car-12", "vehicle", "fr-east-south", 120),
+        anchoredSpawn("fr-car-13", "vehicle", "fr-north-west", 40),
+        anchoredSpawn("fr-car-14", "vehicle", "fr-westgrid-in", 85),
+        anchoredSpawn("fr-car-15", "vehicle", "fr-westgrid-out", 100),
         freeSpawn("fr-cyclist-1", "cyclist", -74, 80, 225, "fr-north-west"),
+        freeSpawn("fr-ped-1", "pedestrian", -95, 96, 180),
+        freeSpawn("fr-ped-2", "pedestrian", 112, -92, 270),
+        freeSpawn("fr-cyclist-2", "cyclist", -70, -70, 45),
       ],
       [
         checkpoint("fr-start", "Coquelles start", "fr-entry-south", 22),
@@ -2030,9 +2059,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 1,
-    estimatedMinutes: [5, 7],
+    estimatedMinutes: [6, 8],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
       { id: "fr-side", label: "Keep right after turns", ruleCode: "wrong_way" },
       { id: "fr-kmh", label: "Read speed limits in km/h", ruleCode: "speeding" },
@@ -2041,7 +2070,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1301,
     trafficDensity: "light",
     vulnerableRoadUsers: { pedestrians: 3, cyclists: 3 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-roundabout-finish"],
     coachPrompts: [
       prompt("fr-start-coach", { type: "start" }, "Keep right. Your speedometer and signs now use kilometres per hour.", "fr-eu-road-rules"),
       prompt("fr-turn-coach", { type: "route_progress", value: 0.5 }, "After the turn, deliberately settle back onto the right side.", "fr-eu-road-rules"),
@@ -2061,9 +2090,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 2,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
       { id: "fr-priority", label: "Obey the signed local-road yield", ruleCode: "unsafe_gap" },
       { id: "fr-yield", label: "Yield before entering the roundabout", ruleCode: "roundabout_yield" },
@@ -2072,7 +2101,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1302,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 4 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-roundabout-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-local-finish", "fr-roundabout-finish"],
     coachPrompts: [
       prompt("fr-rb", { type: "checkpoint", checkpointId: "fr-roundabout" }, "Give way to traffic already circulating from your left, then travel counterclockwise.", "fr-eu-road-rules"),
       prompt("fr-priority-coach", { type: "checkpoint", checkpointId: "fr-priority" }, "The roadside sign controls this junction. Slow, observe both directions and yield before entering the conflict area.", "fr-eu-road-rules"),
@@ -2092,9 +2121,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 3,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
     objectives: [
       { id: "fr-lane-discipline", label: "Use the normal right-hand lane when not passing", ruleCode: "lane_misuse" },
       { id: "fr-speed", label: "Stay within the posted km/h limit", ruleCode: "speeding" },
@@ -2103,7 +2132,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1303,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-finish", "fr-speed-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-finish", "fr-speed-finish"],
     coachPrompts: [
       prompt("fr-normal-lane-coach", { type: "checkpoint", checkpointId: "fr-finish" }, "Stay in the normal right-hand travel lane. Use the left lane only when a real pass is necessary and safe.", "fr-eu-road-rules"),
       prompt("fr-pass-coach", { type: "rule_event", ruleCode: "lane_misuse" }, "Keep right when not passing. The passing lane never exempts you from the speed limit.", "fr-eu-road-rules"),
