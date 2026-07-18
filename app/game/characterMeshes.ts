@@ -219,16 +219,19 @@ function setupCyclistPose(riderRoot: TransformNode): (phase: number) => void {
     if (!node || !rest) return;
     node.rotationQuaternion = rest.multiply(Quaternion.RotationAxis(axis, angle));
   };
+  // Upright cruiser posture: torso near-vertical, arms out to the high swept-back
+  // handlebars (tuned against side-on renders so the hands reach the grips).
   const applyStatic = (): void => {
-    set("UpperArm.L", Axis.Z, -1.5);
-    set("UpperArm.R", Axis.Z, 1.5);
-    set("LowerArm.L", Axis.X, -0.15);
-    set("LowerArm.R", Axis.X, -0.15);
-    set("Abdomen", Axis.X, 0.55);
+    set("UpperArm.L", Axis.Z, -0.82);
+    set("UpperArm.R", Axis.Z, 0.82);
+    set("LowerArm.L", Axis.X, -0.35);
+    set("LowerArm.R", Axis.X, -0.35);
+    set("Abdomen", Axis.X, 0.15);
   };
   const leg = (side: "L" | "R", phase: number): void => {
-    set(`UpperLeg.${side}`, Axis.X, 1.0 + 0.32 * Math.sin(phase));
-    set(`LowerLeg.${side}`, Axis.X, -1.4 + 0.5 * Math.sin(phase - 0.7));
+    const p = -phase; // reverse so the pedals turn forward, not backward
+    set(`UpperLeg.${side}`, Axis.X, 1.0 + 0.32 * Math.sin(p));
+    set(`LowerLeg.${side}`, Axis.X, -1.4 + 0.5 * Math.sin(p - 0.7));
   };
   const update = (phase: number): void => {
     applyStatic();
