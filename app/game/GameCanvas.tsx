@@ -2195,6 +2195,25 @@ function createCylinder(
   return mesh;
 }
 
+function createIcoSphere(
+  scene: Scene,
+  name: string,
+  radius: number,
+  position: Vector3,
+  material: StandardMaterial,
+  parent?: TransformNode,
+): Mesh {
+  const mesh = MeshBuilder.CreateIcoSphere(
+    name,
+    { radius, subdivisions: 1 },
+    scene,
+  );
+  mesh.position.copyFrom(position);
+  mesh.parent = parent ?? null;
+  setMeshMaterial(mesh, material);
+  return mesh;
+}
+
 function createExtrudedPrism(
   scene: Scene,
   name: string,
@@ -5072,6 +5091,7 @@ class BabylonGameSession {
     interface PropPart {
       readonly master: Mesh;
       readonly offset: Vector3;
+      readonly castShadow?: boolean;
     }
     const masterBox = (
       name: string,
@@ -5102,6 +5122,20 @@ class BabylonGameSession {
       mesh.isVisible = false;
       return mesh;
     };
+    const masterIcoSphere = (
+      name: string,
+      radius: number,
+      partMaterial: StandardMaterial,
+    ): Mesh => {
+      const mesh = MeshBuilder.CreateIcoSphere(
+        `prop-master-${name}`,
+        { radius, subdivisions: 1 },
+        scene,
+      );
+      setMeshMaterial(mesh, partMaterial);
+      mesh.isVisible = false;
+      return mesh;
+    };
 
     const masters = new Map<string, readonly PropPart[]>();
     const partsFor = (kind: string, variant: number): readonly PropPart[] => {
@@ -5111,38 +5145,84 @@ class BabylonGameSession {
       let parts: readonly PropPart[];
       switch (kind) {
         case "tree": {
-          const crown =
-            variant === 1
-              ? masterCylinder(
-                  cacheKey,
-                  { height: 4.2, diameterTop: 0, diameterBottom: 2.2 },
-                  leaves[variant],
-                )
-              : variant === 2
-                ? masterCylinder(
-                    cacheKey,
-                    { height: 2.9, diameterTop: 0, diameterBottom: 2.6 },
-                    leaves[variant],
-                  )
-                : masterCylinder(
-                    cacheKey,
-                    { height: 3.2, diameterTop: 0, diameterBottom: 2.9 },
-                    leaves[variant],
-                  );
-          parts = [
-            {
-              master: masterCylinder(
-                `${cacheKey}-trunk`,
-                { height: 2.2, diameter: 0.34 },
-                trunk,
-              ),
-              offset: new Vector3(0, 1.1, 0),
-            },
-            {
-              master: crown,
-              offset: new Vector3(0, variant === 1 ? 4 : variant === 2 ? 3.3 : 3.6, 0),
-            },
-          ];
+          // Leafy canopy from overlapping faceted lobes (variants 0/2) or a
+          // stacked-cone conifer (variant 1); secondary lobes skip shadow
+          // casting since they sit inside the primary crown's shadow.
+          const leaf =
+            variant === 1 ? leaves[2] : variant === 2 ? leaves[1] : leaves[0];
+          const lobe = (
+            suffix: string,
+            radius: number,
+            offset: Vector3,
+            castShadow?: boolean,
+          ): PropPart => ({
+            master: masterIcoSphere(`${cacheKey}-${suffix}`, radius, leaf),
+            offset,
+            castShadow,
+          });
+          if (variant === 1) {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 1.5, diameter: 0.28 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 0.75, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t0`,
+                  { height: 2, diameterTop: 0, diameterBottom: 2.5 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 2.2, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t1`,
+                  { height: 1.7, diameterTop: 0, diameterBottom: 1.9 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 3.29, 0),
+              },
+              {
+                master: masterCylinder(
+                  `${cacheKey}-t2`,
+                  { height: 1.3, diameterTop: 0, diameterBottom: 1.2 },
+                  leaf,
+                ),
+                offset: new Vector3(0, 4.14, 0),
+              },
+            ];
+          } else if (variant === 2) {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 2.4, diameterTop: 0.24, diameterBottom: 0.35 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 1.2, 0),
+              },
+              lobe("c0", 1.4, new Vector3(0, 3.17, 0)),
+              lobe("c1", 1.05, new Vector3(0.59, 3.87, -0.25), false),
+            ];
+          } else {
+            parts = [
+              {
+                master: masterCylinder(
+                  `${cacheKey}-trunk`,
+                  { height: 2, diameterTop: 0.27, diameterBottom: 0.39 },
+                  trunk,
+                ),
+                offset: new Vector3(0, 1, 0),
+              },
+              lobe("c0", 1.7, new Vector3(0, 2.94, 0)),
+              lobe("c1", 1.15, new Vector3(0.71, 3.79, -0.31), false),
+              lobe("c2", 1, new Vector3(-0.77, 3.42, 0.51), false),
+            ];
+          }
           break;
         }
         case "streetlight":
@@ -5303,7 +5383,9 @@ class BabylonGameSession {
         instance.rotation.y = placement.rotationY;
         instance.scaling.setAll(placement.scale);
         instance.isPickable = false;
-        this.registerShadowCaster(instance, placement.x, placement.z);
+        if (part.castShadow !== false) {
+          this.registerShadowCaster(instance, placement.x, placement.z);
+        }
       }
     }
 
@@ -6586,22 +6668,17 @@ class BabylonGameSession {
       const tree = new TransformNode(`tree-${index}`, scene);
       tree.position.set(side * 8.7, 0, z);
       this.registerShadowCaster(
-        createCylinder(scene, `trunk-${index}`, { height: 2.3, diameter: 0.38 }, new Vector3(0, 1.15, 0), trunk, tree),
+        createCylinder(scene, `trunk-${index}`, { height: 2, diameterTop: 0.27, diameterBottom: 0.39 }, new Vector3(0, 1, 0), trunk, tree),
         side * 8.7,
         z,
       );
       this.registerShadowCaster(
-        createCylinder(
-          scene,
-          `crown-${index}`,
-          { height: 3.4, diameterTop: 0, diameterBottom: 3.2, tessellation: 8 },
-          new Vector3(0, 3.4, 0),
-          leaves,
-          tree,
-        ),
+        createIcoSphere(scene, `crown-${index}`, 1.7, new Vector3(0, 2.94, 0), leaves, tree),
         side * 8.7,
         z,
       );
+      createIcoSphere(scene, `crown-b-${index}`, 1.15, new Vector3(0.71, 3.79, -0.31), leaves, tree);
+      createIcoSphere(scene, `crown-c-${index}`, 1, new Vector3(-0.77, 3.42, 0.51), leaves, tree);
     }
   }
 
