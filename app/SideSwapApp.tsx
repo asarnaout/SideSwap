@@ -200,82 +200,19 @@ function useGamepadUiNavigation(
   }, [enabled, onBack]);
 }
 
-function DestinationPreviewScenery({
-  destinationId,
-}: {
-  destinationId: DestinationId;
-}) {
-  if (destinationId === "uk-london") {
-    return (
-      <div className="launcher-cityscape london-cityscape">
-        <span className="london-elizabeth-tower"><i /><b /></span>
-        <div className="london-museum">
-          <span className="museum-wing museum-wing-left"><i /><i /><i /></span>
-          <span className="museum-centre"><i /><b /></span>
-          <span className="museum-wing museum-wing-right"><i /><i /><i /></span>
-        </div>
-        <span className="london-lamp london-lamp-left" />
-        <span className="london-lamp london-lamp-right" />
-        <span className="london-double-decker"><i /><i /><i /><b /><em /></span>
-        <span className="london-black-cab"><i /><b /><em /></span>
-      </div>
-    );
-  }
+const DESTINATION_PREVIEW_IMAGES: Record<DestinationId, string> = {
+  "uk-london": "/landing/london.webp",
+  "us-nyc": "/landing/nyc.webp",
+  "uk-milton-keynes": "/landing/milton-keynes.webp",
+  "fr-calais": "/landing/calais.webp",
+  "jp-tokyo": "/landing/tokyo.webp",
+};
 
-  if (destinationId === "us-nyc") {
-    return (
-      <div className="launcher-cityscape nyc-cityscape">
-        <div className="nyc-skyline">
-          <span /><span /><span /><span /><span /><span /><span />
-        </div>
-        <span className="nyc-empire-tower"><i /><b /></span>
-        <div className="nyc-brownstones">
-          <span><i /><i /><i /></span>
-          <span><i /><i /><i /></span>
-          <span><i /><i /><i /></span>
-        </div>
-        <span className="nyc-street-sign">W 72 ST</span>
-      </div>
-    );
-  }
-
-  if (destinationId === "uk-milton-keynes") {
-    return (
-      <div className="launcher-cityscape mk-cityscape">
-        <div className="mk-tree-line">
-          <span /><span /><span /><span /><span /><span /><span />
-        </div>
-        <span className="mk-building"><i /><i /><i /></span>
-        <span className="mk-roundabout"><i /><i /><i /></span>
-        <span className="mk-direction-sign"><b>Central MK</b><i>A5</i></span>
-      </div>
-    );
-  }
-
-  if (destinationId === "fr-calais") {
-    return (
-      <div className="launcher-cityscape calais-cityscape">
-        <span className="calais-ferry"><i /><i /><i /><i /></span>
-        <span className="calais-lighthouse"><i /></span>
-        <span className="calais-terminal"><i /><i /><i /></span>
-        <span className="calais-sign"><b>CALAIS</b><i>COQUELLES</i></span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="launcher-cityscape tokyo-cityscape">
-      <div className="tokyo-houses">
-        <span><i /><i /></span>
-        <span><i /><i /></span>
-        <span><i /><i /></span>
-      </div>
-      <div className="tokyo-shrine"><span className="tokyo-torii"><i /></span><b /><i /></div>
-      <span className="tokyo-crossing"><i /><b /><em /></span>
-      <div className="tokyo-tramway"><span className="tokyo-overhead-wire" /><span className="tokyo-tram"><i /><i /><i /></span><b /><em /></div>
-    </div>
-  );
-}
+// Horizontal focus for the cover-cropped preview. Defaults to centre; Calais is
+// nudged right so the lighthouse on the image's right edge stays in frame.
+const DESTINATION_PREVIEW_FOCUS: Partial<Record<DestinationId, string>> = {
+  "fr-calais": "64% center",
+};
 
 const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
   scenarioId.startsWith("free-");
@@ -899,24 +836,18 @@ export default function SideSwapApp() {
           </div>
 
           <div
-            className={`launcher-road-visual launcher-scene-${destination.id}`}
+            className="launcher-road-visual"
             aria-label={`${destination.destinationName} training preview`}
           >
-            <div className="launcher-sky" aria-hidden="true">
-              <span className="launcher-sun" />
-              <span className="launcher-cloud launcher-cloud-one" />
-              <span className="launcher-cloud launcher-cloud-two" />
-            </div>
-            <div className="launcher-ground" aria-hidden="true" />
-            <div aria-hidden="true">
-              <DestinationPreviewScenery destinationId={destination.id} />
-            </div>
-            <div className="launcher-road"><i /><i /><i /><i /></div>
-            <div className={`launcher-car ${country.trafficSide}`} aria-hidden="true">
-              <span className="launcher-car-body">
-                <b className="launcher-car-cabin" />
-              </span>
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element -- static preview art in /public; next/image adds no value for a fixed, non-critical hero */}
+            <img
+              className="launcher-photo"
+              src={DESTINATION_PREVIEW_IMAGES[destination.id]}
+              style={{ objectPosition: DESTINATION_PREVIEW_FOCUS[destination.id] }}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+            />
             <div className="launcher-place">
               <span>{country.flagEmoji} {country.countryName}</span>
               <strong>{destination.destinationName}</strong>

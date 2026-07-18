@@ -145,18 +145,16 @@ describe("game-first launcher", () => {
     );
   });
 
-  it("renders a straight, destination-specific preview with the car on the local traffic side", async () => {
-    const { container } = render(<SideSwapApp />);
+  it("renders a destination-specific preview image with the local traffic side", async () => {
+    render(<SideSwapApp />);
     await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
 
     const londonPreview = screen.getByLabelText("London training preview");
-    expect(londonPreview).toHaveClass("launcher-scene-uk-london");
-    expect(londonPreview.querySelector(".london-museum")).toBeInTheDocument();
-    expect(londonPreview.querySelector(".london-elizabeth-tower")).toBeInTheDocument();
-    expect(londonPreview.querySelector(".london-black-cab")).toBeInTheDocument();
-    expect(londonPreview.querySelector(".launcher-car")).toHaveClass("left");
-    expect(londonPreview.querySelector(".launcher-car-body")).toBeInTheDocument();
-    expect(londonPreview.querySelector(".launcher-car-cabin")).toBeInTheDocument();
+    expect(londonPreview.querySelector("img.launcher-photo")).toHaveAttribute(
+      "src",
+      "/landing/london.webp",
+    );
+    expect(within(londonPreview).getByText(/Traffic keeps left/i)).toBeInTheDocument();
 
     fireEvent.click(
       within(screen.getByRole("group", { name: "Destination" })).getByRole(
@@ -166,12 +164,11 @@ describe("game-first launcher", () => {
     );
 
     const newYorkPreview = screen.getByLabelText("New York City training preview");
-    expect(newYorkPreview).toHaveClass("launcher-scene-us-nyc");
-    expect(newYorkPreview.querySelector(".nyc-skyline")).toBeInTheDocument();
-    expect(newYorkPreview.querySelector(".nyc-empire-tower")).toBeInTheDocument();
-    expect(newYorkPreview.querySelector(".nyc-water-tower")).not.toBeInTheDocument();
-    expect(newYorkPreview.querySelector(".launcher-car")).toHaveClass("right");
-    expect(container.querySelectorAll(".launcher-road")).toHaveLength(1);
+    expect(newYorkPreview.querySelector("img.launcher-photo")).toHaveAttribute(
+      "src",
+      "/landing/nyc.webp",
+    );
+    expect(within(newYorkPreview).getByText(/Traffic keeps right/i)).toBeInTheDocument();
 
     fireEvent.click(
       within(screen.getByRole("group", { name: "Destination" })).getByRole(
@@ -180,8 +177,11 @@ describe("game-first launcher", () => {
       ),
     );
     const tokyoPreview = screen.getByLabelText("Tokyo — Setagaya training preview");
-    expect(tokyoPreview.querySelector(".tokyo-shrine")).toBeInTheDocument();
-    expect(tokyoPreview.querySelector(".tokyo-tramway")).toBeInTheDocument();
+    expect(tokyoPreview.querySelector("img.launcher-photo")).toHaveAttribute(
+      "src",
+      "/landing/tokyo.webp",
+    );
+    expect(within(tokyoPreview).getByText(/Traffic keeps left/i)).toBeInTheDocument();
   });
 
   it("preserves a selected destination and restores focus after setup closes", async () => {
