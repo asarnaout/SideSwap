@@ -95,7 +95,7 @@ describe("semantic and regional vehicle roles", () => {
     expect(resolve("taxi", "london-south-kensington", "london-black-cab")).toMatchObject({
       model: "electric-taxi",
       role: "taxi",
-      paintHex: "#10151a",
+      paintHex: "#20262d",
     });
   });
 

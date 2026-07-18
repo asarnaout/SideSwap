@@ -1184,7 +1184,7 @@ function buildModelVehicle(
         : texture
           ? Color3.White()
           : readAlbedo(source).clone();
-      standard.specularColor = new Color3(0.16, 0.16, 0.16);
+      standard.specularColor = new Color3(0.22, 0.22, 0.22);
       standard.specularPower = 44;
       if (/headlight/i.test(source.name)) {
         standard.emissiveColor = MODEL_HEAD_GLOW;
