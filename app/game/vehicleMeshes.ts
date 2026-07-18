@@ -1104,13 +1104,13 @@ const MODEL_TAIL_GLOW = new Color3(0.32, 0.03, 0.02);
 const MODEL_BRAKE_GLOW = new Color3(0.95, 0.06, 0.03);
 const MODEL_HEAD_GLOW = new Color3(0.5, 0.46, 0.3);
 
-function readAlbedo(material: Material): Color3 {
+export function readAlbedo(material: Material): Color3 {
   if (material instanceof PBRMaterial) return material.albedoColor;
   if (material instanceof StandardMaterial) return material.diffuseColor;
   return Color3.White();
 }
 
-function readAlbedoTexture(material: Material) {
+export function readAlbedoTexture(material: Material) {
   if (material instanceof PBRMaterial) return material.albedoTexture;
   if (material instanceof StandardMaterial) return material.diffuseTexture;
   return null;
@@ -1143,7 +1143,7 @@ const BLOB_SHADOW_BY_SCENE = new WeakMap<Scene, StandardMaterial>();
  * top-down chase camera; the blob keeps the car grounded in every view. Cached
  * once per scene (one texture + material shared by the whole fleet).
  */
-function blobShadowMaterial(scene: Scene): StandardMaterial {
+export function blobShadowMaterial(scene: Scene): StandardMaterial {
   const existing = BLOB_SHADOW_BY_SCENE.get(scene);
   if (existing) return existing;
   const size = 128;

@@ -46,3 +46,42 @@ describe("vehicle model assets", () => {
     bus.engine.dispose();
   });
 });
+
+describe("character model assets", () => {
+  registerBuiltInLoaders();
+  const dir = path.join(process.cwd(), "public/models/characters");
+
+  const load = async (file: string) => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const buf = fs.readFileSync(path.join(dir, file));
+    const dataUrl = "data:model/gltf-binary;base64," + buf.toString("base64");
+    const container = await LoadAssetContainerAsync(dataUrl, scene, {
+      pluginExtension: ".glb",
+    });
+    return { container, scene, engine };
+  };
+
+  // Pedestrians must be rigged AND carry a Walk clip, and expose the "Shirt"
+  // material the recolour targets — the whole point of Phase 3 over cylinders.
+  it.each(["person-a.glb", "person-b.glb", "person-c.glb"])(
+    "loads %s as a rigged character with a Walk animation",
+    async (file) => {
+      const { container, scene, engine } = await load(file);
+      expect(container.skeletons.length).toBeGreaterThan(0);
+      expect(
+        container.animationGroups.some((group) => /walk/i.test(group.name)),
+      ).toBe(true);
+      expect(container.materials.some((m) => m.name === "Shirt")).toBe(true);
+      scene.dispose();
+      engine.dispose();
+    },
+  );
+
+  it("loads the bicycle prop", async () => {
+    const { container, scene, engine } = await load("bicycle.glb");
+    expect(container.meshes.length).toBeGreaterThan(0);
+    scene.dispose();
+    engine.dispose();
+  });
+});
