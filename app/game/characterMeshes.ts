@@ -53,8 +53,9 @@ export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
 ];
 
 /** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
- * facing +X (tires along X), so it yaws -90° to point down SideSwap's +Z. */
-const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: -Math.PI / 2 } as const;
+ * facing +X (tires along X), so it yaws +90° to put its front (handlebars) on
+ * +Z, aligned with the rider (verified against a side-on render). */
+const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: Math.PI / 2 } as const;
 
 export function characterModelUrls(): string[] {
   return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
