@@ -2048,9 +2048,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 1,
-    estimatedMinutes: [5, 7],
+    estimatedMinutes: [6, 8],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
       { id: "fr-side", label: "Keep right after turns", ruleCode: "wrong_way" },
       { id: "fr-kmh", label: "Read speed limits in km/h", ruleCode: "speeding" },
@@ -2059,7 +2059,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1301,
     trafficDensity: "light",
     vulnerableRoadUsers: { pedestrians: 3, cyclists: 3 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-roundabout-finish"],
     coachPrompts: [
       prompt("fr-start-coach", { type: "start" }, "Keep right. Your speedometer and signs now use kilometres per hour.", "fr-eu-road-rules"),
       prompt("fr-turn-coach", { type: "route_progress", value: 0.5 }, "After the turn, deliberately settle back onto the right side.", "fr-eu-road-rules"),
@@ -2079,9 +2079,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 2,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
     objectives: [
       { id: "fr-priority", label: "Obey the signed local-road yield", ruleCode: "unsafe_gap" },
       { id: "fr-yield", label: "Yield before entering the roundabout", ruleCode: "roundabout_yield" },
@@ -2090,7 +2090,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1302,
     trafficDensity: "moderate",
     vulnerableRoadUsers: { pedestrians: 4, cyclists: 4 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-roundabout-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-local-finish", "fr-roundabout-finish"],
     coachPrompts: [
       prompt("fr-rb", { type: "checkpoint", checkpointId: "fr-roundabout" }, "Give way to traffic already circulating from your left, then travel counterclockwise.", "fr-eu-road-rules"),
       prompt("fr-priority-coach", { type: "checkpoint", checkpointId: "fr-priority" }, "The roadside sign controls this junction. Slow, observe both directions and yield before entering the conflict area.", "fr-eu-road-rules"),
@@ -2110,9 +2110,9 @@ export const LESSONS: readonly LessonDefinition[] = [
     destinationId: "fr-calais",
     trafficSide: "right",
     difficulty: 3,
-    estimatedMinutes: [6, 8],
+    estimatedMinutes: [8, 11],
     startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
+    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
     objectives: [
       { id: "fr-lane-discipline", label: "Use the normal right-hand lane when not passing", ruleCode: "lane_misuse" },
       { id: "fr-speed", label: "Stay within the posted km/h limit", ruleCode: "speeding" },
@@ -2121,7 +2121,7 @@ export const LESSONS: readonly LessonDefinition[] = [
     trafficSeed: 1303,
     trafficDensity: "busy",
     vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-finish", "fr-speed-finish"],
+    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-finish", "fr-speed-finish"],
     coachPrompts: [
       prompt("fr-normal-lane-coach", { type: "checkpoint", checkpointId: "fr-finish" }, "Stay in the normal right-hand travel lane. Use the left lane only when a real pass is necessary and safe.", "fr-eu-road-rules"),
       prompt("fr-pass-coach", { type: "rule_event", ruleCode: "lane_misuse" }, "Keep right when not passing. The passing lane never exempts you from the speed limit.", "fr-eu-road-rules"),
