@@ -2409,7 +2409,9 @@ class BabylonGameSession {
     this.engine.setHardwareScalingLevel(scale);
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.68, 0.84, 0.9, 1);
-    this.scene.ambientColor = new Color3(0.36, 0.39, 0.36);
+    // Low, faintly warm ambient: the directional sun and hemisphere fill do
+    // the lighting so shadowed faces keep real depth instead of a flat grey wash.
+    this.scene.ambientColor = new Color3(0.24, 0.23, 0.21);
     this.scene.skipPointerMovePicking = true;
 
     this.player = new TransformNode("player-root", this.scene);
@@ -4160,11 +4162,11 @@ class BabylonGameSession {
     );
 
     const hemi = new HemisphericLight("scenario-sky-light", new Vector3(0.1, 1, 0.15), scene);
-    hemi.intensity = 0.66;
-    hemi.diffuse = new Color3(0.93, 0.96, 1);
-    hemi.groundColor = new Color3(0.26, 0.31, 0.28);
+    hemi.intensity = 0.5;
+    hemi.diffuse = new Color3(0.82, 0.88, 0.98);
+    hemi.groundColor = new Color3(0.34, 0.3, 0.24);
     const sun = new DirectionalLight("scenario-sun", new Vector3(-0.42, -1, 0.48), scene);
-    sun.intensity = 0.92;
+    sun.intensity = 1.3;
     this.createSunShadows(sun);
 
     const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
@@ -6208,7 +6210,7 @@ class BabylonGameSession {
     generator.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
     generator.bias = 0.015;
     generator.normalBias = 0.4;
-    generator.setDarkness(0.6);
+    generator.setDarkness(0.42);
     this.shadowGenerator = generator;
     this.shadowRefreshSeconds = Number.POSITIVE_INFINITY;
   }
@@ -6268,25 +6270,34 @@ class BabylonGameSession {
     pipeline.samples = 4;
     pipeline.fxaaEnabled = false;
     pipeline.bloomEnabled = true;
-    pipeline.bloomThreshold = 0.85;
-    pipeline.bloomWeight = 0.15;
+    // Bloom stays keyed to bright emissives (lamps, brake lights); the
+    // threshold is lifted alongside tone mapping so the newly warm, brighter
+    // sky and sunlit surfaces don't bloom into a haze.
+    pipeline.bloomThreshold = 0.9;
+    pipeline.bloomWeight = 0.18;
     pipeline.bloomScale = 0.5;
     pipeline.bloomKernel = 48;
     pipeline.imageProcessingEnabled = true;
     const imageProcessing = pipeline.imageProcessing;
-    imageProcessing.toneMappingEnabled = false;
-    imageProcessing.contrast = 1.08;
-    imageProcessing.exposure = 1.02;
+    // ACES filmic tone mapping is the core of the "cinematic" look: it
+    // compresses the warm sky and strengthened sun into a rich, non-blown-out
+    // image instead of the flat, clipped WebGL default. Exposure is lifted to
+    // compensate for the filmic curve's mid-tone rolloff.
+    imageProcessing.toneMappingEnabled = true;
+    imageProcessing.toneMappingType =
+      ImageProcessingConfiguration.TONEMAPPING_ACES;
+    imageProcessing.contrast = 1.12;
+    imageProcessing.exposure = 1.2;
     imageProcessing.vignetteEnabled = true;
-    imageProcessing.vignetteWeight = 1.5;
-    imageProcessing.vignetteColor = new Color4(0, 0.02, 0.04, 0);
+    imageProcessing.vignetteWeight = 1.25;
+    imageProcessing.vignetteColor = new Color4(0.03, 0.02, 0, 0);
     imageProcessing.vignetteBlendMode =
       ImageProcessingConfiguration.VIGNETTEMODE_MULTIPLY;
     const curves = new ColorCurves();
-    curves.globalSaturation = 12;
+    curves.globalSaturation = 22;
     curves.highlightsHue = 30;
-    curves.highlightsDensity = 12;
-    curves.highlightsSaturation = 6;
+    curves.highlightsDensity = 15;
+    curves.highlightsSaturation = 10;
     imageProcessing.colorCurves = curves;
     imageProcessing.colorCurvesEnabled = true;
     this.effectsPipeline = pipeline;
@@ -6344,11 +6355,11 @@ class BabylonGameSession {
     this.signalGreenMaterial = greenLamp;
 
     const hemi = new HemisphericLight("soft-sky", new Vector3(0.2, 1, 0.1), scene);
-    hemi.intensity = 0.66;
-    hemi.diffuse = new Color3(0.92, 0.95, 1);
-    hemi.groundColor = new Color3(0.27, 0.32, 0.29);
+    hemi.intensity = 0.5;
+    hemi.diffuse = new Color3(0.82, 0.88, 0.98);
+    hemi.groundColor = new Color3(0.34, 0.3, 0.24);
     const sun = new DirectionalLight("sun", new Vector3(-0.4, -1, 0.55), scene);
-    sun.intensity = 0.92;
+    sun.intensity = 1.3;
     this.createSunShadows(sun);
 
     const ground = MeshBuilder.CreateGround(

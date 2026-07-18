@@ -39,72 +39,79 @@ export type MapVisualKey =
   | "tokyo"
   | "orientation";
 
+// Warm cinematic low-poly palette. Each sky is a saturated blue zenith that
+// warms into a COLORED horizon (retiring the old near-white haze that washed
+// every map out); fog matches the horizon so distance reads as atmosphere;
+// grass is richer, dirt warmer, and distant silhouettes recede into a warm
+// haze rather than a cold grey. Per-map moods: NYC golden-hour, London rich
+// late-afternoon, Milton Keynes bright pastoral, Calais luminous coast,
+// Tokyo soft warm residential.
 const MAP_VISUAL_PALETTES: Record<MapVisualKey, MapVisualPalette> = {
   nyc: {
-    skyTop: "#5f9ed3",
-    skyHorizon: "#dcebf4",
-    fogColor: "#d6e5ef",
-    grassBase: "#3d6340",
-    grassAlt: "#487046",
-    dirtShoulder: "#4a4536",
-    silhouetteNear: "#b7cbd9",
-    silhouetteFar: "#c9dae6",
-    sunTint: "#fff3df",
+    skyTop: "#2f7fc8",
+    skyHorizon: "#f3d9ac",
+    fogColor: "#ecd2b2",
+    grassBase: "#3f6a3c",
+    grassAlt: "#4d7c44",
+    dirtShoulder: "#6b5a3f",
+    silhouetteNear: "#a8a499",
+    silhouetteFar: "#d2c9b2",
+    sunTint: "#ffe9c4",
   },
   london: {
-    skyTop: "#7e9eb4",
-    skyHorizon: "#dde5e8",
-    fogColor: "#d8e0e3",
-    grassBase: "#3c6144",
-    grassAlt: "#466c4b",
-    dirtShoulder: "#474334",
-    silhouetteNear: "#b8c7cc",
-    silhouetteFar: "#c9d5d9",
-    sunTint: "#fbefd9",
+    skyTop: "#3f7fb8",
+    skyHorizon: "#ecd7bb",
+    fogColor: "#e2d0ba",
+    grassBase: "#3c6444",
+    grassAlt: "#4a7550",
+    dirtShoulder: "#5f5540",
+    silhouetteNear: "#a6a89f",
+    silhouetteFar: "#cdc8b6",
+    sunTint: "#ffe6c0",
   },
   milton: {
-    skyTop: "#79a2b0",
-    skyHorizon: "#dbe6e7",
-    fogColor: "#d6e2e3",
-    grassBase: "#3a6339",
-    grassAlt: "#457040",
-    dirtShoulder: "#454031",
-    silhouetteNear: "#b3c6c4",
-    silhouetteFar: "#c6d5d6",
-    sunTint: "#fff2dc",
+    skyTop: "#4a90c4",
+    skyHorizon: "#eaddb8",
+    fogColor: "#e0d6ba",
+    grassBase: "#3f6b39",
+    grassAlt: "#4f7e43",
+    dirtShoulder: "#64583c",
+    silhouetteNear: "#a7b39a",
+    silhouetteFar: "#cdccae",
+    sunTint: "#ffedc6",
   },
   calais: {
-    skyTop: "#6fa5c7",
-    skyHorizon: "#e0ebf1",
-    fogColor: "#dae7ed",
-    grassBase: "#4a6c40",
-    grassAlt: "#587948",
-    dirtShoulder: "#5d5340",
-    silhouetteNear: "#bccfda",
-    silhouetteFar: "#ccdde6",
-    sunTint: "#fff4e2",
+    skyTop: "#2f86c9",
+    skyHorizon: "#f0e3c4",
+    fogColor: "#e6ddc4",
+    grassBase: "#4a6c3d",
+    grassAlt: "#5c8049",
+    dirtShoulder: "#6f6144",
+    silhouetteNear: "#b3bfb0",
+    silhouetteFar: "#d6d1b8",
+    sunTint: "#fff0cc",
   },
   tokyo: {
-    skyTop: "#82aecb",
-    skyHorizon: "#e0eaef",
-    fogColor: "#dae5ea",
-    grassBase: "#3e653f",
-    grassAlt: "#497146",
-    dirtShoulder: "#4a4536",
-    silhouetteNear: "#b9cad3",
-    silhouetteFar: "#cbd9e0",
-    sunTint: "#fff1da",
+    skyTop: "#4a8ec2",
+    skyHorizon: "#f0dcbd",
+    fogColor: "#e6d6bd",
+    grassBase: "#40663d",
+    grassAlt: "#4f7a45",
+    dirtShoulder: "#665a3f",
+    silhouetteNear: "#a9b0b0",
+    silhouetteFar: "#cfccb8",
+    sunTint: "#ffe9c2",
   },
   orientation: {
-    skyTop: "#6aa3cf",
-    skyHorizon: "#dcebf3",
-    fogColor: "#d7e5ee",
-    grassBase: "#3b6140",
-    grassAlt: "#456d45",
-    dirtShoulder: "#484233",
-    silhouetteNear: "#b7cbd8",
-    silhouetteFar: "#c9dae5",
-    sunTint: "#fff3df",
+    skyTop: "#3f86c6",
+    skyHorizon: "#ecdcbe",
+    fogColor: "#e2d5bc",
+    grassBase: "#3d673f",
+    grassAlt: "#4c7a46",
+    dirtShoulder: "#625740",
+    silhouetteNear: "#a8aca2",
+    silhouetteFar: "#cdc9b6",
+    sunTint: "#ffe9c4",
   },
 };
 
@@ -150,17 +157,20 @@ export interface SkyGradientStop {
 }
 
 /**
- * Zenith-to-horizon gradient stops (offset 0 = top of the sky dome). The
- * horizon band sits at ~0.72 so it lands near eye level on the dome; below
- * that the colour holds so the dome never shows a hard edge under the world.
+ * Zenith-to-horizon gradient stops (offset 0 = top of the sky dome). A rich
+ * blue holds through the upper dome, then warms into the colored horizon band
+ * near eye level; the horizon colour holds to offset 1 so the dome never shows
+ * a hard edge under the world. Keeping the blue dominant up high (only a 35%
+ * warm mix at the half-way stop) avoids a muddy blue↔warm blend across the
+ * middle of the sky.
  */
 export function skyGradientStops(
   palette: MapVisualPalette,
 ): readonly SkyGradientStop[] {
   return [
     { offset: 0, color: palette.skyTop },
-    { offset: 0.45, color: mixHexColors(palette.skyTop, palette.skyHorizon, 0.55) },
-    { offset: 0.72, color: palette.skyHorizon },
+    { offset: 0.5, color: mixHexColors(palette.skyTop, palette.skyHorizon, 0.35) },
+    { offset: 0.8, color: mixHexColors(palette.skyTop, palette.skyHorizon, 0.78) },
     { offset: 1, color: palette.skyHorizon },
   ];
 }
