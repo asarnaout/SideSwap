@@ -1387,6 +1387,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       servicePoints: [
         { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel" },
       ],
+      gigVenues: [
+        { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 240 }, footprint: point(16, 12), name: "Amsterdam Diner" },
+        { id: "nyc-v2", kind: "shop", anchor: { laneId: "nyc-86-e-3", distanceAlongM: 70 }, footprint: point(16, 12), name: "West 86th Grocers" },
+        { id: "nyc-v3", kind: "residence", anchor: { laneId: "nyc-col-s-1b", distanceAlongM: 445 }, footprint: point(14, 12), name: "Columbus Apartments" },
+        { id: "nyc-v4", kind: "office", anchor: { laneId: "nyc-we-n-2", distanceAlongM: 240 }, footprint: point(16, 14), name: "West End Offices" },
+      ],
       landmarks: [
         // Kept clear of the carriageways (a content test enforces this).
         { id: "nyc-verdi-green", kind: "park", center: point(-40, -455), size: point(40, 24), color: "#5c8c4b" },
@@ -1467,6 +1473,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       servicePoints: [
         { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Grafton Fuel" },
+      ],
+      gigVenues: [
+        { id: "mk-v1", kind: "shop", anchor: { laneId: "uk-dual-n-east", distanceAlongM: 48 }, footprint: point(16, 12), name: "Grafton Retail Park" },
+        { id: "mk-v2", kind: "residence", anchor: { laneId: "uk-west-south", distanceAlongM: 48 }, footprint: point(14, 12), name: "Oldbrook Houses" },
+        { id: "mk-v3", kind: "restaurant", anchor: { laneId: "uk-exit-south", distanceAlongM: 46 }, footprint: point(14, 10), name: "South Grafton Kitchen" },
+        { id: "mk-v4", kind: "office", anchor: { laneId: "uk-entry-south", distanceAlongM: 68 }, footprint: point(16, 14), name: "Midsummer Office" },
       ],
       landmarks: [
         // The island must sit fully inside the roundabout's inner kerb, not
@@ -1568,6 +1580,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       servicePoints: [
         { id: "fr-gas", kind: "gas_station", anchor: { laneId: "fr-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Coquelles Carburant" },
+      ],
+      gigVenues: [
+        { id: "fr-v1", kind: "shop", anchor: { laneId: "fr-north-west", distanceAlongM: 82 }, footprint: point(16, 12), name: "Cité Europe Market" },
+        { id: "fr-v2", kind: "restaurant", anchor: { laneId: "fr-south-east", distanceAlongM: 70 }, footprint: point(14, 10), name: "Brasserie Coquelles" },
+        { id: "fr-v3", kind: "residence", anchor: { laneId: "fr-east-south", distanceAlongM: 70 }, footprint: point(14, 12), name: "Résidence du Port" },
+        { id: "fr-v4", kind: "office", anchor: { laneId: "fr-exit-north", distanceAlongM: 60 }, footprint: point(16, 14), name: "Terminal Offices" },
       ],
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
@@ -1684,6 +1702,12 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       servicePoints: [
         { id: "jp-gas", kind: "gas_station", anchor: { laneId: "jp-south-east-1", distanceAlongM: 18 }, footprint: point(12, 8), label: "Setagaya Fuel" },
+      ],
+      gigVenues: [
+        { id: "jp-v1", kind: "restaurant", anchor: { laneId: "jp-narrow-north-1", distanceAlongM: 82 }, footprint: point(12, 9), name: "Gotokuji Bento" },
+        { id: "jp-v2", kind: "shop", anchor: { laneId: "jp-uptown-east-2", distanceAlongM: 40 }, footprint: point(12, 9), name: "Miyanosaka Market" },
+        { id: "jp-v3", kind: "residence", anchor: { laneId: "jp-north-east-2", distanceAlongM: 54 }, footprint: point(12, 10), name: "Setagaya Residence" },
+        { id: "jp-v4", kind: "office", anchor: { laneId: "jp-dori-east-2", distanceAlongM: 60 }, footprint: point(14, 12), name: "Setagaya-dori Office" },
       ],
       landmarks: [
         { id: "jp-gotokuji-station", kind: "station", center: point(-14, 6), size: point(20, 9), color: "#e85e59" },
@@ -1826,6 +1850,19 @@ export const FUEL_PRICE_PER_LITRE_BY_COUNTRY: Readonly<Record<CountryId, number>
   uk: 0.45,
   fr: 0.5,
   jp: 60,
+};
+
+/**
+ * Delivery reward per country: base fare plus a per-metre rate over the pickup →
+ * drop-off distance, in the local currency.
+ */
+export const GIG_FARE_BY_COUNTRY: Readonly<
+  Record<CountryId, { base: number; ratePerM: number }>
+> = {
+  us: { base: 4, ratePerM: 0.012 },
+  uk: { base: 4, ratePerM: 0.012 },
+  fr: { base: 5, ratePerM: 0.014 },
+  jp: { base: 600, ratePerM: 2 },
 };
 
 /** Starting cash a new (or migrated) player holds in each country's currency. */

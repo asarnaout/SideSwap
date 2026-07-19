@@ -17,6 +17,7 @@ import {
   DESTINATION_PROFILES,
   FUEL_CONSUMPTION_L_PER_M,
   FUEL_PRICE_PER_LITRE_BY_COUNTRY,
+  GIG_FARE_BY_COUNTRY,
   TANK_CAPACITY_L,
   formatMoney,
   getCountryProfile,
@@ -28,6 +29,7 @@ import {
 } from "./game/content";
 import {
   createDefaultProgress,
+  credit,
   debit,
   loadProgress,
   resetProgress,
@@ -36,6 +38,8 @@ import {
 } from "./game/progress";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import { Minimap } from "./game/MinimapCanvas";
+import { advanceGig, generateGig, gigTarget } from "./game/gigs";
+import type { Gig, GigVenuePosition } from "./game/gigs";
 import type {
   CameraMode,
   DestinationId,
@@ -173,6 +177,25 @@ const assistanceFromProgress = (
   reducedMotion: progress.accessibility.reducedMotion,
 });
 
+function resolveGigVenues(
+  map: ReturnType<typeof getMapPack>,
+): GigVenuePosition[] {
+  return (map.geometry.gigVenues ?? []).flatMap((venue) => {
+    const pose = resolveSimulationLaneAnchor(map.laneGraph.lanes, venue.anchor);
+    return pose
+      ? [
+          {
+            id: venue.id,
+            name: venue.name,
+            kind: venue.kind,
+            x: pose.x,
+            z: pose.z,
+          },
+        ]
+      : [];
+  });
+}
+
 export default function SideSwapApp() {
   const [progress, setProgress] = useState<PlayerProgressV2>(() =>
     createDefaultProgress(),
@@ -193,6 +216,9 @@ export default function SideSwapApp() {
   const [hud, setHud] = useState<GameHudSnapshot | null>(null);
   const [driveFuel, setDriveFuel] = useState(TANK_CAPACITY_L);
   const lastPoseRef = useRef<{ x: number; z: number } | null>(null);
+  const [gig, setGig] = useState<Gig | null>(null);
+  const gigSeedRef = useRef(1);
+  const paidGigRef = useRef<string | null>(null);
 
   // Drain fuel by the distance the car actually moved between HUD samples, then
   // mirror the pose for the next delta. Fuel lives in the drive session and is
@@ -211,6 +237,11 @@ export default function SideSwapApp() {
         );
       }
     }
+    setGig((current) =>
+      current && current.state !== "delivered"
+        ? advanceGig(current, { x: snapshot.playerX, z: snapshot.playerZ })
+        : current,
+    );
     lastPoseRef.current = { x: snapshot.playerX, z: snapshot.playerZ };
   }, []);
 
@@ -300,6 +331,30 @@ export default function SideSwapApp() {
     }
   }, [destinationId, hydrated, progress.accessibility.reducedMotion]);
 
+  // Pay out a completed delivery and immediately offer the next one. Guarded by
+  // paidGigRef so re-renders can't double-credit the same gig.
+  useEffect(() => {
+    if (!gig || gig.state !== "delivered" || paidGigRef.current === gig.id) {
+      return;
+    }
+    paidGigRef.current = gig.id;
+    const settled: PlayerProgressV2 = {
+      ...credit(progress, driveCountry.id, gig.reward),
+      completedGigCount: progress.completedGigCount + 1,
+    };
+    setProgress(settled);
+    saveProgress(settled);
+    gigSeedRef.current += 1;
+    setGig(
+      generateGig(
+        resolveGigVenues(runtimeMap),
+        GIG_FARE_BY_COUNTRY[driveCountry.id],
+        driveCountry.currency.code,
+        gigSeedRef.current,
+      ),
+    );
+  }, [gig, progress, driveCountry, runtimeMap]);
+
   const chooseDestination = (id: DestinationId) => {
     setDestinationId(id);
   };
@@ -337,6 +392,17 @@ export default function SideSwapApp() {
     setActiveSession(session);
     setDriveFuel(committedProgress.fuelByCountry[nextCountryId]);
     lastPoseRef.current = null;
+    const nextFreeDrive = getFreeDrive(scenarioId);
+    gigSeedRef.current = nextFreeDrive.trafficSeed;
+    paidGigRef.current = null;
+    setGig(
+      generateGig(
+        resolveGigVenues(getMapPack(nextFreeDrive.mapId)),
+        GIG_FARE_BY_COUNTRY[nextCountryId],
+        getCountryProfile(nextCountryId).currency.code,
+        gigSeedRef.current,
+      ),
+    );
     setHud(null);
     setPaused(false);
     setView("driving");
@@ -347,6 +413,7 @@ export default function SideSwapApp() {
     const persisted = setFuel(progress, driveCountry.id, driveFuel);
     setProgress(persisted);
     saveProgress(persisted);
+    setGig(null);
     setPaused(false);
     setActiveSession(null);
     setView("launcher");
@@ -405,6 +472,17 @@ export default function SideSwapApp() {
           return pose ? [{ x: pose.x, z: pose.z, color: "#5bbf6a" }] : [];
         })
       : [];
+  const gigTargetVenue = gig ? gigTarget(gig) : null;
+  const minimapPins = gigTargetVenue
+    ? [
+        ...gasPins,
+        {
+          x: gigTargetVenue.x,
+          z: gigTargetVenue.z,
+          color: gig?.state === "carrying" ? "#f2c658" : "#e0533f",
+        },
+      ]
+    : gasPins;
 
   if (!hydrated) {
     return (
@@ -454,6 +532,59 @@ export default function SideSwapApp() {
             <small>Keep {runtimeLesson.trafficSide}</small>
           </div>
         </div>
+        {gig && gig.state !== "delivered" && (
+          <div
+            style={{
+              position: "absolute",
+              left: "1rem",
+              top: "5.5rem",
+              maxWidth: "16rem",
+              padding: "0.7rem 0.9rem",
+              borderRadius: "0.9rem",
+              background: "rgba(15, 18, 22, 0.72)",
+              backdropFilter: "blur(10px)",
+              color: "#f4f6f8",
+              font: "600 0.9rem/1.3 system-ui, sans-serif",
+              pointerEvents: "none",
+              zIndex: 5,
+              borderLeft: `3px solid ${
+                gig.state === "carrying" ? "#f2c658" : "#e0533f"
+              }`,
+            }}
+          >
+            <div
+              style={{
+                fontSize: "0.66rem",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                opacity: 0.6,
+                marginBottom: "0.15rem",
+              }}
+            >
+              {gig.state === "carrying" ? "Deliver to" : "Pick up at"}
+            </div>
+            <strong style={{ fontSize: "1.02rem" }}>
+              {gig.state === "carrying" ? gig.dropoff.name : gig.pickup.name}
+            </strong>
+            <div
+              style={{
+                marginTop: "0.4rem",
+                display: "flex",
+                justifyContent: "space-between",
+                gap: "0.75rem",
+                fontSize: "0.78rem",
+                opacity: 0.82,
+              }}
+            >
+              <span>
+                {gig.state === "carrying"
+                  ? `from ${gig.pickup.name}`
+                  : `then ${gig.dropoff.name}`}
+              </span>
+              <strong>{formatMoney(gig.reward, driveCountry)}</strong>
+            </div>
+          </div>
+        )}
         <div
           aria-hidden="true"
           style={{
@@ -558,7 +689,7 @@ export default function SideSwapApp() {
             playerX={hud.playerX}
             playerZ={hud.playerZ}
             heading={hud.heading}
-            pins={gasPins}
+            pins={minimapPins}
           />
         )}
         {hud && (

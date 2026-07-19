@@ -395,6 +395,22 @@ export interface ServicePoint {
   readonly label: string;
 }
 
+export type GigVenueKind =
+  | "residence"
+  | "restaurant"
+  | "shop"
+  | "office"
+  | "depot";
+
+/** A named place gig pickups and drop-offs happen at, on the lane graph. */
+export interface GigVenue {
+  readonly id: string;
+  readonly kind: GigVenueKind;
+  readonly anchor: LaneAnchor;
+  readonly footprint: WorldPoint;
+  readonly name: string;
+}
+
 export interface ProceduralMapGeometry {
   readonly worldSize: WorldPoint;
   readonly roadWidth: number;
@@ -403,6 +419,7 @@ export interface ProceduralMapGeometry {
   readonly blocks: readonly ProceduralBlock[];
   readonly landmarks: readonly ProceduralLandmark[];
   readonly servicePoints?: readonly ServicePoint[];
+  readonly gigVenues?: readonly GigVenue[];
 }
 
 export interface MapPack {
