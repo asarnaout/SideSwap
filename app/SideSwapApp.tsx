@@ -85,6 +85,20 @@ const BADGE_LABELS: Record<string, string> = {
   london_city_ready: "London city ready",
 };
 
+// Glyph shown on each skill-badge coin in the Passport (design 7b).
+const BADGE_GLYPHS: Record<string, string> = {
+  right_side_ready: "→",
+  left_side_ready: "←",
+  signal_scholar: "◉",
+  roundabout_ready: "↻",
+  lane_courtesy: "⇄",
+  vulnerable_road_guardian: "★",
+  rail_crossing_ready: "✕",
+  side_swap_traveler: "⇆",
+  first_person_mastery: "◎",
+  london_city_ready: "✦",
+};
+
 const COUNTRY_MARKS: Record<CountryId, string> = {
   us: "NYC",
   uk: "UK",
@@ -1221,27 +1235,31 @@ function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack
           );
           return (
             <article className={`passport-stamp ${earned ? "earned" : ""}`} key={country.id}>
-              <span className="stamp-flag">{country.flagEmoji}</span>
-              <span className="stamp-ring">
+              <div className="stamp-mark" aria-hidden="true">
+                <span>{earned ? "PRACTISED" : "NOT YET"}</span>
                 <b>{COUNTRY_MARKS[country.id]}</b>
-                <small>{earned ? "PRACTISED" : "NOT YET"}</small>
-              </span>
-              <h2>{country.countryName}</h2>
+              </div>
+              <p className="stamp-eyebrow">
+                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
+              </p>
+              <h2>{countryDestinations.map((item) => item.destinationName).join(" & ")}</h2>
               <div className="passport-destination-progress">
                 {countryDestinations.map((item) => {
                   const lessons = getLessonsForDestination(item.id);
                   const completed = lessons.filter((lesson) =>
                     progress.completedLessonIds.includes(lesson.id),
                   ).length;
+                  const pct = lessons.length ? Math.round((completed / lessons.length) * 100) : 0;
+                  const full = lessons.length > 0 && completed >= lessons.length;
                   return (
                     <p key={item.id}>
                       <strong>{item.destinationName}</strong>
-                      <span>{completed}/{lessons.length} lessons</span>
+                      <span className="progress-track"><i className={full ? "full" : ""} style={{ width: `${pct}%` }} /></span>
+                      <em>{completed}/{lessons.length}</em>
                     </p>
                   );
                 })}
               </div>
-              <p>Traffic keeps {country.trafficSide}</p>
             </article>
           );
         })}
@@ -1254,11 +1272,16 @@ function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack
           </div>
         </div>
         <div className="badge-grid">
-          {Object.entries(BADGE_LABELS).map(([id, label]) => (
-            <div key={id} className={`badge-chip ${progress.badges.includes(id as never) ? "earned" : ""}`}>
-              <span aria-hidden="true">◆</span>{label}
-            </div>
-          ))}
+          {Object.entries(BADGE_LABELS).map(([id, label], index) => {
+            const earned = progress.badges.includes(id as never);
+            const tone = index % 2 === 0 ? "gold" : "sage";
+            return (
+              <div key={id} className={`badge-coin ${earned ? `earned ${tone}` : ""}`}>
+                <span className="badge-coin-face" aria-hidden="true">{BADGE_GLYPHS[id] ?? "◆"}</span>
+                <span className="badge-coin-label">{label}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>

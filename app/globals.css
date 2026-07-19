@@ -1132,67 +1132,73 @@ canvas:focus-visible {
 
 .passport-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 14px;
 }
 
 .passport-stamp {
   position: relative;
-  min-height: 270px;
   overflow: hidden;
-  padding: 23px;
-  border: 1px dashed #aba79c;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.43);
-  filter: grayscale(1);
-  opacity: 0.58;
+  padding: 20px;
+  border: 1px solid var(--hud-line);
+  border-radius: 18px;
+  background: var(--hud-surface);
 }
 
-.passport-stamp.earned {
-  border: 2px solid var(--asphalt);
-  background: var(--paper-bright);
-  filter: none;
-  opacity: 1;
-}
+.passport-stamp:not(.earned) { opacity: 0.55; }
 
-.stamp-flag { font-size: 30px; }
-
-.stamp-ring {
-  display: grid;
-  width: 112px;
-  height: 112px;
-  place-items: center;
-  margin: 16px auto 21px;
-  border: 4px double var(--destination-accent);
-  border-radius: 50%;
-  color: var(--destination-accent);
-  transform: rotate(-7deg);
+.stamp-mark {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 5px 11px;
+  border: 2px solid rgba(224, 120, 124, 0.5);
+  border-radius: 10px;
+  color: var(--hud-coral);
+  text-align: center;
+  transform: rotate(-10deg);
+  opacity: 0.9;
 }
+.stamp-mark span { display: block; font-size: 7px; font-weight: 800; letter-spacing: 0.16em; }
+.stamp-mark b { display: block; font-family: var(--font-serif); font-size: 15px; font-weight: 800; line-height: 1.05; letter-spacing: 0.06em; }
 
-.stamp-ring b { display: block; align-self: end; font-family: var(--font-serif); font-size: 24px; }
-.stamp-ring small { align-self: start; font-size: 7px; font-weight: 850; letter-spacing: 0.12em; }
-.passport-stamp h2 { margin: 0; font-family: var(--font-serif); font-size: 20px; }
-.passport-stamp p { margin: 5px 0 0; color: var(--ink-soft); font-size: 9px; }
-.passport-destination-progress {
-  display: grid;
-  gap: 5px;
-  margin: 8px 0 10px;
-}
+.stamp-eyebrow { margin: 0 0 6px; color: var(--hud-yellow); font-size: 9px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+.passport-stamp h2 { margin: 0; font-family: var(--font-serif); font-size: 21px; font-weight: 700; color: var(--hud-cream); line-height: 1.02; }
+
+.passport-destination-progress { display: grid; margin: 11px 0 0; }
 .passport-destination-progress p {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px auto;
+  align-items: center;
+  gap: 9px;
   margin: 0;
+  padding: 11px 0 2px;
+  border-top: 1px solid var(--hud-line);
 }
-.passport-destination-progress strong { color: var(--ink); font-size: 9px; }
-.passport-destination-progress span { white-space: nowrap; font-size: 8px; }
+.passport-destination-progress strong { overflow: hidden; color: var(--hud-cream); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.progress-track { display: block; height: 5px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.12); }
+.progress-track i { display: block; height: 100%; border-radius: 999px; background: var(--hud-yellow); }
+.progress-track i.full { background: var(--hud-green); }
+.passport-destination-progress em { color: var(--hud-sage-bright); font-size: 11px; font-weight: 700; font-style: normal; white-space: nowrap; }
 
 .badge-section { margin-top: 45px; }
-.badge-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.badge-chip { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 999px; color: #8b8980; background: rgba(255, 255, 255, 0.35); font-size: 10px; }
-.badge-chip.earned { border-color: var(--yellow-dark); background: #fff7d8; color: var(--ink); font-weight: 750; }
-.badge-chip span { color: var(--yellow-dark); }
+.badge-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px 12px; }
+.badge-coin { display: flex; flex-direction: column; align-items: center; gap: 9px; text-align: center; }
+.badge-coin-face {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  border: 1.5px solid var(--hud-line-2);
+  border-radius: 999px;
+  background: var(--hud-surface-2);
+  color: var(--hud-cream-40);
+  font-size: 22px;
+}
+.badge-coin.earned.gold .badge-coin-face { border-color: rgba(244, 200, 72, 0.5); background: radial-gradient(circle at 36% 30%, rgba(244, 200, 72, 0.28), rgba(244, 200, 72, 0.06)); color: var(--hud-yellow); }
+.badge-coin.earned.sage .badge-coin-face { border-color: rgba(122, 138, 94, 0.55); background: radial-gradient(circle at 36% 30%, rgba(122, 138, 94, 0.32), rgba(122, 138, 94, 0.08)); color: var(--hud-sage-bright); }
+.badge-coin-label { color: var(--hud-cream); font-size: 10px; font-weight: 700; line-height: 1.2; }
+.badge-coin:not(.earned) .badge-coin-label { color: var(--hud-cream-40); }
 
 .settings-grid {
   display: grid;
@@ -1363,6 +1369,7 @@ canvas:focus-visible {
   .swap-graphic { max-width: 230px; }
   .app-footer { flex-direction: column; padding-inline: 18px; }
   .passport-grid, .score-grid { grid-template-columns: 1fr; }
+  .badge-grid { grid-template-columns: repeat(4, 1fr); }
   .subpage { width: calc(100% - 32px); padding-top: 48px; }
   .results-page { padding: 18px 12px; }
   .results-card { padding: 30px 20px; border-radius: 24px; }
