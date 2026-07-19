@@ -35,6 +35,7 @@ import {
   setFuel,
 } from "./game/progress";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
+import { Minimap } from "./game/MinimapCanvas";
 import type {
   CameraMode,
   DestinationId,
@@ -394,6 +395,17 @@ export default function SideSwapApp() {
     setDriveFuel(TANK_CAPACITY_L);
   };
 
+  const gasPins =
+    view === "driving"
+      ? (runtimeMap.geometry.servicePoints ?? []).flatMap((service) => {
+          const pose = resolveSimulationLaneAnchor(
+            runtimeMap.laneGraph.lanes,
+            service.anchor,
+          );
+          return pose ? [{ x: pose.x, z: pose.z, color: "#5bbf6a" }] : [];
+        })
+      : [];
+
   if (!hydrated) {
     return (
       <main className="loading-screen" aria-live="polite">
@@ -538,6 +550,16 @@ export default function SideSwapApp() {
                   : `Need ${formatMoney(refuelCost, driveCountry)} to fill up`}
             </button>
           </div>
+        )}
+        {hud && (
+          <Minimap
+            worldSize={runtimeMap.geometry.worldSize}
+            roadSurfaces={runtimeMap.geometry.roadSurfaces}
+            playerX={hud.playerX}
+            playerZ={hud.playerZ}
+            heading={hud.heading}
+            pins={gasPins}
+          />
         )}
         {hud && (
           <div
