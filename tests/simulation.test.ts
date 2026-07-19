@@ -106,6 +106,54 @@ describe("deterministic simulation", () => {
     expect(snapshot.player.speedMps).toBe(0);
   });
 
+  it("under coach enforcement keeps driving on a wrong-way violation instead of resetting", () => {
+    // Same wrong-way setup as above, but open-world / gig enforcement: the drive
+    // must never freeze or snap the car back. The violation is still recorded as
+    // a non-terminating event so the future police-fine hook has something to act
+    // on. (heading π drives the car toward -z, against the +z lane direction.)
+    const simulation = new SimulationCore({
+      lessonId: "wrong-way-coach",
+      trafficSide: "right",
+      npcCount: 0,
+      enforcement: "coach",
+      lanes: [
+        {
+          id: "wide-lane",
+          points: [
+            { x: 0, z: -100 },
+            { x: 0, z: 100 },
+          ],
+          width: 20,
+          speedLimitMps: 20,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: 0, heading: Math.PI },
+      bounds: { minX: -30, maxX: 30, minZ: -120, maxZ: 120 },
+    });
+
+    for (let index = 0; index < 240; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+
+    const snapshot = simulation.getSnapshot();
+    // Never terminates: no incident, no frozen sim, no counted critical error.
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.activeIncident).toBeNull();
+    expect(snapshot.score.criticalErrors).toBe(0);
+    // The car kept travelling the wrong way rather than being reset to spawn.
+    expect(snapshot.player.speedMps).toBeGreaterThan(0);
+    expect(snapshot.player.z).toBeLessThan(-5);
+    // The violation is still surfaced as a non-terminating "minor" event.
+    const wrongWayEvents = simulation
+      .drainEvents()
+      .filter((event) => event.code === "wrong_way");
+    expect(wrongWayEvents.length).toBeGreaterThan(0);
+    expect(wrongWayEvents.every((event) => event.severity === "minor")).toBe(
+      true,
+    );
+  });
+
   it("returns to an authored checkpoint without clearing earned score", () => {
     const simulation = new SimulationCore({ npcCount: 0 });
     simulation.setCheckpoint({ id: "safe-turn", x: 5.25, z: -20, heading: 0 });

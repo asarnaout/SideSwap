@@ -342,6 +342,14 @@ export interface SimulationCoreConfig {
   readonly npcCount?: number;
   readonly maxForwardSpeedMps?: number;
   readonly maxReverseSpeedMps?: number;
+  /**
+   * How serious player rule violations are handled. "reset" (the default) snaps
+   * the car back to the last checkpoint and freezes the sim on a critical
+   * violation — the driving-coach behaviour. "coach" keeps the drive running
+   * and instead records the violation as a non-terminating event; used by
+   * open-world / gig sessions, whose event stream feeds the police-fine hook.
+   */
+  readonly enforcement?: "coach" | "reset";
 }
 
 export interface SimulationInput {
@@ -622,6 +630,7 @@ interface InternalConfig {
   minRuntimeSpawnDistanceM: number;
   maxForwardSpeedMps: number;
   maxReverseSpeedMps: number;
+  enforcement: "coach" | "reset";
 }
 
 interface RoadState {
@@ -1113,6 +1122,7 @@ export class SimulationCore {
       speedUnit: this.initialSpeedUnit,
       seed: this.initialSeed,
       lessonId: configuration.lessonId ?? "free-drive",
+      enforcement: configuration.enforcement ?? "reset",
       bounds: configuration.bounds ?? defaultBounds,
       spawn,
       checkpoints,
@@ -2852,27 +2862,33 @@ export class SimulationCore {
       this.wrongWaySeconds = Math.max(0, this.wrongWaySeconds - deltaSeconds * 2);
     }
     if (this.wrongWaySeconds >= 2) {
-      this.triggerCritical(
-        "wrong_way",
-        "You continued against the legal direction of traffic.",
-        `Keep to the ${this.config.trafficSide} and follow the direction shown by the lane arrows.`,
-        this.penaltyFor("wrong_way", 35),
-        { sustainedSeconds: Math.round(this.wrongWaySeconds * 10) / 10 },
-      );
-      return;
+      if (
+        this.flagCritical(
+          "wrong_way",
+          "You continued against the legal direction of traffic.",
+          `Keep to the ${this.config.trafficSide} and follow the direction shown by the lane arrows.`,
+          this.penaltyFor("wrong_way", 35),
+          { sustainedSeconds: Math.round(this.wrongWaySeconds * 10) / 10 },
+        )
+      ) {
+        return;
+      }
     }
 
     if (this.roadState.offRoad) this.offRoadSeconds += deltaSeconds;
     else this.offRoadSeconds = Math.max(0, this.offRoadSeconds - deltaSeconds * 2);
     if (this.offRoadSeconds >= 0.8) {
-      this.triggerCritical(
-        "out_of_bounds",
-        "The vehicle left the driveable area.",
-        "Slow down, steer smoothly, and remain between the lane boundaries.",
-        this.penaltyFor("out_of_bounds", 30),
-        { offRoadSeconds: Math.round(this.offRoadSeconds * 10) / 10 },
-      );
-      return;
+      if (
+        this.flagCritical(
+          "out_of_bounds",
+          "The vehicle left the driveable area.",
+          "Slow down, steer smoothly, and remain between the lane boundaries.",
+          this.penaltyFor("out_of_bounds", 30),
+          { offRoadSeconds: Math.round(this.offRoadSeconds * 10) / 10 },
+        )
+      ) {
+        return;
+      }
     }
 
     if (!projection) return;
@@ -3152,14 +3168,17 @@ export class SimulationCore {
             });
           }
         } else if (signalRequiresStop && light) {
-          this.triggerCritical(
-            "red_light",
-            "You entered the junction after the signal turned red.",
-            "Stop before the line and wait for a green signal.",
-            this.penaltyFor("red_light", 35),
-            { trafficLightId: light.id, speedMps: Math.round(speed * 10) / 10 },
-          );
-          return;
+          if (
+            this.flagCritical(
+              "red_light",
+              "You entered the junction after the signal turned red.",
+              "Stop before the line and wait for a green signal.",
+              this.penaltyFor("red_light", 35),
+              { trafficLightId: light.id, speedMps: Math.round(speed * 10) / 10 },
+            )
+          ) {
+            return;
+          }
         }
       } else if (stopLine.kind === "stop") {
         const minimumSpeed = this.stopApproachSpeeds.get(stopLine.id) ?? speed;
@@ -4838,6 +4857,38 @@ export class SimulationCore {
       if (!this.isTrafficGateSafe(npc, gate, true)) this.deactivateNpc(npc);
     }
     this.makeTrafficDecisions();
+  }
+
+  /**
+   * Register a serious player violation. Under "reset" enforcement (the
+   * driving-coach mode) this snaps the car back to the last checkpoint and
+   * freezes the sim, exactly as before. Under "coach" enforcement (open-world /
+   * gig sessions) the drive keeps running: the violation is still recorded and
+   * penalised and stays in the event stream — so the future police-fine hook can
+   * act on it — but the car is neither reset nor paused. Returns true when a
+   * hard reset was triggered, so the caller can stop this frame's evaluation.
+   */
+  private flagCritical(
+    code: "collision" | "wrong_way" | "red_light" | "out_of_bounds",
+    message: string,
+    correction: string,
+    penalty: number,
+    evidence: Record<string, string | number | boolean>,
+  ): boolean {
+    if (this.config.enforcement === "coach") {
+      this.emitEvent({
+        code,
+        severity: "minor",
+        message,
+        correction,
+        penalty,
+        category: "safety",
+        evidence,
+      });
+      return false;
+    }
+    this.triggerCritical(code, message, correction, penalty, evidence);
+    return true;
   }
 
   private triggerCritical(
