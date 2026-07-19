@@ -529,8 +529,7 @@ export default function SideSwapApp() {
               className="launcher-lead"
               style={{ margin: "0.5rem 0 0", maxWidth: "34ch", opacity: 0.82 }}
             >
-              Run deliveries and fares across five world cities — mind which side
-              of the road each one drives on.
+              London to Tokyo, the meter&rsquo;s always running.
             </p>
 
             <p className="launcher-pick-label">Choose a city</p>
