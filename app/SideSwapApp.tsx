@@ -993,7 +993,13 @@ export default function SideSwapApp() {
                     disabled={!unlocked}
                     onClick={() => beginDrive(lesson.id, destinationId)}
                   >
-                    {score ? "Drive again ↻" : unlocked ? "Start drive →" : "Locked"}
+                    {score ? (
+                      <>Drive again <span aria-hidden="true">↻</span></>
+                    ) : unlocked ? (
+                      <>Start drive <span aria-hidden="true">→</span></>
+                    ) : (
+                      "Locked"
+                    )}
                   </button>
                 </article>
               );
@@ -1010,7 +1016,11 @@ export default function SideSwapApp() {
                 disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId)}
                 onClick={() => beginDrive(destination.freeDriveId, destinationId)}
               >
-                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive →" : "Complete lesson 1 to unlock"}
+                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? (
+                  <>Start free drive <span aria-hidden="true">→</span></>
+                ) : (
+                  "Complete lesson 1 to unlock"
+                )}
               </button>
             </article>
           </div>
