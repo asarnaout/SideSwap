@@ -1318,7 +1318,10 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
       </div>
       <div className="settings-grid">
         <section className="settings-card" aria-labelledby="driving-preferences-title">
-          <h2 id="driving-preferences-title">Driving preferences</h2>
+          <div className="settings-card-head">
+            <h2 id="driving-preferences-title"><span className="settings-card-dot dot-yellow" aria-hidden="true" />Driving preferences</h2>
+            <p className="settings-card-sub">How the car handles and frames the road.</p>
+          </div>
           <OptionPicker<CameraMode>
             label="Default camera"
             value={draft.preferredCamera}
@@ -1331,7 +1334,10 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
           </div>
         </section>
         <section className="settings-card" aria-labelledby="accessibility-audio-title">
-          <h2 id="accessibility-audio-title">Accessibility & audio</h2>
+          <div className="settings-card-head">
+            <h2 id="accessibility-audio-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Accessibility &amp; audio</h2>
+            <p className="settings-card-sub">Coaching cues and sound.</p>
+          </div>
           <div className="settings-toggle-stack">
             <Toggle label="Subtitles" checked={draft.accessibility.subtitles} onChange={(checked) => updateAccessibility({ subtitles: checked })} />
             <Toggle label="Visual honk cue" checked={draft.accessibility.visualHonkIndicator} onChange={(checked) => updateAccessibility({ visualHonkIndicator: checked })} />
