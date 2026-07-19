@@ -15,33 +15,18 @@ export type DestinationId =
   | "jp-tokyo";
 
 export type MapId =
-  | "orientation-yard"
   | "nyc-upper-west-side"
   | "london-south-kensington"
   | "milton-keynes-oldbrook"
   | "calais-coquelles"
-  | "tokyo-setagaya"
-  | "folkestone-coquelles";
+  | "tokyo-setagaya";
 
-export type LessonId =
-  | "orientation-right"
-  | "orientation-left"
-  | "us-one-way-grid"
-  | "us-signals-crosswalks"
-  | "us-lane-choice"
-  | "uk-left-side-basics"
-  | "uk-roundabouts"
-  | "uk-dual-carriageway"
-  | "uk-london-left-side-basics"
-  | "uk-london-museum-traffic"
-  | "uk-london-exhibition-road"
-  | "fr-right-side-basics"
-  | "fr-priority-roundabouts"
-  | "fr-speed-merging"
-  | "jp-left-side-basics"
-  | "jp-vulnerable-road-users"
-  | "jp-railway-crossings"
-  | "uk-fr-side-swap";
+/**
+ * Vestigial: lessons were removed in the gig overhaul. Kept only as a `string`
+ * alias so the now-unused lesson fields on PlayerProgressV1 keep round-tripping
+ * until the V2 progress migration retires them.
+ */
+export type LessonId = string;
 
 export type FreeDriveId =
   | "free-us"
@@ -50,7 +35,7 @@ export type FreeDriveId =
   | "free-fr"
   | "free-jp";
 
-export type ScenarioId = LessonId | FreeDriveId;
+export type ScenarioId = FreeDriveId;
 
 export type RuleCode =
   | "collision"
@@ -150,7 +135,6 @@ export interface DestinationProfile {
   readonly destinationName: string;
   readonly destinationSubtitle: string;
   readonly mapId: MapId;
-  readonly lessonIds: readonly LessonId[];
   readonly freeDriveId: FreeDriveId;
   readonly promotion: DestinationPromotion;
   readonly cityMark: string;
@@ -417,42 +401,6 @@ export interface MapPack {
   readonly laneGraph: LaneGraph;
 }
 
-export interface LessonObjective {
-  readonly id: string;
-  readonly label: string;
-  readonly ruleCode?: RuleCode;
-}
-
-export type CoachTrigger =
-  | { readonly type: "start" }
-  | { readonly type: "route_progress"; readonly value: number }
-  | { readonly type: "checkpoint"; readonly checkpointId: string }
-  | {
-      readonly type: "maneuver_phase";
-      readonly maneuverId: string;
-      readonly phase: ManeuverPhase;
-    }
-  | { readonly type: "rule_event"; readonly ruleCode: RuleCode };
-
-export interface CoachPrompt {
-  readonly id: string;
-  readonly trigger: CoachTrigger;
-  readonly message: string;
-  readonly sourceReferenceId?: string;
-}
-
-export interface ProfileTransition {
-  readonly checkpointId: string;
-  readonly fromCountryId: CountryId;
-  readonly toCountryId: CountryId;
-  readonly message: string;
-}
-
-export interface LessonUnlocks {
-  readonly lessonIds: readonly LessonId[];
-  readonly freeDriveIds: readonly FreeDriveId[];
-}
-
 export type ManeuverPhase =
   | "approach"
   | "observe"
@@ -483,39 +431,6 @@ export interface OvertakeExercise {
   readonly sourceReferenceIds: readonly string[];
 }
 
-export type LessonManeuver = OvertakeExercise;
-
-export interface LessonDefinition {
-  readonly id: LessonId;
-  readonly kind: "orientation" | "guided" | "transition";
-  readonly title: string;
-  readonly summary: string;
-  readonly mapId: MapId;
-  readonly countryId?: CountryId;
-  readonly destinationId?: DestinationId;
-  readonly trafficSide: TrafficSide;
-  readonly difficulty: 1 | 2 | 3 | 4;
-  readonly estimatedMinutes: readonly [number, number];
-  readonly startSpawnId: string;
-  readonly route: readonly string[];
-  readonly objectives: readonly LessonObjective[];
-  readonly trafficSeed: number;
-  readonly trafficDensity: "none" | "light" | "moderate" | "busy";
-  readonly vulnerableRoadUsers: Readonly<{
-    pedestrians: number;
-    cyclists: number;
-  }>;
-  readonly checkpoints: readonly string[];
-  readonly coachPrompts: readonly CoachPrompt[];
-  readonly assessedRules: readonly RuleCode[];
-  readonly sourceReferenceIds: readonly string[];
-  readonly prerequisites: readonly LessonId[];
-  readonly unlocks: LessonUnlocks;
-  readonly profileTransitions?: readonly ProfileTransition[];
-  readonly scenarioClock?: ScenarioClock;
-  readonly maneuvers?: readonly LessonManeuver[];
-}
-
 export interface FreeDriveDefinition {
   readonly id: FreeDriveId;
   readonly countryId: CountryId;
@@ -523,7 +438,6 @@ export interface FreeDriveDefinition {
   readonly mapId: MapId;
   readonly title: string;
   readonly description: string;
-  readonly unlockAfter: LessonId;
   readonly startSpawnId: string;
   readonly trafficSeed: number;
   readonly scenarioClock?: ScenarioClock;
@@ -630,15 +544,3 @@ export interface PlayerProgressV1 {
   readonly updatedAt: string;
 }
 
-export interface RecommendedDrive {
-  readonly countryId: CountryId;
-  readonly destinationId: DestinationId;
-  readonly scenarioId: ScenarioId;
-  readonly kind: "orientation" | "lesson" | "capstone" | "free_drive";
-  readonly ctaLabel: string;
-}
-
-export interface LessonProgressUpdate {
-  readonly score: LessonScore;
-  readonly cameraUsed: CameraMode;
-}

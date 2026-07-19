@@ -1,5 +1,4 @@
 import type {
-  CoachPrompt,
   CountryId,
   CountryProfile,
   CountryVisualTheme,
@@ -14,7 +13,6 @@ import type {
   LaneNode,
   LaneRole,
   LaneSegment,
-  LessonDefinition,
   LessonId,
   MapCheckpoint,
   MapId,
@@ -41,7 +39,6 @@ import type {
 } from "./types";
 import {
   LONDON_FREE_DRIVE,
-  LONDON_LESSONS,
   LONDON_MAP_PACK,
   LONDON_RULE_REFERENCES,
 } from "./londonContent";
@@ -954,11 +951,6 @@ export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
     destinationName: "London",
     destinationSubtitle: "South Kensington Museum Quarter",
     mapId: "london-south-kensington",
-    lessonIds: [
-      "uk-london-left-side-basics",
-      "uk-london-museum-traffic",
-      "uk-london-exhibition-road",
-    ],
     freeDriveId: "free-uk-london",
     promotion: "featured",
     cityMark: "LDN",
@@ -970,7 +962,6 @@ export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
     destinationName: "New York City",
     destinationSubtitle: "Upper West Side · Broadway & West 72nd Street",
     mapId: "nyc-upper-west-side",
-    lessonIds: ["us-one-way-grid", "us-signals-crosswalks", "us-lane-choice"],
     freeDriveId: "free-us",
     promotion: "standard",
     cityMark: "NYC",
@@ -982,7 +973,6 @@ export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
     destinationName: "Milton Keynes",
     destinationSubtitle: "Roundabout Academy · South Grafton & Oldbrook",
     mapId: "milton-keynes-oldbrook",
-    lessonIds: ["uk-left-side-basics", "uk-roundabouts", "uk-dual-carriageway"],
     freeDriveId: "free-uk",
     promotion: "specialist",
     cityMark: "MK",
@@ -994,7 +984,6 @@ export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
     destinationName: "Calais & Coquelles",
     destinationSubtitle: "Roundabouts, priority rules & terminal roads",
     mapId: "calais-coquelles",
-    lessonIds: ["fr-right-side-basics", "fr-priority-roundabouts", "fr-speed-merging"],
     freeDriveId: "free-fr",
     promotion: "standard",
     cityMark: "CAL",
@@ -1006,34 +995,11 @@ export const DESTINATION_PROFILES: readonly DestinationProfile[] = [
     destinationName: "Tokyo — Setagaya",
     destinationSubtitle: "Gotokuji, Miyanosaka & narrow neighbourhood streets",
     mapId: "tokyo-setagaya",
-    lessonIds: ["jp-left-side-basics", "jp-vulnerable-road-users", "jp-railway-crossings"],
     freeDriveId: "free-jp",
     promotion: "standard",
     cityMark: "TYO",
     visualTheme: TOKYO_THEME,
   },
-];
-
-const orientationNodes = {
-  r0: node("yard-r0", -44, 32),
-  r1: node("yard-r1", 44, 32),
-  r2: node("yard-r2", 44, -32),
-  r3: node("yard-r3", -44, -32),
-  l0: node("yard-l0", -34, 22),
-  l1: node("yard-l1", -34, -22),
-  l2: node("yard-l2", 34, -22),
-  l3: node("yard-l3", 34, 22),
-};
-
-const orientationLanes: readonly LaneSegment[] = [
-  laneTrue("yard-r-north", orientationNodes.r0, orientationNodes.r1, "right", 20, ["yard-r-east"], "travel", [point(0, 30.2)]),
-  laneTrue("yard-r-east", orientationNodes.r1, orientationNodes.r2, "right", 20, ["yard-r-south"], "travel", [point(42.2, 0)]),
-  laneTrue("yard-r-south", orientationNodes.r2, orientationNodes.r3, "right", 20, ["yard-r-west"], "travel", [point(0, -30.2)]),
-  laneTrue("yard-r-west", orientationNodes.r3, orientationNodes.r0, "right", 20, ["yard-r-north"], "travel", [point(-42.2, 0)]),
-  laneTrue("yard-l-west", orientationNodes.l0, orientationNodes.l1, "left", 20, ["yard-l-south"], "travel", [point(-32.2, 0)]),
-  laneTrue("yard-l-south", orientationNodes.l1, orientationNodes.l2, "left", 20, ["yard-l-east"], "travel", [point(0, -20.2)]),
-  laneTrue("yard-l-east", orientationNodes.l2, orientationNodes.l3, "left", 20, ["yard-l-north"], "travel", [point(32.2, 0)]),
-  laneTrue("yard-l-north", orientationNodes.l3, orientationNodes.l0, "left", 20, ["yard-l-west"], "travel", [point(0, 20.2)]),
 ];
 
 // Upper West Side grid. x = east, z = north. Three two-way avenues — West End
@@ -1362,77 +1328,7 @@ const jpLanes: readonly LaneSegment[] = [
   laneTrue("jp-eastside-south", jpNodes.c, jpNodes.ssE, "left", 30, ["jp-dori-west-1"], "travel", [point(73.5, -120)], ["jp-eastside-north"], "jp-eastside-road", 3),
 ];
 
-const transitionNodes = {
-  uk0: node("xf-uk0", -144, -34),
-  uk1: node("xf-uk1", -76, -34),
-  uk2: node("xf-uk2", -24, 0),
-  gate: node("xf-gate", 0, 0),
-  fr0: node("xf-fr0", 24, 0),
-  fr1: node("xf-fr1", 76, 34),
-  fr2: node("xf-fr2", 144, 34),
-};
-
-const transitionLanes: readonly LaneSegment[] = [
-  laneTrue("xf-uk-approach", transitionNodes.uk0, transitionNodes.uk1, "left", 30, ["xf-uk-terminal"], "terminal", [point(-110, -32.25)], ["xf-uk-approach-opposite"]),
-  laneTrue("xf-uk-approach-opposite", transitionNodes.uk1, transitionNodes.uk0, "left", 30, [], "terminal", [point(-110, -35.75)], ["xf-uk-approach"], "xf-uk-road", 3.5),
-  lane("xf-uk-terminal", transitionNodes.uk1, transitionNodes.uk2, "left", 15, ["xf-shuttle"], "terminal", [point(-48, -20)]),
-  lane("xf-shuttle", transitionNodes.uk2, transitionNodes.gate, "left", 10, ["xf-fr-terminal"], "terminal"),
-  lane("xf-fr-terminal", transitionNodes.gate, transitionNodes.fr0, "right", 10, ["xf-fr-exit"], "terminal", [], undefined, undefined, undefined, "kmh"),
-  lane("xf-fr-exit", transitionNodes.fr0, transitionNodes.fr1, "right", 30, ["xf-fr-road"], "terminal", [point(48, 18)], undefined, undefined, undefined, "kmh"),
-  laneTrue("xf-fr-road", transitionNodes.fr1, transitionNodes.fr2, "right", 50, [], "travel", [point(110, 32.25)], ["xf-fr-road-opposite"], undefined, undefined, "kmh"),
-  laneTrue("xf-fr-road-opposite", transitionNodes.fr2, transitionNodes.fr1, "right", 50, [], "travel", [point(110, 35.75)], ["xf-fr-road"], "xf-fr-road-surface", 3.5, "kmh"),
-];
-
 export const MAP_PACKS: readonly MapPack[] = [
-  {
-    id: "orientation-yard",
-    name: "SideSwap Orientation Yard",
-    areaLabel: "Purpose-built training ground",
-    countryIds: ["us", "uk", "fr", "jp"],
-    source: osmSource(
-      { south: 0, west: 0, north: 0, east: 0 },
-      "https://www.openstreetmap.org/copyright",
-      "manifest-v1:orientation-yard",
-    ),
-    geometry: {
-      worldSize: point(140, 110),
-      roadWidth: 8,
-      shoulderWidth: 1.5,
-      roadSurfaces: [
-        roadSurface("yard-right-loop", [orientationNodes.r0.position, orientationNodes.r1.position, orientationNodes.r2.position, orientationNodes.r3.position, orientationNodes.r0.position], 8, ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"], "orientation"),
-        roadSurface("yard-left-loop", [orientationNodes.l0.position, orientationNodes.l1.position, orientationNodes.l2.position, orientationNodes.l3.position, orientationNodes.l0.position], 8, ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"], "orientation"),
-      ],
-      blocks: [],
-      landmarks: [
-        { id: "yard-cones", kind: "station", center: point(0, 0), size: point(18, 12), color: "#f27a32" },
-      ],
-    },
-    laneGraph: graph(
-      Object.values(orientationNodes),
-      orientationLanes,
-      [
-        control("yard-r-stop", "stop", 44, -32, 180, ["yard-r-east"], undefined,
-          [approach("yard-r-stop-approach", "yard-r-east", 56, "yard-r")],
-          [installation("yard-r-stop-sign", 50, -24, 180, "roadside_pole", "stop_sign", "primary")]),
-        control("yard-l-stop", "stop", -34, -22, 90, ["yard-l-west"], undefined,
-          [approach("yard-l-stop-approach", "yard-l-west", 36, "yard-l")],
-          [installation("yard-l-stop-sign", -28, -14, 180, "roadside_pole", "stop_sign", "primary")]),
-      ],
-      [],
-      [
-        anchoredSpawn("yard-r-player", "player", "yard-r-north", 10),
-        anchoredSpawn("yard-l-player", "player", "yard-l-west", 10),
-      ],
-      [
-        checkpoint("yard-r-start", "Right-side start", "yard-r-north", 10),
-        checkpoint("yard-r-turn", "Right-side turn", "yard-r-east", 12),
-        checkpoint("yard-r-stop-line", "Right-side stop line", "yard-r-east", 56),
-        checkpoint("yard-l-start", "Left-side start", "yard-l-west", 10),
-        checkpoint("yard-l-stop-line", "Left-side stop line", "yard-l-west", 36),
-        checkpoint("yard-l-turn", "Left-side turn", "yard-l-south", 14),
-      ],
-    ),
-  },
   LONDON_MAP_PACK,
   {
     id: "nyc-upper-west-side",
@@ -1854,568 +1750,6 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
     ),
   },
-  {
-    id: "folkestone-coquelles",
-    name: "Folkestone to Coquelles",
-    areaLabel: "Simplified terminal-to-terminal side-swap transition",
-    countryIds: ["uk", "fr"],
-    source: osmSource(
-      { south: 51.0862, west: 1.1118, north: 51.0962, east: 1.1342 },
-      "https://www.openstreetmap.org/export#map=16/51.0912/1.1230",
-      "manifest-v1:folkestone-coquelles-2026-07-10",
-      [{ south: 50.9287, west: 1.797, north: 50.9387, east: 1.8194 }],
-    ),
-    geometry: {
-      worldSize: point(330, 130),
-      roadWidth: 8,
-      shoulderWidth: 1.5,
-      roadSurfaces: [
-        roadSurface("xf-uk-road", [transitionNodes.uk0.position, transitionNodes.uk1.position], 7.4, ["xf-uk-approach", "xf-uk-approach-opposite"], "standard", [roadMarking("xf-uk-centre", "centre_dashed", [transitionNodes.uk0.position, transitionNodes.uk1.position], "white")]),
-        roadSurface("xf-uk-terminal-road", [transitionNodes.uk1.position, point(-48, -20), transitionNodes.uk2.position], 7.2, ["xf-uk-terminal"], "terminal"),
-        roadSurface("xf-shuttle-road", [transitionNodes.uk2.position, transitionNodes.gate.position], 6, ["xf-shuttle"], "terminal"),
-        roadSurface("xf-fr-terminal-road", [transitionNodes.gate.position, transitionNodes.fr0.position, point(48, 18), transitionNodes.fr1.position], 7.2, ["xf-fr-terminal", "xf-fr-exit"], "terminal"),
-        roadSurface("xf-fr-road-surface", [transitionNodes.fr1.position, transitionNodes.fr2.position], 7.4, ["xf-fr-road", "xf-fr-road-opposite"], "standard", [roadMarking("xf-fr-centre", "centre_dashed", [transitionNodes.fr1.position, transitionNodes.fr2.position], "white")]),
-      ],
-      blocks: [],
-      landmarks: [
-        { id: "xf-folkestone-terminal", kind: "terminal", center: point(-92, 26), size: point(76, 42), color: "#1f4f79" },
-        { id: "xf-shuttle", kind: "railway", center: point(0, 0), size: point(42, 12), color: "#d6d9dc" },
-        { id: "xf-coquelles-terminal", kind: "terminal", center: point(92, -26), size: point(76, 42), color: "#28589b" },
-      ],
-    },
-    laneGraph: graph(
-      Object.values(transitionNodes),
-      transitionLanes,
-      [
-        control("xf-side-swap-gate", "side_swap_gate", 0, 0, 90, ["xf-shuttle", "xf-fr-terminal"], undefined,
-          [approach("xf-side-swap-approach", "xf-shuttle", 18, "transition")],
-          [installation("xf-side-swap-portal", 0, 0, 90, "terminal_portal", "side_swap_gate", "primary")]),
-      ],
-      [],
-      [
-        anchoredSpawn("xf-player", "player", "xf-uk-approach", 12),
-        anchoredSpawn("xf-car-1", "vehicle", "xf-uk-approach", 56),
-        anchoredSpawn("xf-car-2", "vehicle", "xf-fr-road", 22),
-      ],
-      [
-        checkpoint("xf-uk-start", "Folkestone approach", "xf-uk-approach", 12),
-        checkpoint("xf-shuttle", "Shuttle transition", "xf-shuttle", 12),
-        checkpoint("xf-fr-start", "Coquelles exit", "xf-fr-terminal", 12),
-        checkpoint("xf-finish", "French road", "xf-fr-road", 42),
-      ],
-    ),
-  },
-];
-
-const prompt = (
-  id: string,
-  trigger: CoachPrompt["trigger"],
-  message: string,
-  sourceReferenceId?: string,
-): CoachPrompt => ({
-  id,
-  trigger,
-  message,
-  ...(sourceReferenceId ? { sourceReferenceId } : {}),
-});
-
-export const LESSONS: readonly LessonDefinition[] = [
-  {
-    id: "orientation-right",
-    kind: "orientation",
-    title: "Right-Side Orientation",
-    summary: "Build the habit of positioning the car on the right before entering real traffic.",
-    mapId: "orientation-yard",
-    trafficSide: "right",
-    difficulty: 1,
-    estimatedMinutes: [3, 5],
-    startSpawnId: "yard-r-player",
-    route: ["yard-r-north", "yard-r-east", "yard-r-south", "yard-r-west"],
-    objectives: [
-      { id: "right-position", label: "Keep to the right side", ruleCode: "wrong_way" },
-      { id: "right-stop", label: "Stop completely at the practice sign", ruleCode: "incomplete_stop" },
-      { id: "right-signal", label: "Signal before the final turn", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 101,
-    trafficDensity: "none",
-    vulnerableRoadUsers: { pedestrians: 0, cyclists: 0 },
-    checkpoints: ["yard-r-start", "yard-r-turn", "yard-r-stop-line"],
-    coachPrompts: [
-      prompt("right-start", { type: "start" }, "Keep the centre line on your left; your lane belongs on the right.", "us-nyc-traffic-rules"),
-      prompt("right-stop", { type: "route_progress", value: 0.25 }, "Brake to a complete stop, check both ways, then continue.", "us-nyc-traffic-rules"),
-    ],
-    assessedRules: ["wrong_way", "incomplete_stop", "missing_indicator"],
-    sourceReferenceIds: ["us-nyc-traffic-rules", "fr-eu-road-rules"],
-    prerequisites: [],
-    unlocks: { lessonIds: ["us-one-way-grid", "fr-right-side-basics"], freeDriveIds: [] },
-  },
-  {
-    id: "orientation-left",
-    kind: "orientation",
-    title: "Left-Side Orientation",
-    summary: "Build the habit of positioning the car on the left before entering real traffic.",
-    mapId: "orientation-yard",
-    trafficSide: "left",
-    difficulty: 1,
-    estimatedMinutes: [3, 5],
-    startSpawnId: "yard-l-player",
-    route: ["yard-l-west", "yard-l-south", "yard-l-east", "yard-l-north"],
-    objectives: [
-      { id: "left-position", label: "Keep to the left side", ruleCode: "wrong_way" },
-      { id: "left-stop", label: "Stop completely at the practice sign", ruleCode: "incomplete_stop" },
-      { id: "left-signal", label: "Signal before the final turn", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 102,
-    trafficDensity: "none",
-    vulnerableRoadUsers: { pedestrians: 0, cyclists: 0 },
-    checkpoints: ["yard-l-start", "yard-l-stop-line", "yard-l-turn"],
-    coachPrompts: [
-      prompt("left-start", { type: "start" }, "Keep the centre line on your right; your lane belongs on the left.", "uk-highway-code-road"),
-      prompt("left-stop", { type: "route_progress", value: 0.25 }, "Brake to a complete stop and look carefully before moving.", "uk-highway-code-road"),
-    ],
-    assessedRules: ["wrong_way", "incomplete_stop", "missing_indicator"],
-    sourceReferenceIds: ["uk-highway-code-road", "jp-jaf-traffic-rules"],
-    prerequisites: [],
-    unlocks: { lessonIds: ["uk-left-side-basics", "jp-left-side-basics"], freeDriveIds: [] },
-  },
-  ...LONDON_LESSONS,
-  {
-    id: "us-one-way-grid",
-    kind: "guided",
-    title: "The Manhattan Grid",
-    summary: "Enter a right-side city grid, follow one-way arrows and make deliberate turns.",
-    mapId: "nyc-upper-west-side",
-    countryId: "us",
-    destinationId: "us-nyc",
-    trafficSide: "right",
-    difficulty: 1,
-    estimatedMinutes: [5, 7],
-    startSpawnId: "nyc-player-1way",
-    route: ["nyc-72-e-1", "nyc-72-e-2", "nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-86-e-3", "nyc-col-s-1a", "nyc-col-s-1b"],
-    objectives: [
-      { id: "us-correct-side", label: "Keep right on two-way roads and read one-way lane signs separately", ruleCode: "wrong_way" },
-      { id: "us-one-way", label: "Follow one-way street arrows", ruleCode: "one_way" },
-      { id: "us-indicate", label: "Signal every turn", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 1101,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 6, cyclists: 2 },
-    checkpoints: ["nyc-r1-start", "nyc-r1-amst", "nyc-r1-86", "nyc-r1-finish"],
-    coachPrompts: [
-      prompt("us-grid-start", { type: "start" }, "This route uses the left lane because each upcoming turn is left. That lane choice does not change the city's right-side traffic rule.", "us-ny-dmv-turns"),
-      prompt("us-grid-arrow", { type: "route_progress", value: 0.48 }, "This cross street is one-way. Turn only in the signed direction.", "us-nyc-traffic-rules"),
-    ],
-    assessedRules: ["wrong_way", "one_way", "missing_indicator", "speeding"],
-    sourceReferenceIds: ["us-ny-dmv-turns", "us-nyc-traffic-rules"],
-    prerequisites: ["orientation-right"],
-    unlocks: { lessonIds: ["us-signals-crosswalks"], freeDriveIds: ["free-us"] },
-  },
-  {
-    id: "us-signals-crosswalks",
-    kind: "guided",
-    title: "Signals & Crosswalks",
-    summary: "Read city signals, stop before the conflict zone and yield through busy crossings.",
-    mapId: "nyc-upper-west-side",
-    countryId: "us",
-    destinationId: "us-nyc",
-    trafficSide: "right",
-    difficulty: 2,
-    estimatedMinutes: [6, 8],
-    startSpawnId: "nyc-player-signals",
-    route: ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-86-w-4"],
-    objectives: [
-      { id: "us-red", label: "Stop before a red-light conflict zone", ruleCode: "red_light" },
-      { id: "us-crosswalk", label: "Yield to pedestrians in crosswalks", ruleCode: "pedestrian_priority" },
-      { id: "us-gap", label: "Choose a safe turning gap", ruleCode: "unsafe_gap" },
-    ],
-    trafficSeed: 1102,
-    trafficDensity: "busy",
-    vulnerableRoadUsers: { pedestrians: 10, cyclists: 3 },
-    checkpoints: ["nyc-r2-start", "nyc-r2-signal", "nyc-r2-finish"],
-    coachPrompts: [
-      prompt("us-signal", { type: "checkpoint", checkpointId: "nyc-broadway" }, "Stop before the crosswalk on red; green still requires a clear junction.", "us-nyc-traffic-rules"),
-      prompt("us-ped", { type: "checkpoint", checkpointId: "nyc-79" }, "Scan both sidewalks and wait until the crosswalk is clear.", "us-nyc-traffic-rules"),
-    ],
-    assessedRules: ["red_light", "pedestrian_priority", "unsafe_gap", "following_distance"],
-    sourceReferenceIds: ["us-nyc-traffic-rules"],
-    prerequisites: ["us-one-way-grid"],
-    unlocks: { lessonIds: ["us-lane-choice"], freeDriveIds: [] },
-  },
-  {
-    id: "us-lane-choice",
-    kind: "guided",
-    title: "One-Way Lane Choice",
-    summary: "Choose a useful lane before each turn, observe carefully and avoid unnecessary weaving on the city grid.",
-    mapId: "nyc-upper-west-side",
-    countryId: "us",
-    destinationId: "us-nyc",
-    trafficSide: "right",
-    difficulty: 3,
-    estimatedMinutes: [6, 8],
-    startSpawnId: "nyc-player-lane",
-    route: ["nyc-we-n-1", "nyc-we-n-2", "nyc-86-e-1", "nyc-86-e-2"],
-    objectives: [
-      { id: "us-observe", label: "Mirror, signal and scan before every turn", ruleCode: "observation" },
-      { id: "us-position", label: "Choose the appropriate lane before each turn", ruleCode: "one_way" },
-      { id: "us-distance", label: "Maintain a safe following gap", ruleCode: "following_distance" },
-    ],
-    trafficSeed: 1103,
-    trafficDensity: "busy",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: ["nyc-r3-start", "nyc-r3-mid", "nyc-r3-finish"],
-    coachPrompts: [
-      prompt("us-lane-check", { type: "route_progress", value: 0.2 }, "You are already in the left-turn lane. Hold it predictably, check mirrors and signal before the turn instead of weaving for a temporary gap.", "us-ny-dmv-turns"),
-      prompt("us-weaving", { type: "rule_event", ruleCode: "one_way" }, "Read the one-way signs early and hold a predictable lane instead of weaving between gaps.", "us-nyc-traffic-rules"),
-    ],
-    assessedRules: ["observation", "one_way", "following_distance", "missing_indicator"],
-    sourceReferenceIds: ["us-ny-dmv-turns", "us-nyc-traffic-rules"],
-    prerequisites: ["us-signals-crosswalks"],
-    unlocks: { lessonIds: [], freeDriveIds: [] },
-  },
-  {
-    id: "uk-left-side-basics",
-    kind: "guided",
-    title: "Keep Left",
-    summary: "Settle into left-side positioning on quiet Oldbrook approaches.",
-    mapId: "milton-keynes-oldbrook",
-    countryId: "uk",
-    destinationId: "uk-milton-keynes",
-    trafficSide: "left",
-    difficulty: 1,
-    estimatedMinutes: [6, 8],
-    startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south", "uk-south-west", "uk-entry-west"],
-    objectives: [
-      { id: "uk-side", label: "Keep left after every turn", ruleCode: "wrong_way" },
-      { id: "uk-speed", label: "Match the posted mph limit", ruleCode: "speeding" },
-      { id: "uk-signal", label: "Signal before turning", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 1201,
-    trafficDensity: "light",
-    vulnerableRoadUsers: { pedestrians: 4, cyclists: 2 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-south-finish"],
-    coachPrompts: [
-      prompt("uk-start-coach", { type: "start" }, "Keep left and use the centre line as your right-hand reference.", "uk-highway-code-road"),
-      prompt("uk-speed-coach", { type: "route_progress", value: 0.5 }, "These signs are in miles per hour; slow before the next junction.", "uk-highway-code-road"),
-    ],
-    assessedRules: ["wrong_way", "speeding", "missing_indicator"],
-    sourceReferenceIds: ["uk-highway-code-road"],
-    prerequisites: ["orientation-left"],
-    unlocks: { lessonIds: ["uk-roundabouts"], freeDriveIds: ["free-uk"] },
-  },
-  {
-    id: "uk-roundabouts",
-    kind: "guided",
-    title: "Roundabout Rhythm",
-    summary: "Approach in the correct lane, give way to the right and circulate clockwise.",
-    mapId: "milton-keynes-oldbrook",
-    countryId: "uk",
-    destinationId: "uk-milton-keynes",
-    trafficSide: "left",
-    difficulty: 2,
-    estimatedMinutes: [8, 11],
-    startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-exit-east", "uk-entry-east", "uk-rb-e-s", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south"],
-    objectives: [
-      { id: "uk-yield", label: "Give way to traffic from the right", ruleCode: "roundabout_yield" },
-      { id: "uk-clockwise", label: "Circulate clockwise", ruleCode: "wrong_way" },
-      { id: "uk-exit", label: "Signal before your exit", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 1202,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 4, cyclists: 2 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-south-finish"],
-    coachPrompts: [
-      prompt("uk-rb-approach", { type: "checkpoint", checkpointId: "uk-roundabout" }, "Look right and wait for a safe gap before joining clockwise traffic.", "uk-highway-code-road"),
-      prompt("uk-rb-exit", { type: "route_progress", value: 0.55 }, "Signal left after the exit before yours, then leave into the left lane.", "uk-highway-code-road"),
-    ],
-    assessedRules: ["roundabout_yield", "wrong_way", "missing_indicator", "unsafe_gap"],
-    sourceReferenceIds: ["uk-highway-code-road"],
-    prerequisites: ["uk-left-side-basics"],
-    unlocks: { lessonIds: ["uk-dual-carriageway"], freeDriveIds: [] },
-  },
-  {
-    id: "uk-dual-carriageway",
-    kind: "guided",
-    title: "Dual Carriageway Courtesy",
-    summary: "Observe, pass a slower lead vehicle in the passing lane and return to the normal travel lane when safely clear.",
-    mapId: "milton-keynes-oldbrook",
-    countryId: "uk",
-    destinationId: "uk-milton-keynes",
-    trafficSide: "left",
-    difficulty: 3,
-    estimatedMinutes: [8, 11],
-    startSpawnId: "uk-player",
-    route: ["uk-entry-south", "uk-rb-s-w", "uk-exit-west", "uk-west-south", "uk-entry-south", "uk-rb-s-w", "uk-rb-w-n", "uk-exit-north", "uk-dual-n-east", "uk-east-north", "uk-entry-east", "uk-rb-e-s", "uk-rb-s-w", "uk-rb-w-n", "uk-rb-n-e", "uk-rb-e-s", "uk-exit-south"],
-    objectives: [
-      { id: "uk-merge", label: "Merge into a safe gap", ruleCode: "merge" },
-      { id: "uk-passing", label: "Use the right passing lane only for overtaking", ruleCode: "lane_misuse" },
-      { id: "uk-return", label: "Return to the normal travel lane when safely clear", ruleCode: "observation" },
-    ],
-    trafficSeed: 1203,
-    trafficDensity: "busy",
-    vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["uk-start", "uk-roundabout", "uk-finish", "uk-dual", "uk-south-finish"],
-    coachPrompts: [
-      prompt("uk-dual-merge", { type: "checkpoint", checkpointId: "uk-dual" }, "Match the posted limit smoothly, check right and enter only when the passing lane is clear.", "uk-highway-code-general"),
-      prompt("uk-dual-observe", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "observe" }, "CHECK RIGHT — mirror, signal and use a quick look before leaving the normal travel lane.", "uk-highway-code-general"),
-      prompt("uk-dual-pass", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "pass" }, "PASS WHEN CLEAR — remain within the limit and leave a safe gap around the lead vehicle.", "uk-highway-code-road"),
-      prompt("uk-dual-return", { type: "maneuver_phase", maneuverId: "uk-mk-guided-overtake", phase: "return" }, "RETURN LEFT — signal and re-establish the normal travel lane only after you can see a safe clearance.", "uk-highway-code-motorways"),
-      prompt("uk-dual-honk", { type: "rule_event", ruleCode: "lane_misuse" }, "The right lane is the passing lane. A honk does not permit speeding; return to the normal travel lane when safe.", "uk-highway-code-motorways"),
-    ],
-    assessedRules: ["merge", "lane_misuse", "observation", "following_distance", "speeding"],
-    sourceReferenceIds: ["uk-highway-code-general", "uk-highway-code-road", "uk-highway-code-motorways"],
-    prerequisites: ["uk-roundabouts"],
-    unlocks: { lessonIds: ["uk-fr-side-swap"], freeDriveIds: [] },
-    maneuvers: [
-      {
-        id: "uk-mk-guided-overtake",
-        kind: "overtake",
-        normalLaneId: "uk-dual-n-east",
-        passingLaneId: "uk-dual-n-east-pass",
-        corridorStart: anchor("uk-dual-n-east", 10),
-        corridorEnd: anchor("uk-dual-n-east", 680),
-        leadVehicleStart: anchor("uk-dual-n-east", 108),
-        leadVehicleSpeedFactor: 0.75,
-        phaseAnchors: {
-          approach: anchor("uk-dual-n-east", 28),
-          observe: anchor("uk-dual-n-east", 60),
-          pass: anchor("uk-dual-n-east-pass", 190),
-          return: anchor("uk-dual-n-east-pass", 540),
-          complete: anchor("uk-dual-n-east", 650),
-        },
-        predictedClearSeconds: 4,
-        returnStandstillGapM: 4,
-        returnHeadwaySeconds: 1.8,
-        sourceReferenceIds: ["uk-highway-code-general", "uk-highway-code-road", "uk-highway-code-motorways"],
-      },
-    ],
-  },
-  {
-    id: "fr-right-side-basics",
-    kind: "guided",
-    title: "Keep Right in France",
-    summary: "Reset to right-side traffic, read km/h signs and make calm first turns.",
-    mapId: "calais-coquelles",
-    countryId: "fr",
-    destinationId: "fr-calais",
-    trafficSide: "right",
-    difficulty: 1,
-    estimatedMinutes: [6, 8],
-    startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south"],
-    objectives: [
-      { id: "fr-side", label: "Keep right after turns", ruleCode: "wrong_way" },
-      { id: "fr-kmh", label: "Read speed limits in km/h", ruleCode: "speeding" },
-      { id: "fr-signal", label: "Signal every turn", ruleCode: "missing_indicator" },
-    ],
-    trafficSeed: 1301,
-    trafficDensity: "light",
-    vulnerableRoadUsers: { pedestrians: 3, cyclists: 3 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-roundabout-finish"],
-    coachPrompts: [
-      prompt("fr-start-coach", { type: "start" }, "Keep right. Your speedometer and signs now use kilometres per hour.", "fr-eu-road-rules"),
-      prompt("fr-turn-coach", { type: "route_progress", value: 0.5 }, "After the turn, deliberately settle back onto the right side.", "fr-eu-road-rules"),
-    ],
-    assessedRules: ["wrong_way", "speeding", "missing_indicator"],
-    sourceReferenceIds: ["fr-eu-road-rules"],
-    prerequisites: ["orientation-right"],
-    unlocks: { lessonIds: ["fr-priority-roundabouts"], freeDriveIds: ["free-fr"] },
-  },
-  {
-    id: "fr-priority-roundabouts",
-    kind: "guided",
-    title: "Priority & Roundabouts",
-    summary: "Read signed yields and travel counterclockwise through French roundabouts.",
-    mapId: "calais-coquelles",
-    countryId: "fr",
-    destinationId: "fr-calais",
-    trafficSide: "right",
-    difficulty: 2,
-    estimatedMinutes: [8, 11],
-    startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-exit-north", "fr-north-west", "fr-entry-west", "fr-rb-w-s", "fr-exit-south"],
-    objectives: [
-      { id: "fr-priority", label: "Obey the signed local-road yield", ruleCode: "unsafe_gap" },
-      { id: "fr-yield", label: "Yield before entering the roundabout", ruleCode: "roundabout_yield" },
-      { id: "fr-circle", label: "Circulate counterclockwise", ruleCode: "wrong_way" },
-    ],
-    trafficSeed: 1302,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 4, cyclists: 4 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-priority", "fr-local-finish", "fr-roundabout-finish"],
-    coachPrompts: [
-      prompt("fr-rb", { type: "checkpoint", checkpointId: "fr-roundabout" }, "Give way to traffic already circulating from your left, then travel counterclockwise.", "fr-eu-road-rules"),
-      prompt("fr-priority-coach", { type: "checkpoint", checkpointId: "fr-priority" }, "The roadside sign controls this junction. Slow, observe both directions and yield before entering the conflict area.", "fr-eu-road-rules"),
-    ],
-    assessedRules: ["roundabout_yield", "wrong_way", "unsafe_gap", "observation"],
-    sourceReferenceIds: ["fr-eu-road-rules"],
-    prerequisites: ["fr-right-side-basics"],
-    unlocks: { lessonIds: ["fr-speed-merging"], freeDriveIds: [] },
-  },
-  {
-    id: "fr-speed-merging",
-    kind: "guided",
-    title: "Faster-Road Lane Discipline",
-    summary: "Read km/h limits, maintain a safe gap and stay in the normal right-hand travel lane.",
-    mapId: "calais-coquelles",
-    countryId: "fr",
-    destinationId: "fr-calais",
-    trafficSide: "right",
-    difficulty: 3,
-    estimatedMinutes: [8, 11],
-    startSpawnId: "fr-player",
-    route: ["fr-entry-south", "fr-rb-s-e", "fr-exit-east", "fr-east-south", "fr-entry-south", "fr-rb-s-e", "fr-rb-e-n", "fr-rb-n-w", "fr-rb-w-s", "fr-exit-south", "fr-south-east", "fr-entry-east", "fr-rb-e-n", "fr-exit-north"],
-    objectives: [
-      { id: "fr-lane-discipline", label: "Use the normal right-hand lane when not passing", ruleCode: "lane_misuse" },
-      { id: "fr-speed", label: "Stay within the posted km/h limit", ruleCode: "speeding" },
-      { id: "fr-gap", label: "Maintain a safe following gap", ruleCode: "following_distance" },
-    ],
-    trafficSeed: 1303,
-    trafficDensity: "busy",
-    vulnerableRoadUsers: { pedestrians: 2, cyclists: 1 },
-    checkpoints: ["fr-start", "fr-roundabout", "fr-local-finish", "fr-finish", "fr-speed-finish"],
-    coachPrompts: [
-      prompt("fr-normal-lane-coach", { type: "checkpoint", checkpointId: "fr-finish" }, "Stay in the normal right-hand travel lane. Use the left lane only when a real pass is necessary and safe.", "fr-eu-road-rules"),
-      prompt("fr-pass-coach", { type: "rule_event", ruleCode: "lane_misuse" }, "Keep right when not passing. The passing lane never exempts you from the speed limit.", "fr-eu-road-rules"),
-    ],
-    assessedRules: ["lane_misuse", "following_distance", "observation", "speeding"],
-    sourceReferenceIds: ["fr-eu-road-rules"],
-    prerequisites: ["fr-priority-roundabouts"],
-    unlocks: { lessonIds: ["uk-fr-side-swap"], freeDriveIds: [] },
-  },
-  {
-    id: "jp-left-side-basics",
-    kind: "guided",
-    title: "Setagaya Left-Side Basics",
-    summary: "Keep left on compact neighbourhood streets and slow early for limited visibility.",
-    mapId: "tokyo-setagaya",
-    countryId: "jp",
-    destinationId: "jp-tokyo",
-    trafficSide: "left",
-    difficulty: 1,
-    estimatedMinutes: [6, 9],
-    startSpawnId: "jp-player",
-    route: ["jp-south-east-1", "jp-narrow-north-1", "jp-narrow-north-2", "jp-narrowhill-north", "jp-uptown-east-2", "jp-easthill-south", "jp-junction-south", "jp-center-west-2", "jp-center-west-3", "jp-centerrow-west-w", "jp-westside-north-2", "jp-northrow-west-e"],
-    objectives: [
-      { id: "jp-side", label: "Keep left on narrow streets", ruleCode: "wrong_way" },
-      { id: "jp-speed", label: "Slow for visibility and km/h limits", ruleCode: "speeding" },
-      { id: "jp-stop", label: "Stop at the marked neighbourhood junction", ruleCode: "incomplete_stop" },
-    ],
-    trafficSeed: 1401,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 9, cyclists: 6 },
-    checkpoints: ["jp-start", "jp-stop", "jp-uptown", "jp-station", "jp-west-finish"],
-    coachPrompts: [
-      prompt("jp-start-coach", { type: "start" }, "Keep left and leave extra space for people emerging from narrow side streets.", "jp-jaf-traffic-rules"),
-      prompt("jp-stop-coach", { type: "checkpoint", checkpointId: "jp-stop" }, "Stop at the marking even when the street appears quiet.", "jp-jaf-traffic-rules"),
-    ],
-    assessedRules: ["wrong_way", "speeding", "incomplete_stop", "observation"],
-    sourceReferenceIds: ["jp-jaf-traffic-rules"],
-    prerequisites: ["orientation-left"],
-    unlocks: { lessonIds: ["jp-vulnerable-road-users"], freeDriveIds: ["free-jp"] },
-  },
-  {
-    id: "jp-vulnerable-road-users",
-    kind: "guided",
-    title: "People, Bicycles & Narrow Streets",
-    summary: "Scan around parked vehicles and give pedestrians and cyclists patient space.",
-    mapId: "tokyo-setagaya",
-    countryId: "jp",
-    destinationId: "jp-tokyo",
-    trafficSide: "left",
-    difficulty: 2,
-    estimatedMinutes: [7, 10],
-    startSpawnId: "jp-player",
-    route: ["jp-south-east-1", "jp-shrine-south", "jp-dori-east-2", "jp-eastside-north", "jp-curve-north", "jp-center-west-1", "jp-center-west-2", "jp-center-west-3", "jp-centerrow-west-w", "jp-westside-south-1", "jp-southrow-west-e"],
-    objectives: [
-      { id: "jp-ped", label: "Yield at the station crosswalk", ruleCode: "pedestrian_priority" },
-      { id: "jp-bike", label: "Wait behind cyclists where the narrow street leaves no safe passing room", ruleCode: "cyclist_clearance" },
-      { id: "jp-follow", label: "Keep a patient following distance", ruleCode: "following_distance" },
-    ],
-    trafficSeed: 1402,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 14, cyclists: 9 },
-    checkpoints: ["jp-start", "jp-dori", "jp-station", "jp-vru-finish"],
-    coachPrompts: [
-      prompt("jp-station-ped", { type: "checkpoint", checkpointId: "jp-station" }, "Cover the brake and let people finish crossing before you move.", "jp-jaf-traffic-rules"),
-      prompt("jp-cycle-space", { type: "route_progress", value: 0.65 }, "Do not squeeze past on this 2.7-metre street. Wait behind the cyclist until they leave the narrow section.", "jp-jaf-traffic-rules"),
-    ],
-    assessedRules: ["pedestrian_priority", "cyclist_clearance", "following_distance", "observation"],
-    sourceReferenceIds: ["jp-jaf-traffic-rules"],
-    prerequisites: ["jp-left-side-basics"],
-    unlocks: { lessonIds: ["jp-railway-crossings"], freeDriveIds: [] },
-  },
-  {
-    id: "jp-railway-crossings",
-    kind: "guided",
-    title: "Setagaya Line Crossing",
-    summary: "Approach a railway crossing slowly, stop, observe and keep the tracks clear.",
-    mapId: "tokyo-setagaya",
-    countryId: "jp",
-    destinationId: "jp-tokyo",
-    trafficSide: "left",
-    difficulty: 3,
-    estimatedMinutes: [8, 11],
-    startSpawnId: "jp-player",
-    route: ["jp-south-east-1", "jp-south-east-2", "jp-curve-north", "jp-center-west-1", "jp-center-west-2", "jp-center-west-3", "jp-west-north", "jp-north-east-1", "jp-north-east-2", "jp-easthill-north", "jp-uptown-west-1", "jp-uptown-west-2", "jp-westhill-south", "jp-west-south"],
-    objectives: [
-      { id: "jp-rail-stop", label: "Stop and check before the railway", ruleCode: "railway_crossing" },
-      { id: "jp-rail-clear", label: "Cross only when the far side is clear", ruleCode: "unsafe_gap" },
-      { id: "jp-rail-observe", label: "Look and listen in both directions", ruleCode: "observation" },
-    ],
-    trafficSeed: 1403,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 10, cyclists: 7 },
-    checkpoints: ["jp-start", "jp-rail", "jp-rail-clear", "jp-station", "jp-finish", "jp-hill-finish"],
-    coachPrompts: [
-      prompt("jp-rail-coach", { type: "checkpoint", checkpointId: "jp-rail" }, "Stop before the tracks, check both directions and enter only if you can clear the crossing.", "jp-jaf-traffic-rules"),
-      prompt("jp-rail-clear-coach", { type: "checkpoint", checkpointId: "jp-rail-clear" }, "Keep moving until the whole vehicle is clear of the tracks, then rebuild your following gap.", "jp-jaf-traffic-rules"),
-      prompt("jp-rail-block", { type: "rule_event", ruleCode: "railway_crossing" }, "Never queue on the tracks. Wait before the crossing until your exit is open.", "jp-jaf-traffic-rules"),
-    ],
-    assessedRules: ["railway_crossing", "unsafe_gap", "observation", "following_distance"],
-    sourceReferenceIds: ["jp-jaf-traffic-rules"],
-    prerequisites: ["jp-vulnerable-road-users"],
-    unlocks: { lessonIds: [], freeDriveIds: [] },
-  },
-  {
-    id: "uk-fr-side-swap",
-    kind: "transition",
-    title: "The SideSwap Crossing",
-    summary: "Enter Folkestone on the left, take a simplified shuttle transition and leave Coquelles on the right.",
-    mapId: "folkestone-coquelles",
-    trafficSide: "left",
-    difficulty: 4,
-    estimatedMinutes: [7, 10],
-    startSpawnId: "xf-player",
-    route: ["xf-uk-approach", "xf-uk-terminal", "xf-shuttle", "xf-fr-terminal", "xf-fr-exit", "xf-fr-road"],
-    objectives: [
-      { id: "xf-uk-side", label: "Approach the UK terminal on the left", ruleCode: "wrong_way" },
-      { id: "xf-switch", label: "Follow the marked side-swap transition", ruleCode: "border_transition" },
-      { id: "xf-fr-side", label: "Leave the French terminal on the right", ruleCode: "wrong_way" },
-    ],
-    trafficSeed: 1501,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 2, cyclists: 0 },
-    checkpoints: ["xf-uk-start", "xf-shuttle", "xf-fr-start", "xf-finish"],
-    coachPrompts: [
-      prompt("xf-start", { type: "start" }, "You are still in the UK: keep left through the Folkestone approach.", "uk-highway-code-road"),
-      prompt("xf-swap", { type: "checkpoint", checkpointId: "xf-shuttle" }, "The shuttle is the transition. Follow the lane arrows; French traffic rules begin at the exit.", "fr-eu-road-rules"),
-      prompt("xf-fr", { type: "checkpoint", checkpointId: "xf-fr-start" }, "Reset your road position now: keep right, read km/h signs and follow the marked terminal exit.", "fr-eu-road-rules"),
-    ],
-    assessedRules: ["wrong_way", "border_transition", "observation", "speeding"],
-    sourceReferenceIds: ["uk-highway-code-road", "fr-eu-road-rules"],
-    prerequisites: ["uk-dual-carriageway", "fr-speed-merging"],
-    unlocks: { lessonIds: [], freeDriveIds: [] },
-    profileTransitions: [
-      {
-        checkpointId: "xf-fr-start",
-        fromCountryId: "uk",
-        toCountryId: "fr",
-        message: "Side swapped: keep right and use km/h.",
-      },
-    ],
-  },
 ];
 
 export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
@@ -2427,7 +1761,6 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     mapId: "nyc-upper-west-side",
     title: "Free Drive — New York City",
     description: "Explore the Upper West Side miniature with coaching available but no fixed route.",
-    unlockAfter: "us-one-way-grid",
     startSpawnId: "nyc-player-1way",
     trafficSeed: 2101,
   },
@@ -2438,7 +1771,6 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     mapId: "milton-keynes-oldbrook",
     title: "Free Drive — Milton Keynes",
     description: "Practise left-side roads and roundabout approaches at your own pace.",
-    unlockAfter: "uk-left-side-basics",
     startSpawnId: "uk-player",
     trafficSeed: 2201,
   },
@@ -2449,7 +1781,6 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     mapId: "calais-coquelles",
     title: "Free Drive — Calais & Coquelles",
     description: "Explore right-side French roads, roundabouts and priority junctions.",
-    unlockAfter: "fr-right-side-basics",
     startSpawnId: "fr-player",
     trafficSeed: 2301,
   },
@@ -2460,7 +1791,6 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
     mapId: "tokyo-setagaya",
     title: "Free Drive — Tokyo Setagaya",
     description: "Navigate narrow left-side neighbourhood streets with patient local traffic.",
-    unlockAfter: "jp-left-side-basics",
     startSpawnId: "jp-player",
     trafficSeed: 2401,
   },
@@ -2505,7 +1835,6 @@ const destinationById = new Map(
   DESTINATION_PROFILES.map((profile) => [profile.id, profile]),
 );
 const mapById = new Map(MAP_PACKS.map((mapPack) => [mapPack.id, mapPack]));
-const lessonById = new Map(LESSONS.map((lesson) => [lesson.id, lesson]));
 const freeDriveById = new Map(FREE_DRIVES.map((freeDrive) => [freeDrive.id, freeDrive]));
 
 export function getCountryProfile(id: CountryId): CountryProfile {
@@ -2532,30 +1861,12 @@ export function getMapPack(id: MapId): MapPack {
   return mapPack;
 }
 
-export function getLesson(id: LessonId): LessonDefinition {
-  const lesson = lessonById.get(id);
-  if (!lesson) {
-    throw new Error(`Unknown SideSwap lesson: ${id}`);
-  }
-  return lesson;
-}
-
 export function getFreeDrive(id: FreeDriveId): FreeDriveDefinition {
   const freeDrive = freeDriveById.get(id);
   if (!freeDrive) {
     throw new Error(`Unknown SideSwap free-drive scenario: ${id}`);
   }
   return freeDrive;
-}
-
-export function getLessonsForCountry(id: CountryId): readonly LessonDefinition[] {
-  return LESSONS.filter((lesson) => lesson.countryId === id);
-}
-
-export function getLessonsForDestination(
-  id: DestinationId,
-): readonly LessonDefinition[] {
-  return LESSONS.filter((lesson) => lesson.destinationId === id);
 }
 
 export function getFreeDriveForDestination(
@@ -2568,109 +1879,20 @@ export function getFreeDriveForDestination(
   return freeDrive;
 }
 
-export function getOrientationForTrafficSide(side: TrafficSide): LessonDefinition {
-  return getLesson(side === "right" ? "orientation-right" : "orientation-left");
-}
-
-export function getCountryIdForScenario(scenarioId: ScenarioId): CountryId {
-  if (freeDriveById.has(scenarioId as FreeDriveId)) {
-    return getFreeDrive(scenarioId as FreeDriveId).countryId;
-  }
-
-  const lesson = getLesson(scenarioId as LessonId);
-  if (lesson.countryId) {
-    return lesson.countryId;
-  }
-  if (lesson.id === "orientation-right") {
-    return "us";
-  }
-  if (lesson.id === "orientation-left") {
-    return "uk";
-  }
-  if (lesson.profileTransitions?.length) {
-    return lesson.profileTransitions[0].fromCountryId;
-  }
-  return "uk";
-}
-
-export function getDestinationIdForScenario(
-  scenarioId: ScenarioId,
-): DestinationId | undefined {
-  if (freeDriveById.has(scenarioId as FreeDriveId)) {
-    return getFreeDrive(scenarioId as FreeDriveId).destinationId;
-  }
-  return getLesson(scenarioId as LessonId).destinationId;
-}
-
 /**
- * Keeps the launch destination authoritative. Shared orientation lessons may
- * run in either country that follows the same traffic side, while the
- * Folkestone-to-Coquelles capstone must begin with the UK profile.
- */
-export function isScenarioCompatibleWithCountry(
-  scenarioId: ScenarioId,
-  countryId: CountryId,
-): boolean {
-  const profile = getCountryProfile(countryId);
-
-  if (freeDriveById.has(scenarioId as FreeDriveId)) {
-    return getFreeDrive(scenarioId as FreeDriveId).countryId === countryId;
-  }
-
-  const lesson = getLesson(scenarioId as LessonId);
-  if (lesson.countryId) {
-    return lesson.countryId === countryId && lesson.trafficSide === profile.trafficSide;
-  }
-  if (lesson.kind === "orientation") {
-    return lesson.trafficSide === profile.trafficSide;
-  }
-  if (lesson.kind === "transition") {
-    return (
-      lesson.profileTransitions?.[0]?.fromCountryId === countryId &&
-      lesson.trafficSide === profile.trafficSide
-    );
-  }
-  return false;
-}
-
-/**
- * Validates the complete launch tuple, not only the jurisdiction. Destination
- * scenarios must belong to the exact miniature and map selected by the player.
- * Orientations are shared by traffic side, while the capstone can start from
- * either UK destination.
+ * Validates the launch tuple: the chosen free drive must belong to the exact
+ * destination, country and map the player selected.
  */
 export function isScenarioCompatibleWithDestination(
   scenarioId: ScenarioId,
   destinationId: DestinationId,
 ): boolean {
   const destination = getDestinationProfile(destinationId);
-  const country = getCountryProfile(destination.countryId);
-
-  if (freeDriveById.has(scenarioId as FreeDriveId)) {
-    const freeDrive = getFreeDrive(scenarioId as FreeDriveId);
-    return (
-      freeDrive.destinationId === destinationId &&
-      freeDrive.countryId === destination.countryId &&
-      freeDrive.mapId === destination.mapId
-    );
-  }
-
-  const lesson = getLesson(scenarioId as LessonId);
-  if (lesson.kind === "orientation") {
-    return lesson.trafficSide === country.trafficSide;
-  }
-  if (lesson.id === "uk-fr-side-swap") {
-    return (
-      destination.countryId === "uk" &&
-      lesson.profileTransitions?.[0]?.fromCountryId === "uk" &&
-      lesson.trafficSide === country.trafficSide
-    );
-  }
+  const freeDrive = getFreeDrive(scenarioId);
   return (
-    lesson.destinationId === destinationId &&
-    lesson.countryId === destination.countryId &&
-    lesson.mapId === destination.mapId &&
-    lesson.trafficSide === country.trafficSide
+    freeDrive.destinationId === destinationId &&
+    freeDrive.countryId === destination.countryId &&
+    freeDrive.mapId === destination.mapId
   );
 }
 
@@ -2712,8 +1934,13 @@ export function getRuleReference(referenceId: string): OfficialRuleReference | u
   return undefined;
 }
 
+/**
+ * Vestigial: lessons were removed in the gig overhaul. Kept so the progress
+ * migration can still recognise and preserve legacy lesson-id keys as opaque
+ * strings until the V2 progress migration retires them.
+ */
 export function isLessonId(value: string): value is LessonId {
-  return lessonById.has(value as LessonId);
+  return typeof value === "string" && value.length > 0;
 }
 
 export function isFreeDriveId(value: string): value is FreeDriveId {

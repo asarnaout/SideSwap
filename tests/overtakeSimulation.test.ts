@@ -4,11 +4,6 @@ import {
   type SimulationCoreConfig,
   type SimulationInput,
 } from "../app/game/simulation";
-import { getLesson, getMapPack } from "../app/game/content";
-import {
-  buildSimulationCoreConfig,
-  resolveSimulationLaneAnchor,
-} from "../app/game/simulationAdapter";
 
 type AttemptOptions = Readonly<{
   blocker?: boolean;
@@ -327,126 +322,6 @@ describe("guided overtaking simulation", () => {
       if (pacedSpeedMps >= 14.5) break;
     }
     expect(pacedSpeedMps).toBeCloseTo(15, 0);
-  });
-});
-
-describe("authored Milton Keynes overtaking", () => {
-  it("keeps its lead at the taught pace, keeps every gate ahead, and completes the real pass-and-return", () => {
-    const lesson = getLesson("uk-dual-carriageway");
-    const mapPack = getMapPack(lesson.mapId);
-    const normalLane = mapPack.laneGraph.lanes.find(
-      (lane) => lane.id === "uk-dual-n-east",
-    );
-    const passingLane = mapPack.laneGraph.lanes.find(
-      (lane) => lane.id === "uk-dual-n-east-pass",
-    );
-    const start = resolveSimulationLaneAnchor(mapPack.laneGraph.lanes, {
-      laneId: "uk-dual-n-east",
-      distanceAlongM: 8,
-    });
-    expect(normalLane).toBeDefined();
-    expect(passingLane).toBeDefined();
-    expect(start).not.toBeNull();
-
-    const base = buildSimulationCoreConfig({
-      lesson,
-      mapPack,
-      trafficSide: "left",
-      speedUnit: "mph",
-    });
-    const simulation = new SimulationCore({
-      ...base,
-      spawn: { x: start!.x, z: start!.z, heading: start!.heading },
-      checkpoints: [],
-      finish: undefined,
-      npcCount: 1,
-    });
-    const leadId = "maneuver-uk-mk-guided-overtake-lead";
-    const laneLimitMps = base.lanes?.find(
-      (lane) => lane.id === "uk-dual-n-east",
-    )?.speedLimitMps ?? 0;
-    const gateLabels = new Set<string>();
-    const eventsById = new Map<string, ReturnType<SimulationCore["getSnapshot"]>["recentEvents"][number]>();
-    let passActionSent = false;
-    let returnActionSent = false;
-    let maxLeadSpeedBeforeClear = 0;
-
-    for (let tick = 0; tick < 60 * 75; tick += 1) {
-      const before = simulation.getSnapshot();
-      const maneuver = before.maneuvers[0];
-      let observe: SimulationInput["observe"];
-      let signalRight = false;
-      let signalLeft = false;
-      if (maneuver?.phase === "observe" && !passActionSent) {
-        observe = "right";
-        signalRight = true;
-        passActionSent = true;
-      }
-      if (maneuver?.safeToReturn && !returnActionSent) {
-        observe = "left";
-        signalLeft = true;
-        returnActionSent = true;
-      }
-
-      const targetZ =
-        (maneuver?.phase === "observe" ||
-          maneuver?.phase === "pass" ||
-          maneuver?.phase === "establish_clearance" ||
-          maneuver?.phase === "return") &&
-        !returnActionSent
-          ? 116.25
-          : 119.75;
-      const desiredHeading = Math.atan2(20, targetZ - before.player.z);
-      const headingError = Math.atan2(
-        Math.sin(desiredHeading - before.player.heading),
-        Math.cos(desiredHeading - before.player.heading),
-      );
-      const after = simulation.step(1 / 60, {
-        throttle: 1,
-        steer: Math.max(-1, Math.min(1, headingError * 3.2)),
-        viewHeading: before.player.heading,
-        ...(observe ? { observe } : {}),
-        ...(signalRight ? { signalRight: true } : {}),
-        ...(signalLeft ? { signalLeft: true } : {}),
-      });
-      for (const event of after.recentEvents) eventsById.set(event.id, event);
-      const lead = after.npcs.find((npc) => npc.id === leadId);
-      if (after.maneuvers[0]?.phase !== "establish_clearance" && lead) {
-        maxLeadSpeedBeforeClear = Math.max(maxLeadSpeedBeforeClear, lead.speedMps);
-      }
-      const gate = after.maneuvers[0]?.gate;
-      if (gate) {
-        gateLabels.add(gate.label);
-        const localAhead =
-          (gate.x - after.player.x) * Math.sin(gate.heading) +
-          (gate.z - after.player.z) * Math.cos(gate.heading);
-        expect(localAhead).toBeGreaterThanOrEqual(-0.5);
-      }
-      if (after.maneuvers[0]?.phase === "complete") break;
-    }
-
-    const snapshot = simulation.getSnapshot();
-    expect(maxLeadSpeedBeforeClear).toBeGreaterThanOrEqual(laneLimitMps * 0.7);
-    expect(maxLeadSpeedBeforeClear).toBeLessThanOrEqual(laneLimitMps * 0.76);
-    expect(snapshot.maneuvers[0]).toMatchObject({
-      phase: "complete",
-      passEntryValid: true,
-      returnEntryValid: true,
-      safeToReturn: true,
-    });
-    expect(gateLabels).toEqual(
-      new Set(["CHECK RIGHT", "PASS WHEN CLEAR", "RETURN LEFT"]),
-    );
-    expect(
-      [...eventsById.values()].some(
-        (event) =>
-          event.severity === "critical" ||
-          event.code === "unsafe_gap" ||
-          event.code === "missing_indicator" ||
-          (event.code === "observation" &&
-            event.evidence.maneuverId === "uk-mk-guided-overtake"),
-      ),
-    ).toBe(false);
   });
 });
 
