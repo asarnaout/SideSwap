@@ -42,3 +42,10 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Purchased (Envato/3DOcean) 3D asset — its licence forbids redistributing the
+# raw model in this public repo. It is present locally and in private builds;
+# regenerate it from your purchased OBJ with:
+#   node tools/build-london-bus.mjs <path-to/LowPoly-LondonBus_OBJ.obj>
+# When absent, the game falls back to the procedural double-decker automatically.
+/public/models/vehicles/london-double-decker.glb

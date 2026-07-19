@@ -1371,9 +1371,9 @@ function buildModelVehicle(
           : readAlbedo(source).clone();
       standard.specularColor = new Color3(0.22, 0.22, 0.22);
       standard.specularPower = 44;
-      if (/headlight/i.test(source.name)) {
+      if (/headlight|front[_ ]?light/i.test(source.name)) {
         standard.emissiveColor = MODEL_HEAD_GLOW;
-      } else if (/taillight/i.test(source.name)) {
+      } else if (/taillight|back[_ ]?light|rear[_ ]?light/i.test(source.name)) {
         standard.emissiveColor = MODEL_TAIL_GLOW;
         taillightMaterials.push(standard);
       }

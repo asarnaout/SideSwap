@@ -11,10 +11,12 @@ import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
 describe("vehicle model assets", () => {
   registerBuiltInLoaders();
   const dir = path.join(process.cwd(), "public/models/vehicles");
-  // van.glb is excluded: it carries an embedded PNG texture that the headless
-  // NullEngine cannot decode (no GPU/image decoder). It loads fine in-browser;
-  // the untextured models below already prove loader registration + parsing.
-  const files = ["sedan.glb", "sports.glb", "suv.glb", "bus.glb"];
+  // Every registered vehicle glb is texture-free (solid materials only), so the
+  // headless NullEngine can parse them all and prove loader registration. (The
+  // former Kenney van.glb was excluded because it referenced an external PNG that
+  // 404'd and silently fell the van back to procedural; the replacement is a
+  // self-contained, recolourable CC-BY van with no textures.)
+  const files = ["sedan.glb", "sports.glb", "suv.glb", "bus.glb", "van.glb"];
 
   const load = async (file: string) => {
     const engine = new NullEngine();
@@ -44,7 +46,28 @@ describe("vehicle model assets", () => {
     expect(bus.container.materials.some((m) => m.name === "039BE5")).toBe(true);
     bus.scene.dispose();
     bus.engine.dispose();
+
+    const van = await load("van.glb");
+    expect(van.container.materials.some((m) => m.name === "bodywork")).toBe(true);
+    van.scene.dispose();
+    van.engine.dispose();
   });
+
+  // The London double-decker is a purchased Envato asset: gitignored (absent in
+  // CI), present after a local `node tools/build-london-bus.mjs` build. Validate
+  // it when present — semantic `body` material the registry recolours — and skip
+  // where the file is absent so CI stays green without the asset.
+  const busPath = path.join(dir, "london-double-decker.glb");
+  it.skipIf(!fs.existsSync(busPath))(
+    "loads the local London double-decker with a recolourable body",
+    async () => {
+      const { container, scene, engine } = await load("london-double-decker.glb");
+      expect(container.meshes.length).toBeGreaterThan(0);
+      expect(container.materials.some((m) => m.name === "body")).toBe(true);
+      scene.dispose();
+      engine.dispose();
+    },
+  );
 });
 
 describe("character model assets", () => {
