@@ -21,13 +21,6 @@ export type MapId =
   | "calais-coquelles"
   | "tokyo-setagaya";
 
-/**
- * Vestigial: lessons were removed in the gig overhaul. Kept only as a `string`
- * alias so the now-unused lesson fields on PlayerProgressV1 keep round-tripping
- * until the V2 progress migration retires them.
- */
-export type LessonId = string;
-
 export type FreeDriveId =
   | "free-us"
   | "free-uk"
@@ -112,6 +105,14 @@ export interface CountryVisualTheme {
   readonly roadsideDetails: readonly string[];
 }
 
+export interface CurrencyProfile {
+  /** ISO 4217 code, e.g. "GBP". */
+  readonly code: string;
+  readonly symbol: string;
+  /** Fraction digits for display/rounding — 2 for GBP/USD/EUR, 0 for JPY. */
+  readonly minorUnits: number;
+}
+
 export interface CountryProfile {
   readonly id: CountryId;
   readonly countryCode: string;
@@ -120,6 +121,7 @@ export interface CountryProfile {
   readonly trafficSide: TrafficSide;
   readonly defaultSteeringSide: SteeringSide;
   readonly speedUnit: SpeedUnit;
+  readonly currency: CurrencyProfile;
   readonly lanePolicy: LanePolicy;
   readonly roundaboutPolicy: RoundaboutPolicy;
   readonly priorityPolicy: string;
@@ -492,30 +494,6 @@ export interface ScoringConfig {
   readonly penalties: Readonly<Partial<Record<RuleCode, number>>>;
 }
 
-export interface LessonScore {
-  readonly lessonId: LessonId;
-  readonly total: number;
-  readonly safety: number;
-  readonly ruleUse: number;
-  readonly vehicleControl: number;
-  readonly criticalErrors: number;
-  readonly mastered: boolean;
-  readonly completedAt: string;
-  readonly durationMs: number;
-}
-
-export type BadgeId =
-  | "right_side_ready"
-  | "left_side_ready"
-  | "signal_scholar"
-  | "roundabout_ready"
-  | "lane_courtesy"
-  | "vulnerable_road_guardian"
-  | "rail_crossing_ready"
-  | "side_swap_traveler"
-  | "first_person_mastery"
-  | "london_city_ready";
-
 export interface AccessibilityPreferences {
   readonly subtitles: boolean;
   readonly visualHonkIndicator: boolean;
@@ -529,14 +507,15 @@ export interface AccessibilityPreferences {
   readonly coachVolume: number;
 }
 
-export interface PlayerProgressV1 {
-  readonly version: 1;
-  readonly completedLessonIds: readonly LessonId[];
-  readonly lessonScores: Readonly<Partial<Record<LessonId, LessonScore>>>;
-  readonly badges: readonly BadgeId[];
-  readonly passportStamps: readonly CountryId[];
-  readonly familiarTrafficSide: TrafficSide;
-  readonly familiarSideConfirmed: boolean;
+export interface PlayerProgressV2 {
+  readonly version: 2;
+  /** Money on hand per country, in that country's own currency units. */
+  readonly walletByCountry: Readonly<Record<CountryId, number>>;
+  /** Litres of fuel in the car, tracked per country. */
+  readonly fuelByCountry: Readonly<Record<CountryId, number>>;
+  /** Lifetime gig earnings per country (a running stat, never spent). */
+  readonly lifetimeEarnings: Readonly<Record<CountryId, number>>;
+  readonly completedGigCount: number;
   readonly lastCountryId: CountryId;
   readonly lastDestinationId: DestinationId;
   readonly preferredCamera: CameraMode;

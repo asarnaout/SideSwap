@@ -32,7 +32,7 @@ import type {
   CameraMode,
   DestinationId,
   GameSessionConfig,
-  PlayerProgressV1,
+  PlayerProgressV2,
   ScenarioId,
 } from "./game/types";
 
@@ -156,7 +156,7 @@ const DESTINATION_PREVIEW_FOCUS: Partial<Record<DestinationId, string>> = {
 };
 
 const assistanceFromProgress = (
-  progress: PlayerProgressV1,
+  progress: PlayerProgressV2,
 ): GameSessionConfig["assistance"] => ({
   coachPrompts: true,
   subtitles: progress.accessibility.subtitles,
@@ -166,7 +166,7 @@ const assistanceFromProgress = (
 });
 
 export default function SideSwapApp() {
-  const [progress, setProgress] = useState<PlayerProgressV1>(() =>
+  const [progress, setProgress] = useState<PlayerProgressV2>(() =>
     createDefaultProgress(),
   );
   const [hydrated, setHydrated] = useState(false);
@@ -294,7 +294,7 @@ export default function SideSwapApp() {
     // Fail fast if a UI regression ever pairs a scenario with a destination
     // whose jurisdiction does not match.
     resolveSessionConfig(session);
-    const committedProgress: PlayerProgressV1 = {
+    const committedProgress: PlayerProgressV2 = {
       ...progress,
       lastCountryId: nextCountryId,
       lastDestinationId: nextDestinationId,
@@ -316,7 +316,7 @@ export default function SideSwapApp() {
     setView("launcher");
   };
 
-  const saveSettings = (next: PlayerProgressV1) => {
+  const saveSettings = (next: PlayerProgressV2) => {
     setProgress(next);
     setDestinationId(next.lastDestinationId);
     setCamera(next.preferredCamera);
@@ -653,9 +653,9 @@ function RangeControl({
   );
 }
 
-function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerProgressV1; onSave: (value: PlayerProgressV1) => void; onReset: () => void; onBack: () => void }) {
+function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerProgressV2; onSave: (value: PlayerProgressV2) => void; onReset: () => void; onBack: () => void }) {
   const [draft, setDraft] = useState(progress);
-  const updateAccessibility = (patch: Partial<PlayerProgressV1["accessibility"]>) => setDraft((current) => ({ ...current, accessibility: { ...current.accessibility, ...patch } }));
+  const updateAccessibility = (patch: Partial<PlayerProgressV2["accessibility"]>) => setDraft((current) => ({ ...current, accessibility: { ...current.accessibility, ...patch } }));
   return (
     <section className="subpage settings-page">
       <div className="subpage-heading">
