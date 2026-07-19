@@ -747,6 +747,7 @@ export default function SideSwapApp() {
               <>Swap your instincts.<br /><em>Start driving.</em></>
             </h1>
 
+            <p className="launcher-pick-label">Choose a destination</p>
             <div
               className="launcher-destinations"
               role="group"

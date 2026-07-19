@@ -1,21 +1,70 @@
 @import "tailwindcss";
 
+/* ── Self-hosted type (offline-first: no runtime font requests) ───────────── */
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("/fonts/figtree.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Playfair Display";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/playfair-display.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Playfair Display";
+  font-style: italic;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/playfair-display-italic.woff2") format("woff2");
+}
+
 :root {
-  --ink: #132126;
-  --ink-soft: #425258;
-  --paper: #f4f0e6;
-  --paper-bright: #fffdf7;
+  /* ── Dark-HUD design language ─────────────────────────────────────────── */
+  --hud-bg: #141d20; /* espresso ground */
+  --hud-bg-deep: #10171a; /* deeper pockets */
+  --hud-ink: #182326; /* near-black — text on yellow, logo mark */
+  --hud-cream: #f4efde; /* primary text on dark */
+  --hud-cream-72: rgba(244, 239, 222, 0.72);
+  --hud-cream-60: rgba(244, 239, 222, 0.6);
+  --hud-cream-50: rgba(244, 239, 222, 0.5);
+  --hud-cream-40: rgba(244, 239, 222, 0.4);
+  --hud-sage: #8f9a7e; /* eyebrows, meta */
+  --hud-sage-lt: #a9b090;
+  --hud-sage-bright: #b7c79a; /* green score text */
+  --hud-yellow: #f4c848; /* primary accent */
+  --hud-green: #7a8a5e; /* complete / success */
+  --hud-coral: #e0787c; /* stamps, destructive */
+  --hud-orange: #f0a56a; /* capstone */
+  --hud-surface: rgba(255, 255, 255, 0.05); /* card fill */
+  --hud-surface-2: rgba(255, 255, 255, 0.07); /* raised card fill */
+  --hud-surface-3: rgba(255, 255, 255, 0.09);
+  --hud-line: rgba(255, 255, 255, 0.09); /* hairlines */
+  --hud-line-2: rgba(255, 255, 255, 0.12); /* card borders */
+  --hud-line-3: rgba(255, 255, 255, 0.16); /* button borders */
+  --font-sans: "Figtree", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: "Playfair Display", Georgia, "Times New Roman", serif;
+
+  /* ── Legacy semantic tokens, remapped onto the dark palette ───────────── */
+  --ink: var(--hud-cream);
+  --ink-soft: var(--hud-cream-60);
+  --paper: var(--hud-bg);
+  --paper-bright: #1b262a;
   --asphalt: #172326;
   --asphalt-2: #243237;
-  --line: #d8d4c9;
-  --yellow: #f4c849;
+  --line: var(--hud-line-2);
+  --yellow: #f4c848;
   --yellow-dark: #d4a916;
-  --red: #d95845;
-  --green: #286a55;
+  --red: #e5484d;
+  --green: var(--hud-green);
   --destination-accent: #e5484d;
   --destination-sky: #a9c9d3;
   --destination-ground: #5f8d50;
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 * {
@@ -24,7 +73,7 @@
 
 html {
   min-width: 320px;
-  background: var(--paper);
+  background: var(--hud-bg);
   scroll-behavior: smooth;
 }
 
@@ -32,11 +81,13 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 8% 2%, rgba(244, 200, 73, 0.11), transparent 26rem),
-    var(--paper);
-  color: var(--ink);
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    radial-gradient(circle at 8% 0%, rgba(244, 200, 72, 0.08), transparent 30rem),
+    radial-gradient(circle at 100% 100%, rgba(122, 138, 94, 0.06), transparent 34rem),
+    var(--hud-bg);
+  color: var(--hud-cream);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -91,7 +142,7 @@ canvas:focus-visible {
   width: min(1440px, calc(100% - 48px));
   min-height: 84px;
   margin: 0 auto;
-  border-bottom: 1px solid rgba(19, 33, 38, 0.16);
+  border-bottom: 1px solid var(--hud-line);
 }
 
 .brand-button {
@@ -111,10 +162,11 @@ canvas:focus-visible {
   height: 43px;
   place-items: center;
   overflow: hidden;
-  border: 2px solid var(--ink);
   border-radius: 14px;
-  background: var(--yellow);
-  box-shadow: inset 0 -5px 0 rgba(0, 0, 0, 0.08);
+  background: var(--hud-yellow);
+  box-shadow:
+    0 6px 16px -5px rgba(244, 200, 72, 0.55),
+    inset 0 -5px 0 rgba(0, 0, 0, 0.09);
   font-size: 0;
   transform: rotate(-3deg);
 }
@@ -125,14 +177,14 @@ canvas:focus-visible {
   width: 4px;
   height: 30px;
   border-radius: 4px;
-  background: var(--ink);
+  background: var(--hud-ink);
   transform: rotate(28deg) translateX(-5px);
 }
 
 .brand-mark::after {
   position: absolute;
   height: 9px;
-  border-top: 4px dashed var(--yellow);
+  border-top: 4px dashed var(--hud-yellow);
   background: transparent;
   transform: rotate(28deg) translate(5px, -1px);
 }
@@ -155,7 +207,7 @@ canvas:focus-visible {
 }
 
 .brand-copy small {
-  color: var(--ink-soft);
+  color: var(--hud-sage);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.2em;
@@ -172,28 +224,41 @@ canvas:focus-visible {
   align-items: center;
   gap: 8px;
   min-height: 42px;
-  padding: 0 13px;
+  padding: 0 15px;
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
-  color: #39494f;
+  color: var(--hud-cream-50);
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 750;
+  font-size: 14px;
+  font-weight: 700;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 
-.header-actions button:hover,
+.header-actions button:hover {
+  border-color: var(--hud-line-2);
+  background: var(--hud-surface);
+  color: var(--hud-cream);
+}
+
 .header-actions button.active {
-  border-color: var(--line);
-  background: rgba(255, 255, 255, 0.48);
+  background: var(--hud-surface-2);
+  border-color: var(--hud-line-2);
+  color: var(--hud-cream);
 }
 
 .header-actions span {
-  padding: 3px 6px;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: var(--asphalt);
-  color: #fff;
-  font-size: 9px;
+  background: var(--hud-surface-2);
+  color: var(--hud-cream);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.header-actions button.active span {
+  background: var(--hud-yellow);
+  color: var(--hud-ink);
 }
 
 .hero-section {
@@ -209,10 +274,11 @@ canvas:focus-visible {
 
 .eyebrow {
   margin: 0 0 13px;
-  color: #6a5d2a;
+  color: var(--hud-sage-lt);
   font-size: 10px;
-  font-weight: 850;
-  letter-spacing: 0.18em;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
 }
 
 .hero-copy h1,
@@ -221,9 +287,9 @@ canvas:focus-visible {
 .results-card h1,
 .side-swap-banner h2 {
   margin: 0;
-  font-family: Georgia, "Times New Roman", serif;
-  font-weight: 500;
-  letter-spacing: -0.04em;
+  font-family: var(--font-serif);
+  font-weight: 800;
+  letter-spacing: -0.03em;
 }
 
 .hero-copy h1 {
@@ -234,7 +300,8 @@ canvas:focus-visible {
 
 .hero-copy h1 em {
   color: var(--destination-accent);
-  font-weight: 500;
+  font-weight: 700;
+  font-style: italic;
 }
 
 .hero-lead {
@@ -707,7 +774,7 @@ canvas:focus-visible {
 
 .lesson-copy { display: grid; align-content: start; gap: 6px; }
 .lesson-copy small { color: #766b39; font-size: 8px; font-weight: 800; letter-spacing: 0.11em; }
-.lesson-copy strong { font-family: Georgia, serif; font-size: 19px; line-height: 1.05; }
+.lesson-copy strong { font-family: var(--font-serif); font-size: 19px; line-height: 1.05; }
 .lesson-copy em { color: var(--ink-soft); font-size: 10px; font-style: normal; line-height: 1.45; }
 .lesson-score { grid-column: 2; align-self: end; color: var(--ink-soft); font-size: 9px; font-weight: 850; letter-spacing: 0.08em; }
 
@@ -753,39 +820,45 @@ canvas:focus-visible {
 .secondary-button,
 .danger-button {
   min-height: 46px;
-  padding: 0 18px;
-  border-radius: 13px;
+  padding: 0 20px;
+  border-radius: 14px;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 13px;
+  font-weight: 800;
   letter-spacing: 0.01em;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
 }
 
 .primary-button {
-  border: 1px solid var(--asphalt);
-  background: var(--asphalt);
-  color: #fff;
-  box-shadow: 0 8px 20px rgba(19, 33, 38, 0.18);
+  border: 1px solid var(--hud-yellow);
+  background: var(--hud-yellow);
+  color: var(--hud-ink);
+  box-shadow: 0 14px 30px -12px rgba(244, 200, 72, 0.6);
 }
 
-.primary-button:hover { background: #25383c; }
+.primary-button:hover { background: #f7d05f; box-shadow: 0 16px 34px -12px rgba(244, 200, 72, 0.7); }
+.primary-button:active { transform: translateY(1px); }
+.primary-button:disabled { cursor: not-allowed; opacity: 0.45; box-shadow: none; }
 .primary-button.large { min-height: 52px; padding: 0 24px; }
-.primary-button span { margin-left: 12px; color: var(--yellow); }
+.primary-button span { margin-left: 12px; color: var(--hud-ink); }
 
 .secondary-button {
-  border: 1px solid #cbc7bc;
+  border: 1px solid var(--hud-line-3);
   background: transparent;
+  color: var(--hud-cream);
 }
 
-.secondary-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.65); }
+.secondary-button:hover:not(:disabled) { background: var(--hud-surface); border-color: var(--hud-cream-40); }
 .secondary-button:disabled { cursor: not-allowed; opacity: 0.5; }
 .secondary-button.light { border-color: rgba(255, 255, 255, 0.3); color: #fff; }
 
 .danger-button {
-  border: 1px solid color-mix(in srgb, var(--red), white 45%);
-  background: color-mix(in srgb, var(--red), white 92%);
-  color: #9a382d;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--hud-coral);
 }
+
+.danger-button:hover { background: rgba(224, 120, 124, 0.1); border-color: rgba(224, 120, 124, 0.32); }
 
 .side-swap-banner {
   display: grid;
@@ -823,9 +896,9 @@ canvas:focus-visible {
   justify-content: space-between;
   gap: 24px;
   padding: 25px max(40px, calc((100vw - 1340px) / 2));
-  border-top: 1px solid var(--line);
-  color: var(--ink-soft);
-  font-size: 9px;
+  border-top: 1px solid var(--hud-line);
+  color: var(--hud-cream-40);
+  font-size: 11px;
 }
 
 .game-page {
@@ -939,7 +1012,7 @@ canvas:focus-visible {
   border: 4px double var(--destination-accent);
   border-radius: 50%;
   color: var(--destination-accent);
-  font-family: Georgia, serif;
+  font-family: var(--font-serif);
   font-size: 27px;
   transform: rotate(5deg);
 }
@@ -1069,9 +1142,9 @@ canvas:focus-visible {
   transform: rotate(-7deg);
 }
 
-.stamp-ring b { display: block; align-self: end; font-family: Georgia, serif; font-size: 24px; }
+.stamp-ring b { display: block; align-self: end; font-family: var(--font-serif); font-size: 24px; }
 .stamp-ring small { align-self: start; font-size: 7px; font-weight: 850; letter-spacing: 0.12em; }
-.passport-stamp h2 { margin: 0; font-family: Georgia, serif; font-size: 20px; }
+.passport-stamp h2 { margin: 0; font-family: var(--font-serif); font-size: 20px; }
 .passport-stamp p { margin: 5px 0 0; color: var(--ink-soft); font-size: 9px; }
 .passport-destination-progress {
   display: grid;
@@ -1113,7 +1186,7 @@ canvas:focus-visible {
 
 .settings-card > h2 {
   margin: 0;
-  font-family: Georgia, serif;
+  font-family: var(--font-serif);
   font-size: 25px;
   font-weight: 500;
   letter-spacing: -.025em;
@@ -1183,7 +1256,7 @@ canvas:focus-visible {
 .source-list a b { position: absolute; top: 19px; right: 18px; }
 
 .license-card { margin-top: 28px; padding: 28px; border-radius: 20px; background: var(--asphalt); color: white; }
-.license-card h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; }
+.license-card h2 { margin: 0; font-family: var(--font-serif); font-size: 28px; }
 .license-card p:not(.eyebrow) { max-width: 750px; color: rgba(255,255,255,.66); font-size: 11px; line-height: 1.6; }
 .license-card > a { color: var(--yellow); font-size: 10px; }
 .map-downloads { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 20px 0; }
@@ -1310,12 +1383,13 @@ canvas:focus-visible {
 .mobile-menu-trigger {
   min-width: 54px;
   min-height: 44px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--hud-line-2);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.56);
+  background: var(--hud-surface-2);
+  color: var(--hud-cream);
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .mobile-menu nav {
@@ -1326,10 +1400,10 @@ canvas:focus-visible {
   display: grid;
   width: min(270px, calc(100vw - 24px));
   padding: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--hud-line-2);
   border-radius: 16px;
-  background: var(--paper-bright);
-  box-shadow: 0 18px 48px rgba(19, 33, 38, 0.2);
+  background: #1c2529;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 }
 
 .mobile-menu nav button {
@@ -1341,14 +1415,15 @@ canvas:focus-visible {
   border: 0;
   border-radius: 10px;
   background: transparent;
+  color: var(--hud-cream);
   cursor: pointer;
   text-align: left;
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.mobile-menu nav button:hover { background: var(--paper); }
-.mobile-menu nav span { color: var(--ink-soft); font-size: 9px; }
+.mobile-menu nav button:hover { background: var(--hud-surface-2); }
+.mobile-menu nav span { color: var(--hud-sage); font-size: 11px; font-weight: 700; }
 
 .launcher-page {
   position: relative;
@@ -1371,134 +1446,144 @@ canvas:focus-visible {
 
 .launcher-copy h1 {
   margin: 0;
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-serif);
   font-size: clamp(42px, 4.7vw, 72px);
-  font-weight: 500;
-  letter-spacing: -0.05em;
+  font-weight: 800;
+  letter-spacing: -0.035em;
   line-height: 0.94;
+  color: var(--hud-cream);
 }
 
 .launcher-copy h1 em {
   color: var(--destination-accent);
-  font-weight: 500;
+  font-weight: 700;
+  font-style: italic;
+}
+
+.launcher-pick-label {
+  margin: clamp(18px, 2.6vh, 28px) 0 11px;
+  color: var(--hud-sage);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }
 
 .launcher-destinations {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 7px;
-  margin-top: clamp(12px, 2.1vh, 20px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
 }
 
 .launcher-destinations button {
-  display: grid;
-  align-content: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  min-height: 84px;
-  padding: 8px 9px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: rgba(255, 255, 255, 0.45);
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--hud-line-2);
+  border-radius: 999px;
+  background: var(--hud-surface-2);
+  color: var(--hud-cream);
   cursor: pointer;
   text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
 }
 
-.launcher-destinations button:hover { background: var(--paper-bright); }
+.launcher-destinations button:hover { background: var(--hud-surface-3); }
 .launcher-destinations button.active {
-  border: 2px solid var(--destination-accent);
-  padding: 7px 8px;
-  background: color-mix(in srgb, var(--destination-accent), white 94%);
+  border-color: var(--hud-yellow);
+  background: var(--hud-yellow);
+  color: var(--hud-ink);
+  box-shadow: 0 10px 22px -10px rgba(244, 200, 72, 0.6);
 }
+.launcher-destinations button:active { transform: translateY(1px); }
 
-.launcher-destinations span { font-size: 18px; line-height: 1; }
+.launcher-destinations span { font-size: 16px; line-height: 1; }
 .launcher-destinations strong {
-  overflow: hidden;
-  margin-top: 4px;
-  font-size: 10px;
-  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 700;
   white-space: nowrap;
 }
-.launcher-destinations small {
-  display: -webkit-box;
-  overflow: hidden;
-  margin-top: 3px;
-  color: var(--ink-soft);
-  font-size: 7px;
-  line-height: 1.25;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
+.launcher-destinations small { display: none; }
 .launcher-setup-summary {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 7px;
-  margin-top: 9px;
+  gap: 11px;
+  margin-top: 16px;
 }
 
 .launcher-setup-summary button {
   display: grid;
   align-content: center;
   min-width: 0;
-  min-height: 46px;
-  padding: 6px 11px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: transparent;
+  min-height: 58px;
+  padding: 12px 16px;
+  border: 1px solid var(--hud-line-2);
+  border-radius: 16px;
+  background: var(--hud-surface);
+  color: var(--hud-cream);
   cursor: pointer;
   text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.launcher-setup-summary button:hover { background: rgba(255, 255, 255, 0.55); }
-.launcher-setup-summary small { color: var(--ink-soft); font-size: 7px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
-.launcher-setup-summary strong { overflow: hidden; margin-top: 2px; font-size: 9px; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
+.launcher-setup-summary button:hover { background: var(--hud-surface-2); border-color: var(--hud-line-3); }
+.launcher-setup-summary small { color: var(--hud-sage); font-size: 8px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+.launcher-setup-summary strong { overflow: hidden; margin-top: 3px; font-size: 14px; font-weight: 700; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
 
 .london-charge-note,
 .hub-charge-note {
-  margin: 8px 0 0;
-  color: var(--ink-soft);
-  font-size: 8px;
-  line-height: 1.4;
+  margin: 12px 0 0;
+  color: var(--hud-cream-50);
+  font-size: 11px;
+  line-height: 1.5;
 }
 .london-charge-note a,
-.hub-charge-note a { color: var(--green); font-weight: 800; }
+.hub-charge-note a { color: var(--hud-sage-bright); font-weight: 700; }
 
 .launcher-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: clamp(16px, 2.4vh, 26px);
 }
 
 .launcher-primary {
   min-width: 118px;
-  min-height: 50px;
-  padding-inline: 20px;
-  font-size: 12px;
+  min-height: 54px;
+  padding-inline: 30px;
+  font-size: 15px;
+  border-radius: 16px;
 }
 
 .launcher-browse {
-  min-height: 50px;
-  padding-inline: 17px;
-  font-size: 11px;
+  min-height: 54px;
+  padding-inline: 22px;
+  font-size: 14px;
+  border-radius: 16px;
 }
 
 .launcher-next-drive {
   display: grid;
   gap: 3px;
-  margin: clamp(12px, 2vh, 20px) 0 0;
+  margin: clamp(14px, 2vh, 22px) 0 0;
 }
 
 .launcher-next-drive span {
-  color: var(--ink-soft);
+  color: var(--hud-sage);
   font-size: 8px;
-  font-weight: 850;
-  letter-spacing: .1em;
+  font-weight: 800;
+  letter-spacing: .14em;
   text-transform: uppercase;
 }
 
 .launcher-next-drive strong {
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 700;
   letter-spacing: -.01em;
+  color: var(--hud-cream);
 }
 
 .primary-button:disabled {
@@ -1527,10 +1612,10 @@ canvas:focus-visible {
   min-height: 420px;
   overflow: hidden;
   isolation: isolate;
-  border: 1px solid rgba(19, 33, 38, 0.2);
+  border: 1px solid var(--hud-line-2);
   border-radius: 30px;
   background: var(--destination-ground);
-  box-shadow: 0 28px 70px rgba(22, 34, 37, 0.16);
+  box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.6);
 }
 
 .launcher-photo {
@@ -1559,10 +1644,10 @@ canvas:focus-visible {
   color: #fff;
   backdrop-filter: blur(10px);
 }
-.launcher-place span { color: var(--yellow); font-size: 8px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
-.launcher-place strong { font-family: Georgia, serif; font-size: 22px; }
-.launcher-place em { color: rgba(255, 255, 255, 0.78); font-size: 9px; font-style: normal; }
-.launcher-place small { color: rgba(255, 255, 255, 0.65); font-size: 9px; }
+.launcher-place span { color: var(--hud-yellow); font-size: 9px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+.launcher-place strong { font-family: var(--font-serif); font-size: 26px; font-weight: 800; color: #fff; letter-spacing: -0.01em; }
+.launcher-place em { color: rgba(255, 255, 255, 0.78); font-size: 10px; font-style: normal; }
+.launcher-place small { color: rgba(255, 255, 255, 0.62); font-size: 10px; }
 
 .launcher-progress {
   position: absolute;
@@ -1570,19 +1655,28 @@ canvas:focus-visible {
   right: 18px;
   z-index: 5;
   display: flex;
-  gap: 5px;
+  gap: 7px;
 }
-.launcher-progress div { display: grid; min-width: 65px; padding: 8px 10px; border-radius: 12px; background: rgba(255,255,255,.88); text-align: center; backdrop-filter: blur(8px); }
-.launcher-progress strong { font-size: 18px; }
-.launcher-progress span { color: var(--ink-soft); font-size: 7px; text-transform: uppercase; }
+.launcher-progress div {
+  display: grid;
+  min-width: 62px;
+  padding: 10px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 15px;
+  background: rgba(20, 29, 32, 0.55);
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+.launcher-progress strong { font-size: 22px; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+.launcher-progress span { margin-top: 3px; color: var(--hud-yellow); font-size: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 
 .launcher-legal {
   position: absolute;
   bottom: 7px;
   left: 0;
   margin: 0;
-  color: var(--ink-soft);
-  font-size: 7px;
+  color: var(--hud-cream-40);
+  font-size: 9px;
 }
 
 /* Setup drawer / bottom sheet */
@@ -1610,7 +1704,7 @@ canvas:focus-visible {
 @keyframes sheet-in { from { transform: translateX(100%); } }
 
 .setup-sheet-heading { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
-.setup-sheet-heading h2 { margin: 0; font-family: Georgia, serif; font-size: 35px; font-weight: 500; letter-spacing: -0.045em; }
+.setup-sheet-heading h2 { margin: 0; font-family: var(--font-serif); font-size: 35px; font-weight: 500; letter-spacing: -0.045em; }
 .sheet-close { display: grid; width: 44px; height: 44px; flex: none; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: rgba(255, 255, 255, .62); cursor: pointer; font-size: 23px; box-shadow: 0 5px 16px rgba(19, 33, 38, .07); transition: transform 150ms ease, background 150ms ease; }
 .sheet-close:hover { background: white; transform: rotate(4deg); }
 .setup-sheet-intro { margin: 13px 0 17px; padding: 11px 13px; border: 1px solid rgba(19, 33, 38, .1); border-radius: 15px; background: rgba(238, 234, 223, .64); color: var(--ink-soft); font-size: 10px; line-height: 1.55; }
@@ -1641,7 +1735,7 @@ canvas:focus-visible {
 .hub-destination-heading > div { display: flex; align-items: center; gap: 12px; }
 .hub-destination-heading > div > span { font-size: 32px; }
 .hub-destination-heading small { color: var(--ink-soft); font-size: 8px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.hub-destination-heading h2 { margin: 1px 0 0; font-family: Georgia, serif; font-size: 30px; font-weight: 500; }
+.hub-destination-heading h2 { margin: 1px 0 0; font-family: var(--font-serif); font-size: 30px; font-weight: 500; }
 .hub-destination-heading h2 + em { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 9px; font-style: normal; }
 .hub-destination-heading p { margin: 0; color: var(--ink-soft); font-size: 10px; }
 .hub-charge-note { margin: -8px 0 17px; }
@@ -1655,7 +1749,7 @@ canvas:focus-visible {
 .free-drive-card.locked { opacity: .65; }
 .hub-capstone { display: grid; grid-template-columns: 150px 1fr auto; gap: 28px; align-items: center; margin-top: 22px; padding: 28px; border-radius: 24px; background: var(--asphalt); color: #fff; }
 .hub-capstone .eyebrow { color: var(--yellow); }
-.hub-capstone h2 { margin: 0; font-family: Georgia, serif; font-size: 30px; font-weight: 500; }
+.hub-capstone h2 { margin: 0; font-family: var(--font-serif); font-size: 30px; font-weight: 500; }
 .hub-capstone p:not(.eyebrow) { margin: 8px 0 0; color: rgba(255,255,255,.65); font-size: 10px; line-height: 1.55; }
 
 @media (max-width: 1160px) {
@@ -1665,40 +1759,72 @@ canvas:focus-visible {
 }
 
 @media (max-width: 860px) {
-  .launcher-shell { min-height: 540px; }
+  /* Launcher → scrolling hero + espresso sheet (design 3b) */
+  .launcher-shell { height: auto; min-height: 100dvh; overflow: visible; }
   .launcher-shell .app-header { width: calc(100% - 20px); min-height: 64px; }
-  .launcher-page { display: block; width: calc(100% - 24px); height: calc(100dvh - 64px); min-height: 476px; padding: 16px 0 23px; }
-  .launcher-copy { align-content: start; height: 100%; }
-  .launcher-copy .eyebrow { margin-bottom: 6px; }
-  .launcher-copy h1 { font-size: clamp(33px, 10vw, 47px); line-height: .96; }
-  .launcher-destinations {
+  .launcher-page {
     display: flex;
-    gap: 6px;
+    flex-direction: column;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    padding: 0 0 26px;
+  }
+  .launcher-road-visual {
+    order: 1;
+    display: block;
+    align-self: stretch;
+    width: 100%;
+    height: clamp(310px, 50vh, 412px);
+    min-height: 0;
+    margin-bottom: 20px;
+    border: 0;
+    border-radius: 0 0 28px 28px;
+    box-shadow: 0 24px 40px -28px rgba(0, 0, 0, 0.7);
+  }
+  .launcher-road-visual::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: linear-gradient(180deg, rgba(20, 29, 32, 0.35), transparent 26%, transparent 42%, var(--hud-bg));
+    pointer-events: none;
+  }
+  .launcher-progress { display: none; }
+  .launcher-place {
+    left: 20px;
+    right: 20px;
+    bottom: 22px;
+    z-index: 6;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+  .launcher-place strong { font-size: 40px; line-height: 0.94; text-shadow: 0 2px 14px rgba(20, 29, 32, 0.5); }
+  .launcher-place span { text-shadow: 0 1px 4px rgba(20, 29, 32, 0.6); }
+  .launcher-copy { order: 2; align-content: start; height: auto; padding: 0 20px; }
+  .launcher-copy > .eyebrow,
+  .launcher-copy > h1 { display: none; }
+  .launcher-pick-label { margin-top: 2px; }
+  .launcher-destinations {
+    flex-wrap: nowrap;
     overflow-x: auto;
-    margin: 9px -2px 0;
-    padding: 2px 2px 7px;
-    scroll-padding-inline: 2px;
-    scroll-snap-type: x mandatory;
-    scrollbar-width: thin;
+    gap: 8px;
+    margin: 0 -20px;
+    padding: 0 20px 4px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
   }
-  .launcher-destinations button {
-    flex: 0 0 min(42vw, 150px);
-    min-height: 70px;
-    padding: 6px;
-    border-radius: 10px;
-    scroll-snap-align: center;
-  }
-  .launcher-destinations button.active { padding: 5px; }
-  .launcher-destinations span { font-size: 15px; }
-  .launcher-destinations strong { font-size: 8px; }
-  .launcher-destinations small { font-size: 7px; }
-  .launcher-setup-summary { gap: 5px; margin-top: 6px; }
-  .launcher-setup-summary button { min-height: 44px; padding: 5px 8px; }
-  .launcher-actions { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 9px; }
-  .launcher-primary { grid-column: 1 / -1; min-height: 49px; width: 100%; }
-  .launcher-actions .secondary-button { min-height: 44px; width: 100%; }
-  .launcher-road-visual { display: none; }
-  .launcher-legal { bottom: 5px; max-width: 100%; font-size: 6px; }
+  .launcher-destinations::-webkit-scrollbar { display: none; }
+  .launcher-destinations button { flex: 0 0 auto; scroll-snap-align: start; }
+  .launcher-setup-summary { margin-top: 14px; }
+  .launcher-actions { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 18px; }
+  .launcher-primary { width: 100%; }
+  .launcher-actions .secondary-button { width: 100%; }
+  .launcher-legal { position: static; order: 3; margin: 18px 0 0; padding: 0 20px; max-width: 100%; font-size: 10px; }
   .setup-sheet-backdrop { align-items: flex-end; }
   .setup-sheet { width: 100%; height: auto; max-height: 92dvh; padding: 22px 18px max(22px, env(safe-area-inset-bottom)); border-radius: 24px 24px 0 0; box-shadow: 0 -22px 60px rgba(13,23,26,.25); animation-name: sheet-up; }
   @keyframes sheet-up { from { transform: translateY(100%); } }
@@ -1715,28 +1841,17 @@ canvas:focus-visible {
 }
 
 @media (max-width: 420px) {
-  .launcher-page { width: calc(100% - 20px); }
-  .launcher-copy h1 { font-size: clamp(31px, 9.7vw, 41px); }
-  .launcher-destinations small { display: none; }
-  .launcher-destinations button { min-height: 60px; }
-  .launcher-setup-summary strong { font-size: 8px; }
+  .launcher-place strong { font-size: 34px; }
   .setup-sheet-heading h2 { font-size: 28px; letter-spacing: -.035em; }
   .settings-card { padding: 20px; }
 }
 
-@media (max-height: 680px) {
+/* Desktop only: fit the fixed-viewport launcher on short laptop screens */
+@media (min-width: 861px) and (max-height: 680px) {
   .launcher-shell .app-header { min-height: 58px; }
   .launcher-page { height: calc(100dvh - 58px); min-height: 0; padding-block: 9px 18px; }
   .launcher-copy .eyebrow { margin-bottom: 4px; }
   .launcher-destinations { margin-top: 7px; }
-  .launcher-destinations button { min-height: 59px; }
-  .launcher-setup-summary button { min-height: 42px; }
-  .launcher-actions { margin-top: 7px; }
-  .launcher-primary { min-height: 46px; }
-}
-
-@media (max-width: 860px) and (max-height: 590px) {
-  .launcher-legal { display: none; }
-  .launcher-destinations { margin-top: 5px; }
-  .london-charge-note { display: none; }
+  .launcher-setup-summary button { min-height: 50px; }
+  .launcher-actions { margin-top: 12px; }
 }
