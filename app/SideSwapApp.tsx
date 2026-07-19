@@ -11,10 +11,12 @@ import dynamic from "next/dynamic";
 import type {
   GameCanvasLesson,
   GameHudSnapshot,
+  GameRuntimeEvent,
 } from "./game/GameCanvas";
 import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
+  FINE_BY_COUNTRY,
   FUEL_CONSUMPTION_L_PER_M,
   FUEL_PRICE_PER_LITRE_BY_COUNTRY,
   GIG_FARE_BY_COUNTRY,
@@ -222,6 +224,20 @@ function nextGigFor(
   );
 }
 
+/** Human-readable reason for a fine toast, from the violation's rule code. */
+function fineReason(code: string | undefined): string {
+  switch (code) {
+    case "wrong_way":
+      return "driving on the wrong side";
+    case "out_of_bounds":
+      return "leaving the road";
+    case "red_light":
+      return "running a red light";
+    default:
+      return "a road violation";
+  }
+}
+
 export default function SideSwapApp() {
   const [progress, setProgress] = useState<PlayerProgressV2>(() =>
     createDefaultProgress(),
@@ -245,6 +261,11 @@ export default function SideSwapApp() {
   const [gig, setGig] = useState<Gig | null>(null);
   const gigSeedRef = useRef(1);
   const paidGigRef = useRef<string | null>(null);
+  const [fineToast, setFineToast] = useState<{
+    amount: number;
+    reason: string;
+  } | null>(null);
+  const lastFineAtRef = useRef(0);
 
   // Drain fuel by the distance the car actually moved between HUD samples, then
   // mirror the pose for the next delta. Fuel lives in the drive session and is
@@ -309,6 +330,31 @@ export default function SideSwapApp() {
     activeSession?.steeringPreference ?? "auto",
     driveCountry,
   );
+
+  // A fine event reaches us from GameCanvas only when a patrol witnessed the
+  // violation. Debit the local wallet (rate-limited to once per 8s) and flash a
+  // toast; mirrors the refuel debit path.
+  const handleGameEvent = useCallback(
+    (event: GameRuntimeEvent) => {
+      if (event.type !== "fine") return;
+      const now = Date.now();
+      if (now - lastFineAtRef.current < 8000) return;
+      lastFineAtRef.current = now;
+      const amount = FINE_BY_COUNTRY[driveCountry.id];
+      const fined = debit(progress, driveCountry.id, amount);
+      setProgress(fined);
+      saveProgress(fined);
+      setFineToast({ amount, reason: fineReason(event.ruleCode) });
+    },
+    [progress, driveCountry],
+  );
+
+  // Auto-dismiss the fine toast a few seconds after it appears.
+  useEffect(() => {
+    if (!fineToast) return;
+    const timer = window.setTimeout(() => setFineToast(null), 3400);
+    return () => window.clearTimeout(timer);
+  }, [fineToast]);
   const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
   const activeFreeDrive = getFreeDrive(activeScenarioId);
   const runtimeMap = getMapPack(activeFreeDrive.mapId);
@@ -542,6 +588,7 @@ export default function SideSwapApp() {
           outOfFuel={driveFuel <= 0}
           riderVenueId={riderVenueId}
           onHudUpdate={handleHud}
+          onEvent={handleGameEvent}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
         />
@@ -613,6 +660,34 @@ export default function SideSwapApp() {
               </span>
               <strong>{formatMoney(gig.reward, driveCountry)}</strong>
             </div>
+          </div>
+        )}
+        {fineToast && (
+          <div
+            role="status"
+            style={{
+              position: "absolute",
+              top: "1.25rem",
+              left: "50%",
+              transform: "translateX(-50%)",
+              padding: "0.6rem 1.1rem",
+              borderRadius: "999px",
+              background: "rgba(150, 24, 28, 0.92)",
+              color: "#fff",
+              font: "700 0.95rem/1.2 system-ui, sans-serif",
+              boxShadow: "0 6px 20px rgba(0, 0, 0, 0.35)",
+              zIndex: 6,
+              pointerEvents: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <span aria-hidden="true">🚓</span>
+            <span>
+              Fined {formatMoney(fineToast.amount, driveCountry)} for{" "}
+              {fineToast.reason}
+            </span>
           </div>
         )}
         <div

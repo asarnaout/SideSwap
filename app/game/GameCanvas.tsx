@@ -603,6 +603,7 @@ export interface GameRuntimeEvent {
     | "indicator"
     | "horn"
     | "coaching"
+    | "fine"
     | "incident"
     | "reset"
     | "complete"
@@ -1121,6 +1122,8 @@ interface NpcVehicle {
   spawnPathDistance?: number;
   signal?: TurnIndicator;
   braking?: boolean;
+  /** Marked patrol car: its presence turns a nearby violation into a fine. */
+  police?: boolean;
 }
 
 /**
@@ -4140,6 +4143,54 @@ class BabylonGameSession {
     npc.visualKey = visualKey;
   }
 
+  /**
+   * Bolts a two-lamp emissive light-bar (red + blue) onto a patrol car's roof.
+   * Parented to the persistent NPC node, not the vehicle visual, so it survives
+   * the paint/appearance rebuilds in ensureNpcVehicleVisual.
+   */
+  private attachPoliceLightBar(node: TransformNode, name: string) {
+    const dims = { width: 0.32, height: 0.16, depth: 0.5 };
+    const barY = 1.5;
+    const red = makeMaterial(
+      this.scene,
+      `${name}-police-red`,
+      new Color3(0.8, 0.1, 0.12),
+      new Color3(0.9, 0.05, 0.08),
+    );
+    const blue = makeMaterial(
+      this.scene,
+      `${name}-police-blue`,
+      new Color3(0.1, 0.2, 0.85),
+      new Color3(0.05, 0.1, 0.95),
+    );
+    createBox(
+      this.scene,
+      `${name}-police-red`,
+      dims,
+      new Vector3(-0.22, barY, 0),
+      red,
+      node,
+    );
+    createBox(
+      this.scene,
+      `${name}-police-blue`,
+      dims,
+      new Vector3(0.22, barY, 0),
+      blue,
+      node,
+    );
+  }
+
+  /** True when an active patrol car is within `radiusM` of the player. */
+  private policeNearPlayer(radiusM: number): boolean {
+    const { x, z } = this.playerState;
+    for (const npc of this.npcVehicles) {
+      if (!npc.police || !npc.active) continue;
+      if (Math.hypot(npc.laneX - x, npc.z - z) <= radiusM) return true;
+    }
+    return false;
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
@@ -4247,7 +4298,19 @@ class BabylonGameSession {
           evidence: event.evidence,
         },
       );
-      if (event.severity === "critical") this.setPaused(true);
+      if (event.severity === "critical") {
+        this.setPaused(true);
+      } else if (
+        this.policeNearPlayer(35) &&
+        (event.code === "wrong_way" ||
+          event.code === "out_of_bounds" ||
+          event.code === "red_light")
+      ) {
+        // A softened violation witnessed by a patrol → the app debits a fine.
+        this.emit("fine", "A patrol clocked the violation.", "warning", {
+          ruleCode: event.code,
+        });
+      }
     }
   }
 
@@ -7428,6 +7491,11 @@ class BabylonGameSession {
       node.position.set(x, 0.12, z);
       node.rotation.y = heading;
       node.setEnabled(safeAtStart);
+      // Every fifth car is a patrol; a nearby violation becomes a fine (phase 10).
+      if (index % 5 === 0) {
+        npc.police = true;
+        this.attachPoliceLightBar(node, `scenario-npc-${index}`);
+      }
       this.npcVehicles.push(npc);
     }
 

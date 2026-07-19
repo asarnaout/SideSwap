@@ -1879,6 +1879,19 @@ export const PASSENGER_FARE_BY_COUNTRY: Readonly<
   jp: { base: 1000, ratePerM: 3 },
 };
 
+/**
+ * Flat fine debited when a patrol car witnesses a road violation (wrong side,
+ * off-road, running a red). Deliberately modest — a couple of fares' worth — so
+ * it nudges rather than punishes; the pivot away from termination means careless
+ * driving should cost money, not end the run.
+ */
+export const FINE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
+  us: 8,
+  uk: 8,
+  fr: 10,
+  jp: 800,
+};
+
 /** Starting cash a new (or migrated) player holds in each country's currency. */
 export const STARTING_WALLET_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
   us: 20,
