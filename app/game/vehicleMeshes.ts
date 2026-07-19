@@ -264,6 +264,73 @@ function createPlateMaterial(
   return material;
 }
 
+export interface PlatePlacement {
+  /** Plate-box centre, in the model root's local (pre-yaw, pre-scale) space. */
+  readonly position: Vector3;
+  /** Local Y rotation for the plate box (see computePlatePlacements). */
+  readonly rotationY: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Front and rear number-plate transforms for a model, expressed in its root's
+ * local (pre-yaw, pre-scale) space — the space the plate boxes are parented in.
+ *
+ * The catch is that the root is later spun by the model's `yawOffset`, so the
+ * placement has to anticipate it. A front-first model (yawOffset 0) has its
+ * front face on +Z and its width on X; the van imports front-along-+X
+ * (yawOffset -90°), so its front face is on X and its width on Z. Deriving the
+ * forward/lateral axes from `yawOffset` puts each plate on the true front/rear
+ * face, centred and correctly sized, whatever the import orientation — without
+ * it the van's plates land on the sides at mid-length (issue #55).
+ *
+ * Both plates then present the box's -Z face outward, because that is the face
+ * whose default UVs render the texture upright once the glTF is in the scene
+ * (the +Z face comes out rotated 180°). The rear sits at net-zero world yaw; the
+ * front is turned a further 180° so its -Z face aims forward too. Exported for
+ * unit testing.
+ */
+export function computePlatePlacements(
+  bounds: { min: Vector3; max: Vector3 },
+  yawOffset: number,
+): { front: PlatePlacement; rear: PlatePlacement } {
+  // Local axes that, after the root's yawOffset rotation, point world-forward
+  // (+Z) and world-lateral (+X). yawOffset 0 ⇒ +Z / +X; the van's -90° ⇒ +X / -Z.
+  const forward = new Vector3(-Math.sin(yawOffset), 0, Math.cos(yawOffset));
+  const lateral = new Vector3(Math.cos(yawOffset), 0, Math.sin(yawOffset));
+  const size = bounds.max.subtract(bounds.min);
+  const center = bounds.min.add(bounds.max).scale(0.5);
+  // forward/lateral are axis-aligned (yawOffset is a multiple of 90°), so these
+  // dot-products just read off the relevant half-extent / extent of the AABB.
+  const halfForward =
+    (Math.abs(forward.x) * size.x + Math.abs(forward.z) * size.z) / 2;
+  const lateralExtent =
+    Math.abs(lateral.x) * size.x + Math.abs(lateral.z) * size.z;
+  const width = lateralExtent * 0.28;
+  const height = width / PLATE_ASPECT;
+  const make = (
+    sign: 1 | -1,
+    heightFrac: number,
+    rotationY: number,
+  ): PlatePlacement => ({
+    position: new Vector3(
+      center.x + forward.x * halfForward * sign,
+      bounds.min.y + size.y * heightFrac,
+      center.z + forward.z * halfForward * sign,
+    ),
+    rotationY,
+    width,
+    height,
+  });
+  // The front recess sits lower than the rear on these models, so the front
+  // plate drops below the rear rather than sharing one height.
+  return {
+    front: make(1, 0.3, Math.PI - yawOffset),
+    rear: make(-1, 0.42, -yawOffset),
+  };
+}
+
 /**
  * Builds a vehicle from a preloaded glb, honouring the same VehicleMeshVisual
  * contract as the procedural path. Returns null when no model is registered for
@@ -356,10 +423,8 @@ function buildModelVehicle(
   // Synthesize the front + rear number plates the imported models omit, each
   // wearing this vehicle's own registration in its country's design. Authored in
   // the model's pre-scale space (like the contact shadow) and sized from its
-  // bounds, so the plates land correctly whatever the model's dimensions or
-  // config.scale. Front sits at +Z (every model imports front-first, yawOffset
-  // 0). The front recess sits lower on these models than the rear, so the front
-  // plate drops below the rear rather than sharing one height.
+  // bounds, so the plates land correctly whatever the model's dimensions,
+  // config.scale or import orientation (see computePlatePlacements).
   const region = appearance.plateRegion;
   const rearPlateMaterial = createPlateMaterial(scene, region, "rear", appearance.plateNumber);
   // Front and rear differ only for the UK (white front / yellow rear); every
@@ -372,25 +437,22 @@ function buildModelVehicle(
     frontPlateMaterial === rearPlateMaterial
       ? [rearPlateMaterial]
       : [rearPlateMaterial, frontPlateMaterial];
-  const bodyWidth = bounds.max.x - bounds.min.x;
-  const bodyHeight = bounds.max.y - bounds.min.y;
-  const plateWidth = bodyWidth * 0.28;
-  const plateHeight = plateWidth / PLATE_ASPECT;
-  const plateThickness = plateWidth * 0.045;
-  const plateCenterX = (bounds.min.x + bounds.max.x) / 2;
-  const plateMeshes = [1, -1].map((frontSign) => {
-    const front = frontSign > 0;
+  const placements = computePlatePlacements(bounds, config.yawOffset);
+  const plateThickness = placements.front.width * 0.045;
+  const plateMeshes = (
+    [
+      ["front", placements.front, frontPlateMaterial],
+      ["rear", placements.rear, rearPlateMaterial],
+    ] as const
+  ).map(([label, placement, material]) => {
     const plate = MeshBuilder.CreateBox(
-      `${name}-number-plate-${front ? "front" : "rear"}`,
-      { width: plateWidth, height: plateHeight, depth: plateThickness },
+      `${name}-number-plate-${label}`,
+      { width: placement.width, height: placement.height, depth: plateThickness },
       scene,
     );
-    plate.material = front ? frontPlateMaterial : rearPlateMaterial;
-    plate.position.set(
-      plateCenterX,
-      bounds.min.y + bodyHeight * (front ? 0.3 : 0.42),
-      front ? bounds.max.z : bounds.min.z,
-    );
+    plate.material = material;
+    plate.position.copyFrom(placement.position);
+    plate.rotation.y = placement.rotationY;
     plate.parent = root;
     plate.isPickable = false;
     plate.receiveShadows = false;
