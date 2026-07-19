@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { NullEngine, Scene, LoadAssetContainerAsync } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
+import { PROP_MODEL_REGISTRY } from "../app/game/modelLibrary";
 
 // Guards the Babylon 9 loader-registration path that modelLibrary.preloadModels
 // depends on. The old `import "@babylonjs/loaders/glTF/2.0"` side effect did NOT
@@ -103,6 +104,48 @@ describe("character model assets", () => {
 
   it("loads the bicycle prop", async () => {
     const { container, scene, engine } = await load("bicycle.glb");
+    expect(container.meshes.length).toBeGreaterThan(0);
+    scene.dispose();
+    engine.dispose();
+  });
+});
+
+describe("prop (environment building) model assets", () => {
+  registerBuiltInLoaders();
+  const dir = path.join(process.cwd(), "public/models/props");
+  const files = Object.values(PROP_MODEL_REGISTRY).map((config) =>
+    config.url.replace("/models/props/", ""),
+  );
+
+  const load = async (file: string) => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const buf = fs.readFileSync(path.join(dir, file));
+    const dataUrl = "data:model/gltf-binary;base64," + buf.toString("base64");
+    const container = await LoadAssetContainerAsync(dataUrl, scene, {
+      pluginExtension: ".glb",
+    });
+    return { container, scene, engine };
+  };
+
+  // Every venue/service kind the render loops look up must have a registry entry,
+  // else it silently falls back to a procedural box forever.
+  it("registers a model for every authored gig-venue + service kind", () => {
+    for (const kind of [
+      "gas_station",
+      "restaurant",
+      "shop",
+      "residence",
+      "office",
+    ]) {
+      expect(PROP_MODEL_REGISTRY[kind], kind).toBeDefined();
+    }
+  });
+
+  // Each committed glb must parse as real geometry (self-contained, no external
+  // textures), so preloadModels loads it instead of silently 404ing to a box.
+  it.each(files)("ships a parseable low-poly glb: %s", async (file) => {
+    const { container, scene, engine } = await load(file);
     expect(container.meshes.length).toBeGreaterThan(0);
     scene.dispose();
     engine.dispose();
