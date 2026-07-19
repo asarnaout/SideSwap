@@ -608,11 +608,20 @@ export default function SideSwapApp() {
               font: "600 0.9rem/1.3 system-ui, sans-serif",
               pointerEvents: "none",
               zIndex: 5,
-              borderLeft: `3px solid ${
-                gig.state === "carrying" ? "#f2c658" : "#e0533f"
-              }`,
             }}
           >
+            <div
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                left: 0,
+                top: "0.9rem",
+                bottom: "0.9rem",
+                width: "4px",
+                borderRadius: "0 4px 4px 0",
+                background: gig.state === "carrying" ? "#f2c658" : "#e0533f",
+              }}
+            />
             <div
               style={{
                 fontSize: "0.66rem",
