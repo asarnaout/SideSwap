@@ -1270,6 +1270,37 @@ function buildModelVehicle(
   contactShadow.isPickable = false;
   contactShadow.receiveShadows = false;
 
+  // Synthesize the front + rear number plates the imported models omit, so a
+  // model car wears the same plates its procedural fallback already does.
+  // Authored in the model's own pre-scale space (like the contact shadow) and
+  // sized from its bounds, so the plates land correctly whatever the model's
+  // dimensions or config.scale. Front sits at +Z (every model imports
+  // front-first, yawOffset 0); both reuse the fleet's shared grey plate
+  // material, so model and fallback cars are visually identical.
+  const plateMaterial = materialsForScene(scene).plate;
+  const plateWidth = (bounds.max.x - bounds.min.x) * 0.26;
+  const plateHeight = plateWidth * 0.3;
+  const plateThickness = plateWidth * 0.05;
+  const plateCenterX = (bounds.min.x + bounds.max.x) / 2;
+  const plateY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.3;
+  const plateMeshes = [1, -1].map((frontSign) => {
+    const plate = MeshBuilder.CreateBox(
+      `${name}-number-plate-${frontSign > 0 ? "front" : "rear"}`,
+      { width: plateWidth, height: plateHeight, depth: plateThickness },
+      scene,
+    );
+    plate.material = plateMaterial;
+    plate.position.set(
+      plateCenterX,
+      plateY,
+      frontSign > 0 ? bounds.max.z : bounds.min.z,
+    );
+    plate.parent = root;
+    plate.isPickable = false;
+    plate.receiveShadows = false;
+    return plate;
+  });
+
   // Normalise scale, facing and ground contact (lowest point at LOCAL_GROUND_Y).
   root.scaling.setAll(config.scale);
   root.rotation.y = config.yawOffset;
@@ -1279,6 +1310,7 @@ function buildModelVehicle(
   root.parent = parent;
 
   let disposed = false;
+  let detailVisible = true;
   return {
     root,
     shadowCasters,
@@ -1298,8 +1330,12 @@ function buildModelVehicle(
         material.emissiveColor = active ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
       }
     },
-    setDetailVisible() {
-      // Imported low-poly models carry no removable trim, so nothing to cull.
+    setDetailVisible(visible) {
+      // The synthesized number plates are the model's only removable trim; cull
+      // them past the LOD distance, matching the procedural cars.
+      if (disposed || detailVisible === visible) return;
+      detailVisible = visible;
+      for (const plate of plateMeshes) plate.setEnabled(visible);
     },
     dispose() {
       if (disposed) return;
