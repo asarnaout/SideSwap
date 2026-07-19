@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -12,16 +11,13 @@ import dynamic from "next/dynamic";
 import type {
   GameCanvasLesson,
   GameHudSnapshot,
-  GameRuntimeEvent,
 } from "./game/GameCanvas";
-import type { SimulationScoreSnapshot } from "./game/simulation";
 import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
   getCountryProfile,
   getDestinationProfile,
   getFreeDrive,
-  getFreeDriveForDestination,
   getLesson,
   getLessonsForDestination,
   getMapPack,
@@ -31,37 +27,21 @@ import {
 } from "./game/content";
 import {
   createDefaultProgress,
-  getRecommendedDrive,
-  isFreeDriveUnlocked,
-  isLessonUnlocked,
   loadProgress,
   resetProgress,
   saveProgress,
-  updateLessonProgress,
 } from "./game/progress";
 import type {
   CameraMode,
-  CountryId,
   DestinationId,
   FreeDriveId,
   GameSessionConfig,
-  LessonDefinition,
   LessonId,
-  LessonScore,
   PlayerProgressV1,
   ScenarioId,
-  SteeringSide,
-  TrafficSide,
 } from "./game/types";
 
-type View =
-  | "launcher"
-  | "training"
-  | "driving"
-  | "results"
-  | "passport"
-  | "settings"
-  | "credits";
+type View = "launcher" | "driving" | "settings" | "credits";
 
 const GameCanvas = dynamic(() => import("./game/GameCanvas"), {
   ssr: false,
@@ -71,45 +51,6 @@ const GameCanvas = dynamic(() => import("./game/GameCanvas"), {
     </div>
   ),
 });
-
-const BADGE_LABELS: Record<string, string> = {
-  right_side_ready: "Right-side ready",
-  left_side_ready: "Left-side ready",
-  signal_scholar: "Signal scholar",
-  roundabout_ready: "Roundabout ready",
-  lane_courtesy: "Lane courtesy",
-  vulnerable_road_guardian: "Road guardian",
-  rail_crossing_ready: "Rail-crossing ready",
-  side_swap_traveler: "SideSwap traveler",
-  first_person_mastery: "Cockpit mastery",
-  london_city_ready: "London city ready",
-};
-
-// Glyph shown on each skill-badge coin in the Passport (design 7b).
-const BADGE_GLYPHS: Record<string, string> = {
-  right_side_ready: "→",
-  left_side_ready: "←",
-  signal_scholar: "◉",
-  roundabout_ready: "↻",
-  lane_courtesy: "⇄",
-  vulnerable_road_guardian: "★",
-  rail_crossing_ready: "✕",
-  side_swap_traveler: "⇆",
-  first_person_mastery: "◎",
-  london_city_ready: "✦",
-};
-
-const COUNTRY_MARKS: Record<CountryId, string> = {
-  us: "NYC",
-  uk: "UK",
-  fr: "CAL",
-  jp: "世田谷",
-};
-
-const cameraLabels: Record<CameraMode, string> = {
-  first_person: "First person",
-  third_person: "Third person",
-};
 
 type ChoiceOption<T extends string> = {
   readonly value: T;
@@ -129,17 +70,8 @@ const toCanvasCamera = (camera: CameraMode): "first" | "third" =>
 const fromCanvasCamera = (camera: "first" | "third"): CameraMode =>
   camera === "first" ? "first_person" : "third_person";
 
-const formatMinutes = (lesson: LessonDefinition) =>
-  `${lesson.estimatedMinutes[0]}–${lesson.estimatedMinutes[1]} min`;
-
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
-
-function defaultWheelForDestination(destinationId: DestinationId): SteeringSide {
-  return getCountryProfile(
-    getDestinationProfile(destinationId).countryId,
-  ).defaultSteeringSide;
-}
 
 function useGamepadUiNavigation(
   enabled: boolean,
@@ -231,11 +163,6 @@ const DESTINATION_PREVIEW_FOCUS: Partial<Record<DestinationId, string>> = {
 const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
   scenarioId.startsWith("free-");
 
-const scenarioTitle = (scenarioId: ScenarioId) =>
-  isFreeDriveScenario(scenarioId)
-    ? getFreeDrive(scenarioId).title
-    : getLesson(scenarioId).title;
-
 const assistanceFromProgress = (
   progress: PlayerProgressV1,
 ): GameSessionConfig["assistance"] => ({
@@ -252,29 +179,18 @@ export default function SideSwapApp() {
   );
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("launcher");
-  // Retained only for backward-compatible session metadata. Destination
-  // profiles—not this saved preference—remain authoritative for road rules.
-  const [familiarSide, setFamiliarSide] = useState<TrafficSide>("right");
   const [destinationId, setDestinationId] =
     useState<DestinationId>("uk-london");
-  const [wheelPreference, setWheelPreference] =
-    useState<SteeringSide>("right");
   const [camera, setCamera] = useState<CameraMode>("third_person");
   const [activeSession, setActiveSession] = useState<GameSessionConfig | null>(
     null,
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [customizeOpen, setCustomizeOpen] = useState(false);
-  const customizeTriggerRef = useRef<HTMLButtonElement>(null);
   const destinationRefs = useRef(
     new Map<DestinationId, HTMLButtonElement>(),
   );
-  const closeCustomize = useCallback(() => setCustomizeOpen(false), []);
   const [paused, setPaused] = useState(false);
   const [hud, setHud] = useState<GameHudSnapshot | null>(null);
-  const [events, setEvents] = useState<GameRuntimeEvent[]>([]);
-  const [lastScore, setLastScore] = useState<LessonScore | null>(null);
-  const [startedAt, setStartedAt] = useState(0);
 
   const handleUiGamepadBack = useCallback(() => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -297,9 +213,7 @@ export default function SideSwapApp() {
     const frame = window.requestAnimationFrame(() => {
       const loaded = loadProgress();
       setProgress(loaded);
-      setFamiliarSide(loaded.familiarTrafficSide);
       setDestinationId(loaded.lastDestinationId);
-      setWheelPreference(defaultWheelForDestination(loaded.lastDestinationId));
       setCamera(loaded.preferredCamera);
       setHydrated(true);
     });
@@ -308,27 +222,15 @@ export default function SideSwapApp() {
 
   const destination = getDestinationProfile(destinationId);
   const country = getCountryProfile(destination.countryId);
-  const destinationLessons = getLessonsForDestination(destinationId);
-  const orientation = getOrientationForTrafficSide(country.trafficSide);
-  const trainingPath = [orientation, ...destinationLessons];
-  const steeringSide = resolveSteeringSide(wheelPreference, country);
-  const completedCount = progress.completedLessonIds.length;
-  const masteryCount = Object.values(progress.lessonScores).filter(
-    (score) => score?.mastered,
-  ).length;
-  const recommendation = useMemo(
-    () => getRecommendedDrive(progress, destinationId),
-    [destinationId, progress],
-  );
   const driveDestination = getDestinationProfile(
     activeSession?.destinationId ?? destinationId,
   );
   const driveCountry = getCountryProfile(driveDestination.countryId);
   const activeSteeringSide = resolveSteeringSide(
-    activeSession?.steeringPreference ?? wheelPreference,
+    activeSession?.steeringPreference ?? "auto",
     driveCountry,
   );
-  const activeScenarioId = activeSession?.scenarioId ?? orientation.id;
+  const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
   const activeIsFreeDrive = isFreeDriveScenario(activeScenarioId);
   const activeFreeDrive = activeIsFreeDrive
     ? getFreeDrive(activeScenarioId)
@@ -381,8 +283,7 @@ export default function SideSwapApp() {
       }
     : activeLesson;
 
-  const themeDestination =
-    view === "driving" || view === "results" ? driveDestination : destination;
+  const themeDestination = view === "driving" ? driveDestination : destination;
   const themeStyle = {
     "--destination-accent": themeDestination.visualTheme.accent,
     "--destination-sky": themeDestination.visualTheme.sky,
@@ -405,7 +306,6 @@ export default function SideSwapApp() {
 
   const chooseDestination = (id: DestinationId) => {
     setDestinationId(id);
-    setWheelPreference(defaultWheelForDestination(id));
   };
 
   const beginDrive = (
@@ -414,25 +314,22 @@ export default function SideSwapApp() {
   ) => {
     const nextDestination = getDestinationProfile(nextDestinationId);
     const nextCountryId = nextDestination.countryId;
-    const nextWheelPreference =
-      nextDestinationId === destinationId
-        ? wheelPreference
-        : defaultWheelForDestination(nextDestinationId);
     const session: GameSessionConfig = {
       countryId: nextCountryId,
       destinationId: nextDestinationId,
       scenarioId,
-      familiarTrafficSide: familiarSide,
-      steeringPreference: nextWheelPreference,
+      // The car now always matches the local convention; the wheel side is
+      // resolved from the country profile, never chosen on the landing page.
+      familiarTrafficSide: getCountryProfile(nextCountryId).trafficSide,
+      steeringPreference: "auto",
       camera,
       assistance: assistanceFromProgress(progress),
     };
-    // Fail fast if a UI regression ever pairs a jurisdiction-specific
-    // scenario with the wrong destination profile.
+    // Fail fast if a UI regression ever pairs a scenario with a destination
+    // whose jurisdiction does not match.
     resolveSessionConfig(session);
     const committedProgress: PlayerProgressV1 = {
       ...progress,
-      familiarTrafficSide: familiarSide,
       lastCountryId: nextCountryId,
       lastDestinationId: nextDestinationId,
       preferredCamera: camera,
@@ -441,57 +338,20 @@ export default function SideSwapApp() {
     setProgress(committedProgress);
     saveProgress(committedProgress);
     setDestinationId(nextDestinationId);
-    if (nextDestinationId !== destinationId) {
-      setWheelPreference(nextWheelPreference);
-    }
     setActiveSession(session);
-    setEvents([]);
     setHud(null);
     setPaused(false);
-    setStartedAt(new Date().getTime());
     setView("driving");
   };
 
-  const finishDrive = (simulationScore: SimulationScoreSnapshot) => {
-    const completedAt = new Date();
-    const score: LessonScore = {
-      lessonId: activeLesson.id,
-      total: simulationScore.total,
-      safety: simulationScore.safety,
-      ruleUse: simulationScore.ruleUse,
-      vehicleControl: simulationScore.vehicleControl,
-      criticalErrors: simulationScore.criticalErrors,
-      mastered: simulationScore.mastered,
-      completedAt: completedAt.toISOString(),
-      durationMs: Math.max(0, completedAt.getTime() - startedAt),
-    };
-    setLastScore(score);
-    if (!activeIsFreeDrive && activeSession) {
-      const updated = updateLessonProgress(progress, {
-        score,
-        cameraUsed: camera,
-      });
-      const withPreferences: PlayerProgressV1 = {
-        ...updated,
-        familiarTrafficSide: activeSession.familiarTrafficSide,
-        lastCountryId: activeSession.countryId,
-        lastDestinationId: activeSession.destinationId,
-        preferredCamera: camera,
-      };
-      setProgress(withPreferences);
-      saveProgress(withPreferences);
-    }
-    setView("results");
-  };
-
-  const recordEvent = (event: GameRuntimeEvent) => {
-    if (event.type === "ready" || event.type === "camera") return;
-    setEvents((current) => [...current, event].slice(-80));
+  const exitDrive = () => {
+    setPaused(false);
+    setActiveSession(null);
+    setView("launcher");
   };
 
   const saveSettings = (next: PlayerProgressV1) => {
     setProgress(next);
-    setFamiliarSide(next.familiarTrafficSide);
     setDestinationId(next.lastDestinationId);
     setCamera(next.preferredCamera);
     saveProgress(next);
@@ -501,7 +361,7 @@ export default function SideSwapApp() {
     return (
       <main className="loading-screen" aria-live="polite">
         <div className="loading-road" aria-hidden="true" />
-        <p>Preparing SideSwap…</p>
+        <p>Preparing Curbside Rush…</p>
       </main>
     );
   }
@@ -519,6 +379,7 @@ export default function SideSwapApp() {
           cameraMode={toCanvasCamera(camera)}
           speedUnit={driveCountry.speedUnit === "kmh" ? "km/h" : "mph"}
           paused={paused}
+          showBuiltInHud={false}
           reducedMotion={progress.accessibility.reducedMotion}
           steeringSensitivity={progress.accessibility.steeringSensitivity}
           fieldOfView={(progress.accessibility.fieldOfView * Math.PI) / 180}
@@ -529,137 +390,62 @@ export default function SideSwapApp() {
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           onHudUpdate={setHud}
-          onEvent={recordEvent}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
-          onComplete={finishDrive}
         />
         <div className="game-brand" aria-hidden="true">
-          <span className="brand-mark small">S</span>
-          <span>SIDESWAP</span>
+          <span className="brand-mark small">C</span>
+          <span>CURBSIDE RUSH</span>
         </div>
         <div className="game-context">
           <span>{driveCountry.flagEmoji}</span>
           <div>
-            <strong>{activeIsFreeDrive ? "Free drive" : activeLesson.title}</strong>
-            <small>
-              {driveDestination.destinationName} · traffic keeps {runtimeLesson.trafficSide}
-            </small>
+            <strong>{driveDestination.destinationName}</strong>
+            <small>Keep {runtimeLesson.trafficSide}</small>
           </div>
         </div>
-        <button
-          type="button"
-          className="game-exit"
-          onClick={() => {
-            setPaused(false);
-            setView("launcher");
-          }}
-        >
-          Exit lesson
+        {hud && (
+          <div
+            className="drive-speed"
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              top: "1rem",
+              left: "50%",
+              transform: "translateX(-50%)",
+              display: "flex",
+              alignItems: "baseline",
+              gap: "0.35rem",
+              padding: "0.45rem 0.9rem",
+              borderRadius: "999px",
+              background: "rgba(15, 18, 22, 0.6)",
+              backdropFilter: "blur(10px)",
+              color: "#f4f6f8",
+              font: "700 1.4rem/1 system-ui, sans-serif",
+              pointerEvents: "none",
+              zIndex: 5,
+            }}
+          >
+            <strong>{hud.speed}</strong>
+            <span style={{ fontSize: "0.7rem", opacity: 0.7, fontWeight: 500 }}>
+              {hud.speedUnit}
+            </span>
+            <em style={{ fontSize: "0.8rem", opacity: 0.8, fontStyle: "normal" }}>
+              {hud.gear}
+            </em>
+          </div>
+        )}
+        <button type="button" className="game-exit" onClick={exitDrive}>
+          Exit
         </button>
         {hud && (
           <div className="sr-only" aria-live="polite">
-            Speed {hud.speed} {hud.speedUnit}. Score {hud.score}. {hud.instruction}
+            Speed {hud.speed} {hud.speedUnit}, gear {hud.gear}.
           </div>
         )}
       </main>
     );
   }
-
-  if (view === "results" && lastScore) {
-    const nextDrive = getRecommendedDrive(
-      progress,
-      activeSession?.destinationId ?? destinationId,
-    );
-    return (
-      <main className="results-page" style={themeStyle}>
-        <div className="results-card">
-          <div className="result-seal" aria-hidden="true">
-            {lastScore.mastered ? "✓" : lastScore.total}
-          </div>
-          <p className="eyebrow">DRIVE DEBRIEF</p>
-          <h1>{lastScore.mastered ? "Instincts switched." : "Good practice run."}</h1>
-          <p className="result-lead">
-            {activeIsFreeDrive
-              ? "Free drive results are not saved, so you can experiment without pressure."
-              : lastScore.mastered
-                ? "You completed this route without a critical safety error."
-                : "Review the moments below, then run it again when you’re ready."}
-          </p>
-          <div className="score-grid">
-            <Score label="Safety" value={lastScore.safety} weight="50%" />
-            <Score label="Rule use" value={lastScore.ruleUse} weight="35%" />
-            <Score label="Control" value={lastScore.vehicleControl} weight="15%" />
-          </div>
-          <section className="incident-timeline" aria-labelledby="timeline-title">
-            <div className="section-heading compact">
-              <div>
-                <p className="eyebrow">MIRROR MOMENTS</p>
-                <h2 id="timeline-title">What happened, and why</h2>
-              </div>
-              <span>{events.length || 1} notes</span>
-            </div>
-            {events.length ? (
-              events.map((event, index) => (
-                <div className={`timeline-item ${event.severity ?? "info"}`} key={`${event.timestamp}-${index}`}>
-                  <span className="timeline-dot" />
-                  <div>
-                    <strong>{event.type === "incident" ? "Critical safety reset" : event.type === "reset" ? "Checkpoint recovery" : "Coach note"}</strong>
-                    <dl className="incident-explanation">
-                      <div><dt>What happened</dt><dd>{event.message}</dd></div>
-                      <div><dt>What to do</dt><dd>{event.type === "incident" ? "Pause, re-check the road position and retry from the safe checkpoint." : "Apply the coach note on the next approach."}</dd></div>
-                      <div><dt>Why</dt><dd>{event.type === "incident" ? "Critical conflicts are reset so the lesson reinforces a safe response instead of crash recovery." : "The habit is assessed because it changes risk and predictability for other road users."}</dd></div>
-                    </dl>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="timeline-item info">
-                <span className="timeline-dot" />
-                <div>
-                  <strong>Clean run</strong>
-                  <p>No coaching incidents were recorded on this drive.</p>
-                </div>
-              </div>
-            )}
-          </section>
-          <div className="results-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => setView("training")}
-            >
-              All drives
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() =>
-                beginDrive(
-                  activeSession?.scenarioId ?? nextDrive.scenarioId,
-                  activeSession?.destinationId ?? nextDrive.destinationId,
-                )
-              }
-            >
-              Retry
-            </button>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() =>
-                beginDrive(nextDrive.scenarioId, nextDrive.destinationId)
-              }
-            >
-              Next — {scenarioTitle(nextDrive.scenarioId)} <span aria-hidden="true">→</span>
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  const launcherScenarioId = recommendation.scenarioId;
-  const launcherDriveTitle = scenarioTitle(recommendation.scenarioId);
 
   return (
     <main
@@ -671,29 +457,15 @@ export default function SideSwapApp() {
           className="brand-button"
           type="button"
           onClick={() => setView("launcher")}
-          aria-label="SideSwap home"
+          aria-label="Curbside Rush home"
         >
-          <span className="brand-mark">S</span>
+          <span className="brand-mark">C</span>
           <span className="brand-copy">
-            <strong>SIDESWAP</strong>
-            <small>DRIVE THE OTHER SIDE</small>
+            <strong>CURBSIDE</strong>
+            <small>RUSH</small>
           </span>
         </button>
         <nav className="header-actions" aria-label="Main navigation">
-          <button
-            className={view === "training" ? "active" : ""}
-            type="button"
-            onClick={() => setView("training")}
-          >
-            Drives
-          </button>
-          <button
-            className={view === "passport" ? "active" : ""}
-            type="button"
-            onClick={() => setView("passport")}
-          >
-            Passport <span>{progress.passportStamps.length}/4</span>
-          </button>
           <button
             className={view === "settings" ? "active" : ""}
             type="button"
@@ -721,8 +493,6 @@ export default function SideSwapApp() {
           </button>
           {mobileMenuOpen && (
             <nav id="mobile-menu-panel" aria-label="Mobile navigation">
-              <button type="button" onClick={() => { setView("training"); setMobileMenuOpen(false); }}>All drives</button>
-              <button type="button" onClick={() => { setView("passport"); setMobileMenuOpen(false); }}>Passport <span>{progress.passportStamps.length}/4</span></button>
               <button type="button" onClick={() => { setView("settings"); setMobileMenuOpen(false); }}>Settings & accessibility</button>
               <button type="button" onClick={() => { setView("credits"); setMobileMenuOpen(false); }}>Sources & credits</button>
             </nav>
@@ -730,9 +500,6 @@ export default function SideSwapApp() {
         </div>
       </header>
 
-      {view === "passport" && (
-        <PassportView progress={progress} onBack={() => setView("launcher")} />
-      )}
       {view === "settings" && (
         <SettingsView
           progress={progress}
@@ -740,9 +507,7 @@ export default function SideSwapApp() {
           onReset={() => {
             const reset = resetProgress();
             setProgress(reset);
-            setFamiliarSide(reset.familiarTrafficSide);
             setDestinationId(reset.lastDestinationId);
-            setWheelPreference(defaultWheelForDestination(reset.lastDestinationId));
             setCamera(reset.preferredCamera);
             setView("launcher");
           }}
@@ -756,12 +521,18 @@ export default function SideSwapApp() {
       {view === "launcher" && (
         <section className="launcher-page">
           <div className="launcher-copy">
-            <p className="eyebrow">READY FOR YOUR NEXT DRIVE</p>
-            <h1 aria-label="Swap your instincts. Start driving.">
-              <>Swap your instincts.<br /><em>Start driving.</em></>
+            <p className="eyebrow">READY TO EARN</p>
+            <h1 aria-label="Pick up. Drop off. Repeat.">
+              <>Pick up. Drop off.<br /><em>Repeat.</em></>
             </h1>
+            <p
+              className="launcher-lead"
+              style={{ margin: "0.5rem 0 0", maxWidth: "34ch", opacity: 0.82 }}
+            >
+              London to Tokyo, the meter&rsquo;s always running.
+            </p>
 
-            <p className="launcher-pick-label">Choose a destination</p>
+            <p className="launcher-pick-label">Choose a city</p>
             <div
               className="launcher-destinations"
               role="group"
@@ -790,48 +561,15 @@ export default function SideSwapApp() {
               })}
             </div>
 
-            <div className="launcher-setup-summary" aria-label="Current car setup">
-              <button
-                ref={customizeTriggerRef}
-                type="button"
-                onClick={() => setCustomizeOpen(true)}
-              >
-                <small>Wheel</small><strong>{steeringSide}</strong>
-              </button>
-              <button type="button" onClick={() => setCustomizeOpen(true)}>
-                <small>Camera</small><strong>{cameraLabels[camera]}</strong>
-              </button>
-            </div>
-
-            {launcherDriveTitle && (
-              <p className="launcher-next-drive">
-                <span>Next drive</span>
-                <strong>{launcherDriveTitle}</strong>
-              </p>
-            )}
-
             <div className="launcher-actions">
               <button
                 className="primary-button launcher-primary"
                 type="button"
-                aria-label={`Start ${launcherDriveTitle}`}
-                onClick={() =>
-                  beginDrive(
-                    launcherScenarioId,
-                    recommendation.destinationId,
-                  )
-                }
+                aria-label={`Start driving in ${destination.destinationName}`}
+                onClick={() => beginDrive(destination.freeDriveId, destination.id)}
               >
-                Start
+                Start driving
                 <span aria-hidden="true">→</span>
-              </button>
-              <button
-                className="secondary-button launcher-browse"
-                type="button"
-                aria-label="Browse all drives, lessons, and free practice"
-                onClick={() => setView("training")}
-              >
-                Browse all drives
               </button>
             </div>
           </div>
@@ -855,190 +593,16 @@ export default function SideSwapApp() {
               <em>{destination.destinationSubtitle}</em>
               <small>Traffic keeps {country.trafficSide} · {country.speedUnit === "kmh" ? "km/h" : "mph"}</small>
             </div>
-            {(completedCount > 0 || masteryCount > 0 || progress.badges.length > 0) && (
-              <div className="launcher-progress" aria-label="Your progress">
-                <div><strong>{completedCount}</strong><span>complete</span></div>
-                <div><strong>{masteryCount}</strong><span>mastered</span></div>
-                <div><strong>{progress.badges.length}</strong><span>badges</span></div>
-              </div>
-            )}
           </div>
           <p className="launcher-legal">Familiarisation only—not legal advice or driver instruction. Map data © OpenStreetMap contributors.</p>
         </section>
       )}
 
-      {view === "training" && (
-        <section className="training-hub subpage" aria-labelledby="training-title">
-          <div className="subpage-heading training-hub-heading">
-            <div>
-              <p className="eyebrow">ALL DRIVES</p>
-              <h1 id="training-title">All drives and lessons.</h1>
-              <p>Pick a destination, then start a guided lesson or free drive. Progress is based on safety and rule use, never speed.</p>
-            </div>
-            <button className="secondary-button" type="button" onClick={() => setView("launcher")}>Back to home</button>
-          </div>
-          <div className="hub-country-tabs" role="tablist" aria-label="Choose country">
-            {(["uk", "us", "fr", "jp"] as const).map((groupCountryId) => {
-              const groupCountry = getCountryProfile(groupCountryId);
-              const isActiveCountry = country.id === groupCountryId;
-              return (
-                <button
-                  key={groupCountryId}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActiveCountry}
-                  className={`hub-country-tab${isActiveCountry ? " active" : ""}`}
-                  onClick={() => {
-                    if (isActiveCountry) return;
-                    // A country tab jumps to that country by selecting its
-                    // featured map (or its first), keeping the detail panel and
-                    // lessons below in sync with the tiles shown.
-                    const countryDestinations = DESTINATION_PROFILES.filter(
-                      (item) => item.countryId === groupCountryId,
-                    );
-                    const target =
-                      countryDestinations.find(
-                        (item) => item.promotion === "featured",
-                      ) ?? countryDestinations[0];
-                    if (target) chooseDestination(target.id);
-                  }}
-                >
-                  {groupCountry.flagEmoji} {groupCountry.countryName}
-                </button>
-              );
-            })}
-          </div>
-          <div
-            className="hub-destination-grid"
-            role="tabpanel"
-            aria-label={`${country.countryName} destinations`}
-          >
-            {DESTINATION_PROFILES.filter(
-              (item) => item.countryId === country.id,
-            ).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={destinationId === item.id ? "active" : ""}
-                aria-pressed={destinationId === item.id}
-                onClick={() => chooseDestination(item.id)}
-              >
-                <span>{item.cityMark}</span>
-                <b>{item.destinationName}</b>
-                {item.promotion === "specialist" && <em>Roundabout Academy · specialist</em>}
-                {item.promotion === "featured" && <em>Featured</em>}
-              </button>
-            ))}
-          </div>
-          <div className="hub-destination-banner">
-            {/* eslint-disable-next-line @next/next/no-img-element -- static preview art in /public; next/image adds no value for a fixed, non-critical banner */}
-            <img
-              className="hub-banner-photo"
-              src={DESTINATION_PREVIEW_IMAGES[destination.id]}
-              style={{ objectPosition: DESTINATION_PREVIEW_FOCUS[destination.id] }}
-              alt=""
-              aria-hidden="true"
-              draggable={false}
-            />
-            <div className="hub-banner-copy">
-              <p className="hub-banner-eyebrow">
-                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
-              </p>
-              <h2>{destination.destinationName}</h2>
-              <p className="hub-banner-sub">{destination.destinationSubtitle} · wheel defaults {country.defaultSteeringSide}</p>
-            </div>
-          </div>
-          <div className="lesson-path hub-lessons">
-            {trainingPath.map((lesson, index) => {
-              const unlocked = isLessonUnlocked(progress, lesson.id);
-              const complete = progress.completedLessonIds.includes(lesson.id);
-              const score = progress.lessonScores[lesson.id];
-              return (
-                <article className={`lesson-card ${complete ? "complete" : ""} ${unlocked ? "" : "locked"}`} key={lesson.id}>
-                  <div className="lesson-card-head">
-                    <span className="lesson-tier">
-                      <span className="lesson-status" aria-hidden="true">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "🔒"}</span>
-                      {lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}
-                    </span>
-                    {score && <span className="lesson-score">{score.total}</span>}
-                  </div>
-                  <strong className="lesson-title">{lesson.title}</strong>
-                  <em className="lesson-summary">{lesson.summary}</em>
-                  <button
-                    type="button"
-                    className="lesson-start"
-                    disabled={!unlocked}
-                    onClick={() => beginDrive(lesson.id, destinationId)}
-                  >
-                    {score ? (
-                      <>Drive again <span aria-hidden="true">↻</span></>
-                    ) : unlocked ? (
-                      <>Start drive <span aria-hidden="true">→</span></>
-                    ) : (
-                      "Locked"
-                    )}
-                  </button>
-                </article>
-              );
-            })}
-            <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, destination.freeDriveId) ? "" : "locked"}`}>
-              <div className="lesson-card-head">
-                <span className="lesson-tier"><span className="lesson-status free" aria-hidden="true">∞</span>OPEN PRACTICE</span>
-              </div>
-              <strong className="lesson-title">{getFreeDriveForDestination(destinationId).title}</strong>
-              <em className="lesson-summary">Explore the map with local traffic and no fixed finish.</em>
-              <button
-                type="button"
-                className="lesson-start block"
-                disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId)}
-                onClick={() => beginDrive(destination.freeDriveId, destinationId)}
-              >
-                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? (
-                  <>Start free drive <span aria-hidden="true">→</span></>
-                ) : (
-                  "Complete lesson 1 to unlock"
-                )}
-              </button>
-            </article>
-          </div>
-          <article className="hub-capstone">
-            <div className="swap-graphic" aria-hidden="true"><span>UK</span><i /><b>FR</b></div>
-            <div><p className="eyebrow">FINAL CAPSTONE</p><h2>Keep the same car. Swap the road.</h2><p>Travel from Folkestone to Coquelles, then leave the terminal driving on the opposite side.</p></div>
-            <button
-              type="button"
-              className="secondary-button light"
-              disabled={!isLessonUnlocked(progress, "uk-fr-side-swap")}
-              onClick={() =>
-                beginDrive(
-                  "uk-fr-side-swap",
-                  country.id === "uk" ? destinationId : "uk-london",
-                )
-              }
-            >
-              {isLessonUnlocked(progress, "uk-fr-side-swap") ? "Start capstone" : "Complete NYC, France, Japan and either UK path"}
-            </button>
-          </article>
-        </section>
-      )}
-
       {view !== "launcher" && (
         <footer className="app-footer">
-          <span>SideSwap is familiarisation, not legal advice or driver instruction.</span>
+          <span>Curbside Rush is familiarisation, not legal advice or driver instruction.</span>
           <span>Map data © OpenStreetMap contributors · ODbL</span>
         </footer>
-      )}
-
-      {customizeOpen && (
-        <SetupSheet
-          country={country}
-          destination={destination}
-          wheelPreference={wheelPreference}
-          camera={camera}
-          onWheelChange={setWheelPreference}
-          onCameraChange={setCamera}
-          onClose={closeCustomize}
-          returnFocusRef={customizeTriggerRef}
-        />
       )}
     </main>
   );
@@ -1082,196 +646,6 @@ function OptionPicker<T extends string>({
       </div>
       {hint && <p className="choice-control-hint">{hint}</p>}
     </fieldset>
-  );
-}
-
-function SetupSheet({
-  country,
-  destination,
-  wheelPreference,
-  camera,
-  onWheelChange,
-  onCameraChange,
-  onClose,
-  returnFocusRef,
-}: {
-  country: ReturnType<typeof getCountryProfile>;
-  destination: ReturnType<typeof getDestinationProfile>;
-  wheelPreference: SteeringSide;
-  camera: CameraMode;
-  onWheelChange: (value: SteeringSide) => void;
-  onCameraChange: (value: CameraMode) => void;
-  onClose: () => void;
-  returnFocusRef: { readonly current: HTMLButtonElement | null };
-}) {
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const panel = panelRef.current;
-    const returnFocus =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : returnFocusRef.current;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const focusable = () =>
-      Array.from(
-        panel?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input:not(:disabled), summary, [href], [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-    focusable()[0]?.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const items = focusable();
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-      returnFocus?.focus();
-    };
-  }, [onClose, returnFocusRef]);
-
-  const resolvedWheel = resolveSteeringSide(wheelPreference, country);
-
-  return (
-    <div
-      className="setup-sheet-backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        ref={panelRef}
-        className="setup-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="setup-sheet-title"
-      >
-        <div className="setup-sheet-heading">
-          <div>
-            <p className="eyebrow">CAR SETUP</p>
-            <h2 id="setup-sheet-title">Ready your drive</h2>
-          </div>
-          <button className="sheet-close" type="button" onClick={onClose} aria-label="Close car setup">×</button>
-        </div>
-        <p className="setup-sheet-intro">
-          {country.flagEmoji} {destination.destinationName} traffic keeps <strong>{country.trafficSide}</strong>. Your wheel choice changes only the cockpit and sight lines.
-        </p>
-        <div className="setup-choice-stack">
-          <OptionPicker<SteeringSide>
-            label="Wheel position"
-            value={wheelPreference}
-            options={[
-              { value: "left", symbol: "L", label: "Left", hint: "Wheel on the left" },
-              { value: "right", symbol: "R", label: "Right", hint: "Wheel on the right" },
-            ]}
-            onChange={onWheelChange}
-            hint={`Selected cockpit: wheel on the ${resolvedWheel}. Destination defaults are applied when you switch cities.`}
-          />
-          <OptionPicker<CameraMode>
-            label="Starting camera"
-            value={camera}
-            options={CAMERA_CHOICES}
-            onChange={onCameraChange}
-          />
-        </div>
-        <button className="primary-button sheet-done" type="button" onClick={onClose}>Done</button>
-      </div>
-    </div>
-  );
-}
-
-function Score({ label, value, weight }: { label: string; value: number; weight: string }) {
-  return <div className="score-card"><div className="score-ring" style={{ "--score": `${value * 3.6}deg` } as CSSProperties}><span>{value}</span></div><strong>{label}</strong><small>{weight} of total</small></div>;
-}
-
-function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack: () => void }) {
-  return (
-    <section className="subpage">
-      <div className="subpage-heading">
-        <div>
-          <p className="eyebrow">DRIVING PASSPORT</p>
-          <h1>Your practised road habits</h1>
-          <p>Stamps celebrate completed country lessons; badges recognise specific safe-driving skills.</p>
-        </div>
-        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
-      </div>
-      <div className="passport-grid">
-        {COUNTRY_PROFILES.map((country) => {
-          const earned = progress.passportStamps.includes(country.id);
-          const countryDestinations = DESTINATION_PROFILES.filter(
-            (item) => item.countryId === country.id,
-          );
-          return (
-            <article className={`passport-stamp ${earned ? "earned" : ""}`} key={country.id}>
-              <div className="stamp-mark" aria-hidden="true">
-                <span>{earned ? "PRACTISED" : "NOT YET"}</span>
-                <b>{COUNTRY_MARKS[country.id]}</b>
-              </div>
-              <p className="stamp-eyebrow">
-                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
-              </p>
-              <h2>{countryDestinations.map((item) => item.destinationName).join(" & ")}</h2>
-              <div className="passport-destination-progress">
-                {countryDestinations.map((item) => {
-                  const lessons = getLessonsForDestination(item.id);
-                  const completed = lessons.filter((lesson) =>
-                    progress.completedLessonIds.includes(lesson.id),
-                  ).length;
-                  const pct = lessons.length ? Math.round((completed / lessons.length) * 100) : 0;
-                  const full = lessons.length > 0 && completed >= lessons.length;
-                  return (
-                    <p key={item.id}>
-                      <strong>{item.destinationName}</strong>
-                      <span className="progress-track"><i className={full ? "full" : ""} style={{ width: `${pct}%` }} /></span>
-                      <em>{completed}/{lessons.length}</em>
-                    </p>
-                  );
-                })}
-              </div>
-            </article>
-          );
-        })}
-      </div>
-      <div className="badge-section">
-        <div className="section-heading compact">
-          <div>
-            <p className="eyebrow">SKILL BADGES</p>
-            <h2>{progress.badges.length ? "Habits you’ve earned" : "Your first badge is one clean drive away"}</h2>
-          </div>
-        </div>
-        <div className="badge-grid">
-          {Object.entries(BADGE_LABELS).map(([id, label], index) => {
-            const earned = progress.badges.includes(id as never);
-            const tone = index % 2 === 0 ? "gold" : "sage";
-            return (
-              <div key={id} className={`badge-coin ${earned ? `earned ${tone}` : ""}`}>
-                <span className="badge-coin-face" aria-hidden="true">{BADGE_GLYPHS[id] ?? "◆"}</span>
-                <span className="badge-coin-label">{label}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -1395,7 +769,7 @@ function CreditsView({ onBack }: { onBack: () => void }) {
       </div>
       <article className="license-card">
         <h3 className="credits-section-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Map data — frozen, credited, separate from the law</h3>
-        <p>SideSwap includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p>
+        <p>Curbside Rush includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p>
         <div className="map-downloads" aria-label="Download frozen map extracts">
           {extracts.map(([label, filename]) => (
             <a key={filename} href={`/map-data/${filename}`} download>
