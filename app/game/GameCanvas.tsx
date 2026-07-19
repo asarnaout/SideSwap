@@ -2896,7 +2896,7 @@ class BabylonGameSession {
         this.scene,
         this.playerExterior,
         "player",
-        resolvePlayerVehicleAppearance(),
+        resolvePlayerVehicleAppearance(this.options.mapPack?.id ?? "orientation-yard"),
       );
     }
     const trafficSeed = this.options.lesson?.trafficSeed ?? 0;
@@ -6875,7 +6875,7 @@ class BabylonGameSession {
       scene,
       this.playerExterior,
       "player",
-      resolvePlayerVehicleAppearance(),
+      resolvePlayerVehicleAppearance(this.options.mapPack?.id ?? "orientation-yard"),
     );
     const bodyDark = makeMaterial(scene, "player-blue-dark", new Color3(0.04, 0.23, 0.3));
     const steeringRubber = makeMaterial(

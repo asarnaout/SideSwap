@@ -311,7 +311,7 @@ describe("procedural vehicle meshes", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const parent = new TransformNode("indicator-parent", scene);
-    const appearances = [...passengerAppearances(), resolvePlayerVehicleAppearance()];
+    const appearances = [...passengerAppearances(), resolvePlayerVehicleAppearance("london-south-kensington")];
     const built = appearances.map((appearance, index) =>
       buildVisual(scene, parent, appearance, `indicators-${appearance.model}-${index}`),
     );
@@ -393,7 +393,7 @@ describe("procedural vehicle meshes", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const parent = new TransformNode("dispose-parent", scene);
-    const first = buildVisual(scene, parent, resolvePlayerVehicleAppearance(), "dispose-first");
+    const first = buildVisual(scene, parent, resolvePlayerVehicleAppearance("london-south-kensington"), "dispose-first");
     const second = buildVisual(
       scene,
       parent,
