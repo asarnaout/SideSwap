@@ -1596,16 +1596,6 @@ canvas:focus-visible {
 .launcher-setup-summary small { color: var(--hud-sage); font-size: 8px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
 .launcher-setup-summary strong { overflow: hidden; margin-top: 3px; font-size: 14px; font-weight: 700; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
 
-.london-charge-note,
-.hub-charge-note {
-  margin: 12px 0 0;
-  color: var(--hud-cream-50);
-  font-size: 11px;
-  line-height: 1.5;
-}
-.london-charge-note a,
-.hub-charge-note a { color: var(--hud-sage-bright); font-weight: 700; }
-
 .launcher-actions {
   display: flex;
   align-items: center;
@@ -1800,7 +1790,6 @@ canvas:focus-visible {
 .hub-banner-eyebrow { margin: 0 0 5px; color: var(--hud-yellow); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
 .hub-banner-copy h2 { margin: 0; font-family: var(--font-serif); font-size: 30px; font-weight: 800; color: #fff; letter-spacing: -.01em; }
 .hub-banner-sub { margin: 5px 0 0; color: rgba(255, 255, 255, 0.72); font-size: 12px; }
-.hub-charge-note { margin: -6px 0 18px; }
 .hub-lessons { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .lesson-start { align-self: flex-start; margin-top: auto; padding: 13px 0 2px; border: 0; background: transparent; color: var(--hud-yellow); cursor: pointer; font-size: 13px; font-weight: 700; }
 .lesson-start:hover:not(:disabled) { color: #f7d05f; }

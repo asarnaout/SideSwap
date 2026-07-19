@@ -803,20 +803,6 @@ export default function SideSwapApp() {
               </button>
             </div>
 
-            {destination.id === "uk-london" && (
-              <p className="london-charge-note">
-                London has driving charges that vary by journey and vehicle. Check the current{" "}
-                <a
-                  href="https://tfl.gov.uk/modes/driving/pay-to-drive-in-london"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Transport for London guidance ↗
-                </a>
-                . This note is not scored.
-              </p>
-            )}
-
             {launcherDriveTitle && (
               <p className="launcher-next-drive">
                 <span>Next drive</span>
@@ -962,15 +948,6 @@ export default function SideSwapApp() {
               <p className="hub-banner-sub">{destination.destinationSubtitle} · wheel defaults {country.defaultSteeringSide}</p>
             </div>
           </div>
-          {destination.id === "uk-london" && (
-            <p className="hub-charge-note">
-              Before driving in London, check current{" "}
-              <a href="https://tfl.gov.uk/modes/driving/pay-to-drive-in-london" target="_blank" rel="noreferrer">
-                Transport for London charge guidance ↗
-              </a>
-              . Charges are informational and never affect your score.
-            </p>
-          )}
           <div className="lesson-path hub-lessons">
             {trainingPath.map((lesson, index) => {
               const unlocked = isLessonUnlocked(progress, lesson.id);

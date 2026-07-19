@@ -445,8 +445,6 @@ describe("game-first launcher", () => {
     render(<SideSwapApp />);
     fireEvent.click(await screen.findByRole("button", { name: "Drives" }));
 
-    expect(screen.getByRole("link", { name: /Transport for London charge guidance/i })).toBeVisible();
-    expect(screen.getByText(/Charges are informational and never affect your score/i)).toBeVisible();
     const londonLesson = screen.getByText("Left in London").closest("article");
     expect(londonLesson).not.toBeNull();
     fireEvent.click(within(londonLesson as HTMLElement).getByRole("button", { name: "Start drive" }));
