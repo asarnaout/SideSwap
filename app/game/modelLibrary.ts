@@ -125,11 +125,12 @@ const V = "/models/vehicles";
 /**
  * Maps each VehicleModel onto a CC0/CC-BY low-poly glb. The recolourable
  * Quaternius cars (CC0, solid `Blue`/`White` body material) cover the passenger
- * fleet; the Kenney van keeps its own texture; the recolourable bus stands in
- * for city buses. `london-double-decker` is intentionally absent so it keeps its
- * recognisable procedural two-storey fallback (no CC0/CC-BY glb was available).
- * Scales are length-matched to VEHICLE_DIMENSIONS; the Quaternius cars import
- * front-first (+Z), so yawOffset stays 0 unless a playtest shows otherwise.
+ * fleet; a recolourable CC-BY panel van (solid `bodywork` material) covers
+ * delivery vans; the recolourable bus stands in for city buses.
+ * `london-double-decker` is intentionally absent so it keeps its recognisable
+ * procedural two-storey fallback (no CC0/CC-BY double-decker glb was available).
+ * Scales are length-matched to VEHICLE_DIMENSIONS. Most models import front-first
+ * (+Z, yawOffset 0); the van imports front-along-+X, so it needs a -90° yawOffset.
  */
 export const VEHICLE_MODEL_REGISTRY: Partial<
   Record<VehicleModel, VehicleModelConfig>
@@ -140,7 +141,7 @@ export const VEHICLE_MODEL_REGISTRY: Partial<
   "urban-crossover": { url: `${V}/suv.glb`, bodyMaterialNames: ["White"], scale: 1.03, yawOffset: 0 },
   "sport-wagon": { url: `${V}/suv.glb`, bodyMaterialNames: ["White"], scale: 1.06, yawOffset: 0 },
   "electric-taxi": { url: `${V}/sedan.glb`, bodyMaterialNames: ["Blue"], scale: 1.09, yawOffset: 0 },
-  "delivery-van": { url: `${V}/van.glb`, bodyMaterialNames: [], scale: 1.59, yawOffset: 0 },
+  "delivery-van": { url: `${V}/van.glb`, bodyMaterialNames: ["bodywork"], scale: 0.85, yawOffset: -Math.PI / 2 },
   "city-bus": { url: `${V}/bus.glb`, bodyMaterialNames: ["039BE5"], scale: 0.24, yawOffset: 0 },
 };
 
