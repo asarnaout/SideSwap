@@ -361,7 +361,7 @@ export default function SideSwapApp() {
     return (
       <main className="loading-screen" aria-live="polite">
         <div className="loading-road" aria-hidden="true" />
-        <p>Preparing SideSwap…</p>
+        <p>Preparing Side Gig Simulator…</p>
       </main>
     );
   }
@@ -395,7 +395,7 @@ export default function SideSwapApp() {
         />
         <div className="game-brand" aria-hidden="true">
           <span className="brand-mark small">S</span>
-          <span>SIDESWAP</span>
+          <span>SIDE GIG SIMULATOR</span>
         </div>
         <div className="game-context">
           <span>{driveCountry.flagEmoji}</span>
@@ -457,12 +457,12 @@ export default function SideSwapApp() {
           className="brand-button"
           type="button"
           onClick={() => setView("launcher")}
-          aria-label="SideSwap home"
+          aria-label="Side Gig Simulator home"
         >
           <span className="brand-mark">S</span>
           <span className="brand-copy">
-            <strong>SIDESWAP</strong>
-            <small>DRIVE THE OTHER SIDE</small>
+            <strong>SIDE GIG</strong>
+            <small>SIMULATOR</small>
           </span>
         </button>
         <nav className="header-actions" aria-label="Main navigation">
@@ -600,7 +600,7 @@ export default function SideSwapApp() {
 
       {view !== "launcher" && (
         <footer className="app-footer">
-          <span>SideSwap is familiarisation, not legal advice or driver instruction.</span>
+          <span>Side Gig Simulator is familiarisation, not legal advice or driver instruction.</span>
           <span>Map data © OpenStreetMap contributors · ODbL</span>
         </footer>
       )}
@@ -769,7 +769,7 @@ function CreditsView({ onBack }: { onBack: () => void }) {
       </div>
       <article className="license-card">
         <h3 className="credits-section-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Map data — frozen, credited, separate from the law</h3>
-        <p>SideSwap includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p>
+        <p>Side Gig Simulator includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p>
         <div className="map-downloads" aria-label="Download frozen map extracts">
           {extracts.map(([label, filename]) => (
             <a key={filename} href={`/map-data/${filename}`} download>

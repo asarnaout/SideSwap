@@ -13,40 +13,42 @@ export async function generateMetadata(): Promise<Metadata> {
   const imageUrl = new URL("/og.png", origin).toString();
 
   return {
-    title: "SideSwap — Practice the other side",
+    title: "Side Gig Simulator",
     description:
-      "A low-poly 3D driving trainer featuring London and four other destinations for learning left- and right-side road habits before you travel.",
-    applicationName: "SideSwap",
+      "A low-poly open-world 3D driving game — run deliveries and passenger fares across five world cities, each with its own currency and side of the road.",
+    applicationName: "Side Gig Simulator",
     icons: {
       icon: "/favicon.svg",
     },
     keywords: [
       "driving game",
-      "left hand traffic",
-      "right hand traffic",
-      "travel training",
-      "London driving game",
+      "delivery game",
+      "gig economy game",
+      "open world driving",
       "3D web game",
+      "low poly",
     ],
     openGraph: {
-      title: "SideSwap — Practice the other side",
-      description: "Start in London and build the right instincts before the road feels backwards.",
+      title: "Side Gig Simulator",
+      description:
+        "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
       type: "website",
-      siteName: "SideSwap",
+      siteName: "Side Gig Simulator",
       url: origin,
       images: [
         {
           url: imageUrl,
           width: 1568,
           height: 1003,
-          alt: "SideSwap low-poly London driving scene in South Kensington",
+          alt: "Side Gig Simulator low-poly London driving scene in South Kensington",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: "SideSwap — Practice the other side",
-      description: "Start in London and build the right instincts before the road feels backwards.",
+      title: "Side Gig Simulator",
+      description:
+        "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
       images: [imageUrl],
     },
   };

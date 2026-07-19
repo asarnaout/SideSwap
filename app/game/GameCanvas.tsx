@@ -2638,7 +2638,7 @@ class BabylonGameSession {
     );
     if (this.engine.webGLVersion < 2) {
       this.engine.dispose();
-      throw new Error("SideSwap requires WebGL 2.");
+      throw new Error("Side Gig Simulator requires WebGL 2.");
     }
 
     const scale = options.inputCapabilities.touchFirst
@@ -7423,7 +7423,7 @@ class BabylonGameSession {
       event.preventDefault();
       this.contextLost = true;
       this.setPaused(true);
-      this.emit("context-lost", "Graphics context lost. SideSwap is waiting to recover.", "warning");
+      this.emit("context-lost", "Graphics context lost. Side Gig Simulator is waiting to recover.", "warning");
       this.callbacks.onContextLost?.();
     };
     const onContextRestored = () => {
@@ -7611,7 +7611,7 @@ class BabylonGameSession {
       honking: now < this.hornUntil,
       rearViewVisible: this.cameraMode === "first",
       scenarioId: this.options.lesson?.id ?? "orientation-yard",
-      scenarioTitle: this.options.lesson?.title ?? "SideSwap Orientation",
+      scenarioTitle: this.options.lesson?.title ?? "Free drive",
       objective:
         objectives[objectiveIndex]?.label ??
         "Reach the end of the training route",
@@ -7828,7 +7828,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       honking: false,
       rearViewVisible: cameraMode === "first",
       scenarioId: lesson?.id ?? "orientation-yard",
-      scenarioTitle: lesson?.title ?? "SideSwap Orientation",
+      scenarioTitle: lesson?.title ?? "Free drive",
       objective:
         lesson?.objectives[0]?.label ??
         "Reach the end of the training route",
@@ -7945,7 +7945,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         }
         sessionRef.current = session;
       } catch (error) {
-        console.error("Unable to start SideSwap", error);
+        console.error("Unable to start Side Gig Simulator", error);
         setRuntimeState(error instanceof Error && error.message.includes("WebGL 2") ? "unsupported" : "error");
       }
       return () => {
@@ -8024,7 +8024,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       <div className={className} style={{ ...shellStyle, ...style }}>
         <canvas
           ref={canvasRef}
-          aria-label={`SideSwap 3D ${trafficSide}-side driving training area`}
+          aria-label={`Side Gig Simulator 3D ${trafficSide}-side driving area`}
           tabIndex={0}
           style={canvasStyle}
         />
@@ -8381,7 +8381,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               </strong>
               <span style={{ opacity: 0.72, fontSize: 14, lineHeight: 1.5 }}>
                 {runtimeState === "unsupported"
-                  ? "SideSwap needs WebGL 2 with hardware acceleration. Try an up-to-date Chrome, Edge, Firefox, or Safari browser."
+                  ? "Side Gig Simulator needs WebGL 2 with hardware acceleration. Try an up-to-date Chrome, Edge, Firefox, or Safari browser."
                   : runtimeState === "context-lost"
                     ? "Your position is safe. The lesson is paused while the browser restores graphics."
                     : runtimeState === "error"
