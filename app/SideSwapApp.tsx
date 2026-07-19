@@ -85,6 +85,20 @@ const BADGE_LABELS: Record<string, string> = {
   london_city_ready: "London city ready",
 };
 
+// Glyph shown on each skill-badge coin in the Passport (design 7b).
+const BADGE_GLYPHS: Record<string, string> = {
+  right_side_ready: "→",
+  left_side_ready: "←",
+  signal_scholar: "◉",
+  roundabout_ready: "↻",
+  lane_courtesy: "⇄",
+  vulnerable_road_guardian: "★",
+  rail_crossing_ready: "✕",
+  side_swap_traveler: "⇆",
+  first_person_mastery: "◎",
+  london_city_ready: "✦",
+};
+
 const COUNTRY_MARKS: Record<CountryId, string> = {
   us: "NYC",
   uk: "UK",
@@ -747,6 +761,7 @@ export default function SideSwapApp() {
               <>Swap your instincts.<br /><em>Start driving.</em></>
             </h1>
 
+            <p className="launcher-pick-label">Choose a destination</p>
             <div
               className="launcher-destinations"
               role="group"
@@ -929,9 +944,23 @@ export default function SideSwapApp() {
               </button>
             ))}
           </div>
-          <div className="hub-destination-heading">
-            <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{destination.destinationName}</h2><em>{destination.destinationSubtitle}</em></div></div>
-            <p>Traffic keeps <strong>{country.trafficSide}</strong> · wheel defaults <strong>{country.defaultSteeringSide}</strong></p>
+          <div className="hub-destination-banner">
+            {/* eslint-disable-next-line @next/next/no-img-element -- static preview art in /public; next/image adds no value for a fixed, non-critical banner */}
+            <img
+              className="hub-banner-photo"
+              src={DESTINATION_PREVIEW_IMAGES[destination.id]}
+              style={{ objectPosition: DESTINATION_PREVIEW_FOCUS[destination.id] }}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+            />
+            <div className="hub-banner-copy">
+              <p className="hub-banner-eyebrow">
+                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
+              </p>
+              <h2>{destination.destinationName}</h2>
+              <p className="hub-banner-sub">{destination.destinationSubtitle} · wheel defaults {country.defaultSteeringSide}</p>
+            </div>
           </div>
           {destination.id === "uk-london" && (
             <p className="hub-charge-note">
@@ -948,34 +977,50 @@ export default function SideSwapApp() {
               const complete = progress.completedLessonIds.includes(lesson.id);
               const score = progress.lessonScores[lesson.id];
               return (
-                <article className={`lesson-card ${complete ? "complete" : ""}`} key={lesson.id}>
-                  <span className="lesson-index">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "—"}</span>
-                  <span className="lesson-copy">
-                    <small>{lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}</small>
-                    <strong>{lesson.title}</strong>
-                    <em>{lesson.summary}</em>
-                  </span>
+                <article className={`lesson-card ${complete ? "complete" : ""} ${unlocked ? "" : "locked"}`} key={lesson.id}>
+                  <div className="lesson-card-head">
+                    <span className="lesson-tier">
+                      <span className="lesson-status" aria-hidden="true">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "🔒"}</span>
+                      {lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}
+                    </span>
+                    {score && <span className="lesson-score">{score.total}</span>}
+                  </div>
+                  <strong className="lesson-title">{lesson.title}</strong>
+                  <em className="lesson-summary">{lesson.summary}</em>
                   <button
                     type="button"
                     className="lesson-start"
                     disabled={!unlocked}
                     onClick={() => beginDrive(lesson.id, destinationId)}
                   >
-                    {score ? `${score.total} · Drive again` : unlocked ? "Start" : "Locked"}
+                    {score ? (
+                      <>Drive again <span aria-hidden="true">↻</span></>
+                    ) : unlocked ? (
+                      <>Start drive <span aria-hidden="true">→</span></>
+                    ) : (
+                      "Locked"
+                    )}
                   </button>
                 </article>
               );
             })}
             <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, destination.freeDriveId) ? "" : "locked"}`}>
-              <span className="lesson-index">∞</span>
-              <span className="lesson-copy"><small>OPEN PRACTICE</small><strong>{getFreeDriveForDestination(destinationId).title}</strong><em>Explore the map with local traffic and no fixed finish.</em></span>
+              <div className="lesson-card-head">
+                <span className="lesson-tier"><span className="lesson-status free" aria-hidden="true">∞</span>OPEN PRACTICE</span>
+              </div>
+              <strong className="lesson-title">{getFreeDriveForDestination(destinationId).title}</strong>
+              <em className="lesson-summary">Explore the map with local traffic and no fixed finish.</em>
               <button
                 type="button"
-                className="lesson-start"
+                className="lesson-start block"
                 disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId)}
                 onClick={() => beginDrive(destination.freeDriveId, destinationId)}
               >
-                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive" : "Complete lesson 1"}
+                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? (
+                  <>Start free drive <span aria-hidden="true">→</span></>
+                ) : (
+                  "Complete lesson 1 to unlock"
+                )}
               </button>
             </article>
           </div>
@@ -1200,27 +1245,31 @@ function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack
           );
           return (
             <article className={`passport-stamp ${earned ? "earned" : ""}`} key={country.id}>
-              <span className="stamp-flag">{country.flagEmoji}</span>
-              <span className="stamp-ring">
+              <div className="stamp-mark" aria-hidden="true">
+                <span>{earned ? "PRACTISED" : "NOT YET"}</span>
                 <b>{COUNTRY_MARKS[country.id]}</b>
-                <small>{earned ? "PRACTISED" : "NOT YET"}</small>
-              </span>
-              <h2>{country.countryName}</h2>
+              </div>
+              <p className="stamp-eyebrow">
+                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
+              </p>
+              <h2>{countryDestinations.map((item) => item.destinationName).join(" & ")}</h2>
               <div className="passport-destination-progress">
                 {countryDestinations.map((item) => {
                   const lessons = getLessonsForDestination(item.id);
                   const completed = lessons.filter((lesson) =>
                     progress.completedLessonIds.includes(lesson.id),
                   ).length;
+                  const pct = lessons.length ? Math.round((completed / lessons.length) * 100) : 0;
+                  const full = lessons.length > 0 && completed >= lessons.length;
                   return (
                     <p key={item.id}>
                       <strong>{item.destinationName}</strong>
-                      <span>{completed}/{lessons.length} lessons</span>
+                      <span className="progress-track"><i className={full ? "full" : ""} style={{ width: `${pct}%` }} /></span>
+                      <em>{completed}/{lessons.length}</em>
                     </p>
                   );
                 })}
               </div>
-              <p>Traffic keeps {country.trafficSide}</p>
             </article>
           );
         })}
@@ -1233,11 +1282,16 @@ function PassportView({ progress, onBack }: { progress: PlayerProgressV1; onBack
           </div>
         </div>
         <div className="badge-grid">
-          {Object.entries(BADGE_LABELS).map(([id, label]) => (
-            <div key={id} className={`badge-chip ${progress.badges.includes(id as never) ? "earned" : ""}`}>
-              <span aria-hidden="true">◆</span>{label}
-            </div>
-          ))}
+          {Object.entries(BADGE_LABELS).map(([id, label], index) => {
+            const earned = progress.badges.includes(id as never);
+            const tone = index % 2 === 0 ? "gold" : "sage";
+            return (
+              <div key={id} className={`badge-coin ${earned ? `earned ${tone}` : ""}`}>
+                <span className="badge-coin-face" aria-hidden="true">{BADGE_GLYPHS[id] ?? "◆"}</span>
+                <span className="badge-coin-label">{label}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>
@@ -1297,7 +1351,10 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
       </div>
       <div className="settings-grid">
         <section className="settings-card" aria-labelledby="driving-preferences-title">
-          <h2 id="driving-preferences-title">Driving preferences</h2>
+          <div className="settings-card-head">
+            <h2 id="driving-preferences-title"><span className="settings-card-dot dot-yellow" aria-hidden="true" />Driving preferences</h2>
+            <p className="settings-card-sub">How the car handles and frames the road.</p>
+          </div>
           <OptionPicker<CameraMode>
             label="Default camera"
             value={draft.preferredCamera}
@@ -1310,7 +1367,10 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
           </div>
         </section>
         <section className="settings-card" aria-labelledby="accessibility-audio-title">
-          <h2 id="accessibility-audio-title">Accessibility & audio</h2>
+          <div className="settings-card-head">
+            <h2 id="accessibility-audio-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Accessibility &amp; audio</h2>
+            <p className="settings-card-sub">Coaching cues and sound.</p>
+          </div>
           <div className="settings-toggle-stack">
             <Toggle label="Subtitles" checked={draft.accessibility.subtitles} onChange={(checked) => updateAccessibility({ subtitles: checked })} />
             <Toggle label="Visual honk cue" checked={draft.accessibility.visualHonkIndicator} onChange={(checked) => updateAccessibility({ visualHonkIndicator: checked })} />
@@ -1346,5 +1406,50 @@ function CreditsView({ onBack }: { onBack: () => void }) {
     ["Calais / Coquelles", "fr-calais-coquelles.json"],
     ["Tokyo Setagaya", "jp-setagaya.json"],
   ] as const;
-  return <section className="subpage"><div className="subpage-heading"><div><p className="eyebrow">SOURCES & CREDITS</p><h1>Rules should have receipts.</h1><p>Every assessed rule is tied to an official source and review date. OpenStreetMap supplies geography only.</p></div><button className="secondary-button" type="button" onClick={onBack}>Back to training</button></div><div className="source-list">{references.map((reference) => <a key={reference.id} href={reference.url} target="_blank" rel="noreferrer"><span>{reference.jurisdiction}</span><strong>{reference.title}</strong><small>{reference.authority} · reviewed {reference.reviewedOn}</small><b aria-hidden="true">↗</b></a>)}</div><article className="license-card"><p className="eyebrow">MAP DATA</p><h2>Frozen, credited, and separate from the law</h2><p>SideSwap includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p><div className="map-downloads" aria-label="Download frozen map extracts">{extracts.map(([label, filename]) => <a key={filename} href={`/map-data/${filename}`} download><span>{label}</span><small>JSON · importer v2</small></a>)}</div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Map data © OpenStreetMap contributors · ODbL 1.0 ↗</a></article></section>;
+  return (
+    <section className="subpage credits-page">
+      <div className="subpage-heading">
+        <div>
+          <p className="eyebrow">SOURCES &amp; CREDITS</p>
+          <h1>Rules should have receipts.</h1>
+          <p>Every assessed rule is tied to an official source and review date. OpenStreetMap supplies geography only.</p>
+        </div>
+        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
+      </div>
+      <article className="license-card">
+        <h3 className="credits-section-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Map data — frozen, credited, separate from the law</h3>
+        <p>SideSwap includes compact snapshots for Upper West Side, South Kensington, Milton Keynes, Calais/Coquelles and Setagaya. Each extract records its bounds, freeze timestamp, source and content checksums, and importer version. The game makes no runtime map requests.</p>
+        <div className="map-downloads" aria-label="Download frozen map extracts">
+          {extracts.map(([label, filename]) => (
+            <a key={filename} href={`/map-data/${filename}`} download>
+              <span className="map-glyph" aria-hidden="true">{"{ }"}</span>
+              <span className="map-copy"><strong>{label}</strong><small>JSON · importer v2</small></span>
+            </a>
+          ))}
+        </div>
+        <a className="osm-link" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Map data © OpenStreetMap contributors · ODbL 1.0 ↗</a>
+      </article>
+      <h3 className="credits-section-title with-count">
+        <span className="settings-card-dot dot-yellow" aria-hidden="true" />Rule sources
+        <span className="credits-count">· {references.length} official references</span>
+      </h3>
+      <div className="source-groups">
+        {COUNTRY_PROFILES.map((country) => (
+          <section className="source-group" key={country.id}>
+            <div className="source-group-head"><span className="flag">{country.flagEmoji}</span> {country.countryName}</div>
+            {country.officialReferences.map((reference) => (
+              <a className="source-row" key={reference.id} href={reference.url} target="_blank" rel="noreferrer">
+                <span className="source-row-copy">
+                  <span className="source-juris">{reference.jurisdiction}</span>
+                  <strong>{reference.title}</strong>
+                  <small>{reference.authority} · reviewed {reference.reviewedOn}</small>
+                </span>
+                <b className="source-arrow" aria-hidden="true">↗</b>
+              </a>
+            ))}
+          </section>
+        ))}
+      </div>
+    </section>
+  );
 }

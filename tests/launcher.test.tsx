@@ -449,7 +449,7 @@ describe("game-first launcher", () => {
     expect(screen.getByText(/Charges are informational and never affect your score/i)).toBeVisible();
     const londonLesson = screen.getByText("Left in London").closest("article");
     expect(londonLesson).not.toBeNull();
-    fireEvent.click(within(londonLesson as HTMLElement).getByRole("button", { name: "Start" }));
+    fireEvent.click(within(londonLesson as HTMLElement).getByRole("button", { name: "Start drive" }));
     expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
       "data-scenario",
       "uk-london-left-side-basics",
@@ -487,11 +487,12 @@ describe("game-first launcher", () => {
     }).closest("section");
     expect(passport).not.toBeNull();
     expect(within(passport as HTMLElement).getAllByRole("article")).toHaveLength(4);
-    const ukStamp = screen.getByRole("heading", { name: "United Kingdom" }).closest("article");
+    const ukStamp = screen.getByRole("heading", { name: "London & Milton Keynes" }).closest("article");
     expect(ukStamp).not.toBeNull();
     expect(ukStamp).toHaveTextContent("UK");
-    expect(ukStamp).toHaveTextContent("London1/3 lessons");
-    expect(ukStamp).toHaveTextContent("Milton Keynes1/3 lessons");
+    expect(ukStamp).toHaveTextContent("United Kingdom");
+    expect(ukStamp).toHaveTextContent("London1/3");
+    expect(ukStamp).toHaveTextContent("Milton Keynes1/3");
   });
 
   it("auto-reveals the selected destination in the narrow launcher strip", async () => {
