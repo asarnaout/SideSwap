@@ -879,6 +879,9 @@ export function buildSimulationCoreConfig({
     speedUnit: normalizedSpeedUnit,
     seed: lesson.trafficSeed,
     lessonId: lesson.id,
+    // Open-world free drives never terminate on a violation; guided lessons keep
+    // the reset-to-checkpoint behaviour. See SimulationCoreConfig.enforcement.
+    enforcement: lesson.kind === "free_drive" ? "coach" : "reset",
     lanes,
     bounds,
     spawn: { x: start.x, z: start.z, heading: start.heading },
