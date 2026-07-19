@@ -15,6 +15,10 @@ import type {
 import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
+  FUEL_CONSUMPTION_L_PER_M,
+  FUEL_PRICE_PER_LITRE_BY_COUNTRY,
+  TANK_CAPACITY_L,
+  formatMoney,
   getCountryProfile,
   getDestinationProfile,
   getFreeDrive,
@@ -24,10 +28,13 @@ import {
 } from "./game/content";
 import {
   createDefaultProgress,
+  debit,
   loadProgress,
   resetProgress,
   saveProgress,
+  setFuel,
 } from "./game/progress";
+import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import type {
   CameraMode,
   DestinationId,
@@ -183,6 +190,28 @@ export default function SideSwapApp() {
   );
   const [paused, setPaused] = useState(false);
   const [hud, setHud] = useState<GameHudSnapshot | null>(null);
+  const [driveFuel, setDriveFuel] = useState(TANK_CAPACITY_L);
+  const lastPoseRef = useRef<{ x: number; z: number } | null>(null);
+
+  // Drain fuel by the distance the car actually moved between HUD samples, then
+  // mirror the pose for the next delta. Fuel lives in the drive session and is
+  // written back to the country's tank on refuel and on exit.
+  const handleHud = useCallback((snapshot: GameHudSnapshot) => {
+    setHud(snapshot);
+    const last = lastPoseRef.current;
+    if (last) {
+      const moved = Math.hypot(
+        snapshot.playerX - last.x,
+        snapshot.playerZ - last.z,
+      );
+      if (moved > 0 && moved < 40) {
+        setDriveFuel((fuel) =>
+          Math.max(0, fuel - moved * FUEL_CONSUMPTION_L_PER_M),
+        );
+      }
+    }
+    lastPoseRef.current = { x: snapshot.playerX, z: snapshot.playerZ };
+  }, []);
 
   const handleUiGamepadBack = useCallback(() => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -305,12 +334,18 @@ export default function SideSwapApp() {
     saveProgress(committedProgress);
     setDestinationId(nextDestinationId);
     setActiveSession(session);
+    setDriveFuel(committedProgress.fuelByCountry[nextCountryId]);
+    lastPoseRef.current = null;
     setHud(null);
     setPaused(false);
     setView("driving");
   };
 
   const exitDrive = () => {
+    // Persist the current tank level back to the country's saved fuel.
+    const persisted = setFuel(progress, driveCountry.id, driveFuel);
+    setProgress(persisted);
+    saveProgress(persisted);
     setPaused(false);
     setActiveSession(null);
     setView("launcher");
@@ -321,6 +356,42 @@ export default function SideSwapApp() {
     setDestinationId(next.lastDestinationId);
     setCamera(next.preferredCamera);
     saveProgress(next);
+  };
+
+  // Economy state for the active drive: wallet, fuel gauge, and whether the car
+  // is stopped at a gas station (so the refuel prompt can appear).
+  const walletHere = progress.walletByCountry[driveCountry.id];
+  const fuelFraction = driveFuel / TANK_CAPACITY_L;
+  const activeGasStation =
+    view === "driving" && hud
+      ? (runtimeMap.geometry.servicePoints ?? []).find((service) => {
+          const pose = resolveSimulationLaneAnchor(
+            runtimeMap.laneGraph.lanes,
+            service.anchor,
+          );
+          if (!pose) return false;
+          return (
+            hud.speed <= 1 &&
+            Math.hypot(hud.playerX - pose.x, hud.playerZ - pose.z) < 16
+          );
+        }) ?? null
+      : null;
+  const litresNeeded = Math.max(0, TANK_CAPACITY_L - driveFuel);
+  const refuelCost =
+    Math.round(
+      litresNeeded * FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] * 100,
+    ) / 100;
+  const canRefuel = litresNeeded > 0.5 && walletHere >= refuelCost;
+  const refuel = () => {
+    if (!canRefuel) return;
+    const refueled = setFuel(
+      debit(progress, driveCountry.id, refuelCost),
+      driveCountry.id,
+      TANK_CAPACITY_L,
+    );
+    setProgress(refueled);
+    saveProgress(refueled);
+    setDriveFuel(TANK_CAPACITY_L);
   };
 
   if (!hydrated) {
@@ -355,7 +426,8 @@ export default function SideSwapApp() {
           cameraShake={progress.accessibility.cameraShake}
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
-          onHudUpdate={setHud}
+          outOfFuel={driveFuel <= 0}
+          onHudUpdate={handleHud}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
         />
@@ -370,6 +442,103 @@ export default function SideSwapApp() {
             <small>Keep {runtimeLesson.trafficSide}</small>
           </div>
         </div>
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: "1rem",
+            bottom: "1rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.55rem",
+            minWidth: "10rem",
+            padding: "0.7rem 0.9rem",
+            borderRadius: "0.9rem",
+            background: "rgba(15, 18, 22, 0.62)",
+            backdropFilter: "blur(10px)",
+            color: "#f4f6f8",
+            font: "600 0.95rem/1.1 system-ui, sans-serif",
+            pointerEvents: "none",
+            zIndex: 5,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "1rem",
+            }}
+          >
+            <span style={{ opacity: 0.65 }}>Wallet</span>
+            <strong>{formatMoney(walletHere, driveCountry)}</strong>
+          </div>
+          <div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: "0.72rem",
+                opacity: 0.65,
+                marginBottom: "0.25rem",
+              }}
+            >
+              <span>Fuel</span>
+              <span>
+                {driveFuel <= 0 ? "EMPTY" : `${Math.round(fuelFraction * 100)}%`}
+              </span>
+            </div>
+            <div
+              style={{
+                height: "0.5rem",
+                borderRadius: "999px",
+                background: "rgba(255,255,255,0.16)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.max(0, Math.min(100, fuelFraction * 100))}%`,
+                  background: fuelFraction < 0.2 ? "#e0533f" : "#5bbf6a",
+                  transition: "width 0.2s ease",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+        {activeGasStation && (
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              bottom: "1.4rem",
+              transform: "translateX(-50%)",
+              zIndex: 6,
+            }}
+          >
+            <button
+              type="button"
+              onClick={refuel}
+              disabled={!canRefuel}
+              style={{
+                padding: "0.65rem 1.3rem",
+                borderRadius: "999px",
+                border: "none",
+                cursor: canRefuel ? "pointer" : "not-allowed",
+                background: canRefuel ? "#f2c658" : "rgba(60,64,70,0.85)",
+                color: canRefuel ? "#1a1c1f" : "#f4f6f8",
+                font: "700 1rem/1 system-ui, sans-serif",
+                backdropFilter: "blur(10px)",
+              }}
+            >
+              {litresNeeded <= 0.5
+                ? `${activeGasStation.label} · Tank full`
+                : canRefuel
+                  ? `Refuel — ${formatMoney(refuelCost, driveCountry)}`
+                  : `Need ${formatMoney(refuelCost, driveCountry)} to fill up`}
+            </button>
+          </div>
+        )}
         {hud && (
           <div
             className="drive-speed"

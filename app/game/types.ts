@@ -384,6 +384,17 @@ export interface ProceduralLandmark {
   readonly color: string;
 }
 
+/** An interactive roadside service the player can pull up to (gas, etc.). */
+export interface ServicePoint {
+  readonly id: string;
+  readonly kind: "gas_station";
+  /** Curbside pose on the drivable lane graph the car pulls up to. */
+  readonly anchor: LaneAnchor;
+  /** Footprint (metres) for the rendered building/pumps. */
+  readonly footprint: WorldPoint;
+  readonly label: string;
+}
+
 export interface ProceduralMapGeometry {
   readonly worldSize: WorldPoint;
   readonly roadWidth: number;
@@ -391,6 +402,7 @@ export interface ProceduralMapGeometry {
   readonly roadSurfaces: readonly RoadSurface[];
   readonly blocks: readonly ProceduralBlock[];
   readonly landmarks: readonly ProceduralLandmark[];
+  readonly servicePoints?: readonly ServicePoint[];
 }
 
 export interface MapPack {

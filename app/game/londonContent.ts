@@ -1174,6 +1174,9 @@ export const LONDON_MAP_PACK: MapPack = {
         material: "london-brick",
       },
     ],
+    servicePoints: [
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel" },
+    ],
     landmarks: [
       {
         id: "london-natural-history-museum",

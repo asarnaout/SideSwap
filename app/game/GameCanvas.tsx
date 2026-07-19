@@ -47,7 +47,10 @@ import {
   type SimulationScoreSnapshot,
   type SimulationSnapshot,
 } from "./simulation";
-import { buildSimulationCoreConfig } from "./simulationAdapter";
+import {
+  buildSimulationCoreConfig,
+  resolveSimulationLaneAnchor,
+} from "./simulationAdapter";
 import {
   authoredSignalAspectAt,
   authoredSignalRequiresStop,
@@ -837,6 +840,16 @@ export interface GameCanvasMapPack {
       readonly size: GameCanvasPoint;
       readonly color: string;
     }[];
+    servicePoints?: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly anchor: {
+        readonly laneId: string;
+        readonly distanceAlongM: number;
+      };
+      readonly footprint: GameCanvasPoint;
+      readonly label: string;
+    }[];
   }>;
   readonly laneGraph: Readonly<{
     lanes: readonly GameCanvasLane[];
@@ -984,6 +997,8 @@ export interface GameCanvasProps {
   cameraShake?: boolean;
   headBob?: boolean;
   visualHonkIndicator?: boolean;
+  /** When true (out of fuel), the throttle is held at zero. */
+  outOfFuel?: boolean;
   className?: string;
   style?: CSSProperties;
   showBuiltInHud?: boolean;
@@ -1031,6 +1046,7 @@ interface SessionOptions {
   coachVolume: number;
   cameraShake: boolean;
   headBob: boolean;
+  outOfFuel: boolean;
   lesson?: GameCanvasLesson;
   mapPack?: GameCanvasMapPack;
 }
@@ -3056,7 +3072,7 @@ class BabylonGameSession {
     const quickLookAngle =
       Math.abs(input.quickLook) > 1.5 ? Math.PI : input.quickLook * 1.18;
     const simulationInput: SimulationInput = {
-      throttle: input.throttle,
+      throttle: this.options.outOfFuel ? 0 : input.throttle,
       brake: input.brake,
       steer: clamp(
         input.steer * this.options.steeringSensitivity,
@@ -4761,6 +4777,50 @@ class BabylonGameSession {
           z,
         );
       }
+    }
+
+    for (const service of mapPack.geometry.servicePoints ?? []) {
+      const pose = resolveSimulationLaneAnchor(
+        mapPack.laneGraph.lanes,
+        service.anchor,
+      );
+      if (!pose) continue;
+      // Set the forecourt back from the lane, on the kerb side.
+      const px = pose.x + Math.cos(pose.heading) * 7;
+      const pz = pose.z - Math.sin(pose.heading) * 7;
+      const trim = makeMaterial(
+        scene,
+        `${service.id}-trim`,
+        new Color3(0.86, 0.24, 0.18),
+      );
+      createBox(
+        scene,
+        `${service.id}-pad`,
+        { width: service.footprint.x, height: 0.06, depth: service.footprint.z },
+        new Vector3(px, 0.04, pz),
+        makeMaterial(scene, `${service.id}-pad`, new Color3(0.2, 0.21, 0.23)),
+      );
+      createBox(
+        scene,
+        `${service.id}-canopy`,
+        { width: service.footprint.x, height: 0.35, depth: service.footprint.z },
+        new Vector3(px, 3.6, pz),
+        trim,
+      );
+      createBox(
+        scene,
+        `${service.id}-pillar`,
+        { width: 0.5, height: 3.6, depth: 0.5 },
+        new Vector3(px, 1.8, pz),
+        trim,
+      );
+      createBox(
+        scene,
+        `${service.id}-sign`,
+        { width: 1.6, height: 1.6, depth: 0.24 },
+        new Vector3(px, 5.4, pz),
+        makeMaterial(scene, `${service.id}-sign`, new Color3(0.96, 0.86, 0.16)),
+      );
     }
 
     for (const landmark of mapPack.geometry.landmarks) {
@@ -7787,6 +7847,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       cameraShake = false,
       headBob = false,
       visualHonkIndicator = true,
+      outOfFuel = false,
       className,
       style,
       showBuiltInHud = true,
@@ -7925,6 +7986,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             coachVolume: clamp(coachVolume, 0, 1),
             cameraShake,
             headBob,
+            outOfFuel,
           },
           {
             onHudUpdate: (snapshot) => callbackRef.current.onHudUpdate?.(snapshot),
@@ -7970,8 +8032,9 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         coachVolume: clamp(coachVolume, 0, 1),
         cameraShake,
         headBob,
+        outOfFuel,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob, outOfFuel]);
 
     useImperativeHandle(
       ref,
