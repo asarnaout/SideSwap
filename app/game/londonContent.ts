@@ -750,10 +750,10 @@ const londonLaneGraph: LaneGraph = {
         approach("london-cromwell-west-approach", "london-cromwell-west-2", 140, "cromwell", ["london-queen-gate-cromwell-conflict"]),
       ],
       [
-        installation("london-queen-gate-primary", -116, -43, 0, "roadside_pole", "uk_signal", "primary", ["london-queen-gate-north-approach"]),
-        installation("london-queen-gate-secondary", -98, -21, 180, "secondary_pole", "uk_signal", "secondary", ["london-queen-gate-south-approach"]),
-        installation("london-cromwell-west-primary", -97, -43, 270, "roadside_pole", "uk_signal", "primary", ["london-cromwell-west-approach"]),
-        installation("london-cromwell-west-secondary", -119, -21, 270, "secondary_pole", "uk_signal", "secondary", ["london-cromwell-west-approach"]),
+        installation("london-queen-gate-primary", -103.1, -43.3, 0, "roadside_pole", "uk_signal", "primary", ["london-queen-gate-north-approach"]),
+        installation("london-queen-gate-secondary", -112.9, -20.7, 180, "secondary_pole", "uk_signal", "secondary", ["london-queen-gate-south-approach"]),
+        installation("london-cromwell-west-primary", -96.7, -23.5, 270, "roadside_pole", "uk_signal", "primary", ["london-cromwell-west-approach"]),
+        installation("london-cromwell-west-secondary", -96.7, -37.1, 270, "secondary_pole", "uk_signal", "secondary", ["london-cromwell-west-approach"]),
       ],
     ),
     control(
@@ -775,8 +775,8 @@ const londonLaneGraph: LaneGraph = {
         approach("london-cromwell-westbound-approach", "london-cromwell-west-1", 98, "cromwell-west", ["london-cromwell-exhibition-conflict"]),
       ],
       [
-        installation("london-exhibition-primary", 31, -43, 90, "roadside_pole", "uk_signal", "primary", ["london-cromwell-east-general-approach", "london-cromwell-east-bus-approach"]),
-        installation("london-exhibition-secondary", 53, -21, 270, "secondary_pole", "uk_signal", "secondary", ["london-cromwell-westbound-approach"]),
+        installation("london-exhibition-primary", 30.7, -37.1, 90, "roadside_pole", "uk_signal", "primary", ["london-cromwell-east-general-approach", "london-cromwell-east-bus-approach"]),
+        installation("london-exhibition-secondary", 53.3, -27.1, 270, "secondary_pole", "uk_signal", "secondary", ["london-cromwell-westbound-approach"]),
       ],
     ),
     control(
