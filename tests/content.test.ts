@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
+  FINE_BY_COUNTRY,
   FREE_DRIVES,
+  GIG_FARE_BY_COUNTRY,
   MAP_PACKS,
+  PASSENGER_FARE_BY_COUNTRY,
+  STARTING_WALLET_BY_COUNTRY,
   getCountryProfile,
   getDestinationProfile,
   formatMoney,
@@ -434,6 +438,30 @@ describe("SideSwap content", () => {
       expect(resolveSteeringSide("right", country)).toBe("right");
       expect(country.trafficSide).toBe(
         country.id === "us" || country.id === "fr" ? "right" : "left",
+      );
+    }
+  });
+
+  it("prices deliveries, passenger fares and fines for every country", () => {
+    for (const country of COUNTRY_PROFILES) {
+      const delivery = GIG_FARE_BY_COUNTRY[country.id];
+      const passenger = PASSENGER_FARE_BY_COUNTRY[country.id];
+      const fine = FINE_BY_COUNTRY[country.id];
+      // Every table covers every country with sane, positive values.
+      expect(delivery.base, country.id).toBeGreaterThan(0);
+      expect(delivery.ratePerM, country.id).toBeGreaterThan(0);
+      expect(passenger.base, country.id).toBeGreaterThan(0);
+      expect(passenger.ratePerM, country.id).toBeGreaterThan(0);
+      expect(fine, country.id).toBeGreaterThan(0);
+      // A ride carries a pickup premium over the same-distance parcel.
+      expect(passenger.base, country.id).toBeGreaterThan(delivery.base);
+      expect(passenger.ratePerM, country.id).toBeGreaterThanOrEqual(
+        delivery.ratePerM,
+      );
+      // The fine stings but never exceeds the starting wallet: the pivot dropped
+      // harsh punishment, so careless driving costs money, not the whole run.
+      expect(fine, country.id).toBeLessThan(
+        STARTING_WALLET_BY_COUNTRY[country.id],
       );
     }
   });
