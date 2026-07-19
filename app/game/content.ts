@@ -21,6 +21,7 @@ import type {
   MapPack,
   MapSpawnPoint,
   OfficialRuleReference,
+  ProceduralLandmark,
   ResolvedGameSessionConfig,
   RuleCode,
   RoadMarkingPath,
@@ -322,6 +323,111 @@ const roadSurface = (
   surfaceType,
   markings,
 });
+
+/**
+ * Points along a circular arc, inclusive of both endpoints. Angles are in
+ * degrees with 0deg = +x (east) and 90deg = +z (north); passing a1 < a0 traces
+ * the arc clockwise.
+ */
+const arcPoints = (
+  center: WorldPoint,
+  radius: number,
+  a0Deg: number,
+  a1Deg: number,
+  steps = 6,
+): WorldPoint[] => {
+  const points: WorldPoint[] = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = ((a0Deg + ((a1Deg - a0Deg) * index) / steps) * Math.PI) / 180;
+    points.push(
+      point(center.x + radius * Math.cos(angle), center.z + radius * Math.sin(angle)),
+    );
+  }
+  return points;
+};
+
+/**
+ * Turns a dead-end stub into a single-arm turning loop: a one-way ring around a
+ * small central island that bulges out from the stub's end node, so cars drive
+ * out, loop once and return instead of hitting a flat dead-end. The loop needs
+ * no give-way (a single arm has no conflicting traffic) and circulates purely on
+ * `successors`. The caller keeps the stub's end node as the connection point,
+ * repoints the ARRIVING lane's successor to `${prefix}-a`, and the returning arc
+ * `${prefix}-b` feeds `departLaneId` back into the network. Left-side traffic
+ * circulates clockwise, right-side counter-clockwise, matching the roundabouts.
+ */
+const turningLoop = (opts: {
+  prefix: string;
+  connectNode: LaneNode;
+  bulgeDeg: number;
+  radius: number;
+  side: TrafficSide;
+  speed: number;
+  departLaneId: string;
+  color: string;
+  islandRadius?: number;
+  widthM?: number;
+  speedUnit?: SpeedUnit;
+}): {
+  farNode: LaneNode;
+  firstArcId: string;
+  lanes: readonly LaneSegment[];
+  surface: RoadSurface;
+  island: ProceduralLandmark;
+} => {
+  const {
+    prefix,
+    connectNode,
+    bulgeDeg,
+    radius,
+    side,
+    speed,
+    departLaneId,
+    color,
+    islandRadius = Math.max(4, radius - 6),
+    widthM = 7.2,
+    speedUnit,
+  } = opts;
+  const bulge = {
+    x: Math.cos((bulgeDeg * Math.PI) / 180),
+    z: Math.sin((bulgeDeg * Math.PI) / 180),
+  };
+  const connect = connectNode.position;
+  const center = point(connect.x + bulge.x * radius, connect.z + bulge.z * radius);
+  const farNode = node(
+    `${prefix}-far`,
+    connect.x + bulge.x * radius * 2,
+    connect.z + bulge.z * radius * 2,
+  );
+  const connectAngle = bulgeDeg + 180;
+  // Left-side traffic drives clockwise (decreasing angle); right-side the other way.
+  const direction = side === "left" ? -1 : 1;
+  const arcA = arcPoints(center, radius, connectAngle, connectAngle + direction * 180);
+  const arcB = arcPoints(
+    center,
+    radius,
+    connectAngle + direction * 180,
+    connectAngle + direction * 360,
+  );
+  const firstArcId = `${prefix}-a`;
+  const secondArcId = `${prefix}-b`;
+  return {
+    farNode,
+    firstArcId,
+    lanes: [
+      lane(firstArcId, connectNode, farNode, side, speed, [secondArcId], "roundabout", arcA.slice(1, -1), undefined, prefix, undefined, speedUnit),
+      lane(secondArcId, farNode, connectNode, side, speed, [departLaneId], "roundabout", arcB.slice(1, -1), undefined, prefix, undefined, speedUnit),
+    ],
+    surface: roadSurface(prefix, [...arcA, ...arcB.slice(1)], widthM, [firstArcId, secondArcId], "roundabout"),
+    island: {
+      id: `${prefix}-green`,
+      kind: "park",
+      center,
+      size: point(islandRadius * 2, islandRadius * 2),
+      color,
+    },
+  };
+};
 
 const checkpoint = (
   id: string,
@@ -1085,12 +1191,24 @@ const ukLanes: readonly LaneSegment[] = [
   laneTrue("uk-east-north", ukNodes.ne, ukNodes.eo, "left", 40, ["uk-entry-east"], "travel", [point(701.7, 117.5), point(701.7, 70), point(701.34, 28.95), point(600.4, -11.65), point(450.1, -31.7), point(299.86, -26.7), point(199.75, -11.68), point(130.25, -1.75)]),
   laneTrue("uk-south-west", ukNodes.so, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-0.5, -119.7), point(-66.1, -119.3), point(-131.49, -60.82), point(-131.7, -0.5)]),
   laneTrue("uk-west-south", ukNodes.wo, ukNodes.so, "left", 40, ["uk-entry-south"], "travel", [point(-128.3, -0.5), point(-128.51, -59.18), point(-64.31, -116.45), point(-0.5, -116.3)]),
-  // Westbound grid-road stub off the roundabout's west arm that turns back at
-  // the Oldbrook end (same shared-node turnaround the east link uses). Gives
-  // free-drive somewhere new to roam west, with genuine oncoming traffic.
-  laneTrue("uk-westgrid-out", ukNodes.wo, ukNodes.wgo, "left", 40, ["uk-westgrid-in"], "travel", [point(-225, -1.7)], ["uk-westgrid-in"], "uk-westgrid", 3.2),
+  // Westbound grid road off the roundabout's west arm. Rather than a flat
+  // dead-end it ends in a single-arm turning loop (uk-westloop) so free-drive
+  // can roam west and circle back, with genuine oncoming traffic on the way.
+  laneTrue("uk-westgrid-out", ukNodes.wo, ukNodes.wgo, "left", 40, ["uk-westloop-a"], "travel", [point(-225, -1.7)], ["uk-westgrid-in"], "uk-westgrid", 3.2),
   laneTrue("uk-westgrid-in", ukNodes.wgo, ukNodes.wo, "left", 40, ["uk-entry-west"], "travel", [point(-225, 1.7)], ["uk-westgrid-out"], "uk-westgrid", 3.2),
 ];
+
+// Turning loop at the west end of the Oldbrook westgrid (left-side: clockwise).
+const ukWestLoop = turningLoop({
+  prefix: "uk-westloop",
+  connectNode: ukNodes.wgo,
+  bulgeDeg: 180,
+  radius: 12,
+  side: "left",
+  speed: 40,
+  departLaneId: "uk-westgrid-in",
+  color: "#608b4e",
+});
 
 const frNodes = {
   n: node("fr-n", 0, 34),
@@ -1124,12 +1242,25 @@ const frLanes: readonly LaneSegment[] = [
   laneTrue("fr-south-east-pass", frNodes.so, frNodes.eo, "right", 70, ["fr-entry-east"], "passing", [point(-0.5, -116.3), point(53, -97.3), point(94, -77.3), point(136.25, 0.4)], ["fr-south-east"]),
   laneTrue("fr-east-south", frNodes.eo, frNodes.so, "right", 50, ["fr-entry-south"], "travel", [point(136.5, -0.95), point(148.31, -42.18), point(148.49, -109.21), point(103.74, -128.32), point(20.2, -128.31), point(1.3, -116.8)]),
   laneTrue("fr-north-west", frNodes.no, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-1.23, 119.27), point(-81.1, 77.3), point(-139.05, 1.43)]),
-  // Westbound local-road stub off the roundabout's west arm that turns back at
-  // the Coquelles end the same way fr-exit-west already turns at fr-wo. Gives
-  // right-side free-drive somewhere new to roam west, with oncoming traffic.
-  laneTrue("fr-westgrid-out", frNodes.wo, frNodes.wgo, "right", 50, ["fr-westgrid-in"], "travel", [point(-219, 1.7)], ["fr-westgrid-in"], "fr-westgrid", 3.2),
+  // Westbound local road off the roundabout's west arm. It now ends in a
+  // single-arm turning loop (fr-westloop) instead of a flat dead-end, so
+  // right-side free-drive can roam west and circle back with oncoming traffic.
+  laneTrue("fr-westgrid-out", frNodes.wo, frNodes.wgo, "right", 50, ["fr-westloop-a"], "travel", [point(-219, 1.7)], ["fr-westgrid-in"], "fr-westgrid", 3.2),
   laneTrue("fr-westgrid-in", frNodes.wgo, frNodes.wo, "right", 50, ["fr-entry-west"], "travel", [point(-219, -1.7)], ["fr-westgrid-out"], "fr-westgrid", 3.2),
 ];
+
+// Turning loop at the west end of the Coquelles westgrid (right-side: counter-
+// clockwise). A tighter radius keeps it clear of the nearby west world edge.
+const frWestLoop = turningLoop({
+  prefix: "fr-westloop",
+  connectNode: frNodes.wgo,
+  bulgeDeg: 180,
+  radius: 10,
+  side: "right",
+  speed: 50,
+  departLaneId: "fr-westgrid-in",
+  color: "#6d914f",
+});
 
 const jpNodes = {
   a: node("jp-a", -112, -72),
@@ -1426,6 +1557,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("uk-east-link", [ukNodes.ne.position, point(700, 70), point(700, 30), point(600, -10), point(450, -30), point(300, -25), point(200, -10), ukNodes.eo.position], 7.2, ["uk-east-north"]),
         roadSurface("uk-oldbrook-loop", [ukNodes.so.position, point(-65, -118), point(-130, -60), ukNodes.wo.position], 7.2, ["uk-south-west", "uk-west-south"]),
         roadSurface("uk-westgrid", [ukNodes.wo.position, ukNodes.wgo.position], 7.2, ["uk-westgrid-out", "uk-westgrid-in"], "standard", [roadMarking("uk-westgrid-centre", "centre_dashed", [ukNodes.wo.position, ukNodes.wgo.position], "white")]),
+        ukWestLoop.surface,
       ],
       blocks: [
         { id: "uk-oldbrook", center: point(-78, 72), size: point(90, 72), heightRange: [5, 12], density: 0.55, material: "brick" },
@@ -1438,11 +1570,12 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "uk-station-sign", kind: "station", center: point(82, 82), size: point(15, 8), color: "#d64045" },
         { id: "uk-retail-parade", kind: "shops", center: point(84, -88), size: point(30, 18), color: "#c9a24b" },
         { id: "uk-oldbrook-green", kind: "park", center: point(-95, 95), size: point(44, 30), color: "#5f9a4e" },
+        ukWestLoop.island,
       ],
     },
     laneGraph: graph(
-      Object.values(ukNodes),
-      ukLanes,
+      [...Object.values(ukNodes), ukWestLoop.farNode],
+      [...ukLanes, ...ukWestLoop.lanes],
       [
         control("uk-yield-south", "yield", 0, -42, 0, ["uk-entry-south"], ["uk-roundabout-conflict"],
           [approach("uk-yield-south-approach", "uk-entry-south", 74, "yield", ["uk-roundabout-conflict"])],
@@ -1520,6 +1653,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         roadSurface("fr-east-south-road", [frNodes.eo.position, point(150, -42), point(150, -110), point(104, -130), point(20, -130), frNodes.so.position], 7.2, ["fr-east-south"]),
         roadSurface("fr-north-west-road", [frNodes.no.position, point(-80, 76), frNodes.wo.position], 7.2, ["fr-north-west"]),
         roadSurface("fr-westgrid", [frNodes.wo.position, frNodes.wgo.position], 7.2, ["fr-westgrid-out", "fr-westgrid-in"], "standard", [roadMarking("fr-westgrid-centre", "centre_dashed", [frNodes.wo.position, frNodes.wgo.position], "white")]),
+        frWestLoop.surface,
       ],
       blocks: [
         // Keep compact scenery beside the two curved links; neither block may
@@ -1532,11 +1666,12 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#6d914f" },
         { id: "fr-commercial-parade", kind: "shops", center: point(124, -106), size: point(24, 14), color: "#b6803f" },
         { id: "fr-parkway-green", kind: "park", center: point(55, 75), size: point(34, 26), color: "#5f9a4e" },
+        frWestLoop.island,
       ],
     },
     laneGraph: graph(
-      Object.values(frNodes),
-      frLanes,
+      [...Object.values(frNodes), frWestLoop.farNode],
+      [...frLanes, ...frWestLoop.lanes],
       [
         control("fr-yield-south", "yield", 0, -42, 0, ["fr-entry-south"], ["fr-roundabout-conflict"],
           [approach("fr-yield-south-approach", "fr-entry-south", 74, "yield", ["fr-roundabout-conflict"])],
