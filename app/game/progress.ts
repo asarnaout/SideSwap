@@ -1,14 +1,6 @@
 import {
-  FREE_DRIVES,
-  LESSONS,
   SCORING_CONFIG,
-  getCountryIdForScenario,
-  getCountryProfile,
   getDestinationProfile,
-  getFreeDriveForDestination,
-  getLessonsForDestination,
-  getLesson,
-  getOrientationForTrafficSide,
   isLessonId,
 } from "./content";
 import type {
@@ -17,12 +9,9 @@ import type {
   CameraMode,
   CountryId,
   DestinationId,
-  FreeDriveId,
   LessonId,
-  LessonProgressUpdate,
   LessonScore,
   PlayerProgressV1,
-  RecommendedDrive,
   TrafficSide,
 } from "./types";
 
@@ -316,31 +305,12 @@ const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
   );
 };
 
-const inferLastCountryId = (
-  scores: Readonly<Partial<Record<LessonId, LessonScore>>>,
-  familiarTrafficSide: TrafficSide,
-): CountryId => {
-  let latestCountry: CountryId | undefined;
-  let latestCompletedAt = Number.NEGATIVE_INFINITY;
-
-  for (const score of Object.values(scores)) {
-    if (!score) continue;
-    const countryId = getLesson(score.lessonId).countryId;
-    if (!countryId) continue;
-    const completedAt = Date.parse(score.completedAt);
-    if (Number.isFinite(completedAt) && completedAt >= latestCompletedAt) {
-      latestCountry = countryId;
-      latestCompletedAt = completedAt;
-    }
-  }
-
-  return latestCountry ?? oppositeSideStarterCountry(familiarTrafficSide);
-};
+const inferLastCountryId = (familiarTrafficSide: TrafficSide): CountryId =>
+  oppositeSideStarterCountry(familiarTrafficSide);
 
 const inferLastDestinationId = (
   explicitDestinationId: unknown,
   lastCountryId: CountryId,
-  scores: Readonly<Partial<Record<LessonId, LessonScore>>>,
 ): DestinationId => {
   const parsedDestinationId = parseDestinationId(explicitDestinationId);
   if (
@@ -349,19 +319,6 @@ const inferLastDestinationId = (
   ) {
     return parsedDestinationId;
   }
-
-  // Before destinations were persisted, the sole UK curriculum was Milton
-  // Keynes. A scored UK lesson therefore means the player should return there;
-  // UK saves without such evidence adopt the new featured London default.
-  if (
-    lastCountryId === "uk" &&
-    Object.values(scores).some(
-      (score) => score && getLesson(score.lessonId).destinationId === "uk-milton-keynes",
-    )
-  ) {
-    return "uk-milton-keynes";
-  }
-
   return defaultDestinationForCountry(lastCountryId);
 };
 
@@ -417,11 +374,10 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
     : false;
   const lastCountryId =
     (recognizedProgress ? parseCountryId(value.lastCountryId) : undefined) ??
-    inferLastCountryId(scores, familiarTrafficSide);
+    inferLastCountryId(familiarTrafficSide);
   const lastDestinationId = inferLastDestinationId(
     recognizedProgress ? value.lastDestinationId : undefined,
     lastCountryId,
-    scores,
   );
   const completedLessonIds = unique([
     ...parseLessonIds(completedCandidate),
@@ -551,195 +507,6 @@ export function saveProgress(
   } catch {
     return false;
   }
-}
-
-const badgesForCompletion = (
-  lessonId: LessonId,
-  score: LessonScore,
-  cameraUsed: CameraMode,
-): BadgeId[] => {
-  const badges: BadgeId[] = [];
-
-  if (lessonId === "orientation-right") badges.push("right_side_ready");
-  if (lessonId === "orientation-left") badges.push("left_side_ready");
-  if (lessonId === "us-signals-crosswalks") badges.push("signal_scholar");
-  if (lessonId === "uk-roundabouts" || lessonId === "fr-priority-roundabouts") {
-    badges.push("roundabout_ready");
-  }
-  if (
-    lessonId === "us-lane-choice" ||
-    lessonId === "uk-dual-carriageway" ||
-    lessonId === "fr-speed-merging"
-  ) {
-    badges.push("lane_courtesy");
-  }
-  if (lessonId === "jp-vulnerable-road-users") {
-    badges.push("vulnerable_road_guardian");
-  }
-  if (lessonId === "jp-railway-crossings") badges.push("rail_crossing_ready");
-  if (lessonId === "uk-fr-side-swap") badges.push("side_swap_traveler");
-  if (lessonId === "uk-london-exhibition-road") {
-    badges.push("london_city_ready");
-  }
-  if (score.mastered && cameraUsed === "first_person") {
-    badges.push("first_person_mastery");
-  }
-
-  return badges;
-};
-
-const stampsForCompletion = (lessonId: LessonId): CountryId[] => {
-  const lesson = getLesson(lessonId);
-  if (lesson.countryId) {
-    return [lesson.countryId];
-  }
-  if (lessonId === "uk-fr-side-swap") {
-    return ["uk", "fr"];
-  }
-  return [];
-};
-
-export function updateLessonProgress(
-  progress: PlayerProgressV1,
-  update: LessonProgressUpdate,
-  now: string = nowIso(),
-): PlayerProgressV1 {
-  const current = migrateProgress(progress, now);
-  const score = normalizeScore(update.score.lessonId, update.score, now);
-  if (!score) {
-    return current;
-  }
-
-  const previousScore = current.lessonScores[score.lessonId];
-  const bestScore = !previousScore || score.total >= previousScore.total ? score : previousScore;
-  const lessonScores: Partial<Record<LessonId, LessonScore>> = {
-    ...current.lessonScores,
-    [score.lessonId]: bestScore,
-  };
-
-  return {
-    ...current,
-    completedLessonIds: unique([...current.completedLessonIds, score.lessonId]),
-    lessonScores,
-    badges: unique([
-      ...current.badges,
-      ...badgesForCompletion(score.lessonId, score, update.cameraUsed),
-    ]),
-    passportStamps: unique([
-      ...current.passportStamps,
-      ...stampsForCompletion(score.lessonId),
-    ]),
-    updatedAt: asIsoDate(now, nowIso()),
-  };
-}
-
-export function isCapstoneEligible(progress: PlayerProgressV1): boolean {
-  const completed = new Set(progress.completedLessonIds);
-  return (
-    completed.has("us-lane-choice") &&
-    completed.has("fr-speed-merging") &&
-    completed.has("jp-railway-crossings") &&
-    (completed.has("uk-london-exhibition-road") ||
-      completed.has("uk-dual-carriageway"))
-  );
-}
-
-export function isLessonUnlocked(progress: PlayerProgressV1, lessonId: LessonId): boolean {
-  if (lessonId === "uk-fr-side-swap") {
-    return (
-      progress.completedLessonIds.includes("uk-fr-side-swap") ||
-      isCapstoneEligible(progress)
-    );
-  }
-  const lesson = getLesson(lessonId);
-  return lesson.prerequisites.every((id) => progress.completedLessonIds.includes(id));
-}
-
-export function getUnlockedLessonIds(progress: PlayerProgressV1): readonly LessonId[] {
-  return LESSONS.filter((lesson) => isLessonUnlocked(progress, lesson.id)).map(
-    (lesson) => lesson.id,
-  );
-}
-
-export function isFreeDriveUnlocked(
-  progress: PlayerProgressV1,
-  freeDriveId: FreeDriveId,
-): boolean {
-  const freeDrive = FREE_DRIVES.find((item) => item.id === freeDriveId);
-  return Boolean(freeDrive && progress.completedLessonIds.includes(freeDrive.unlockAfter));
-}
-
-export function getUnlockedFreeDriveIds(
-  progress: PlayerProgressV1,
-): readonly FreeDriveId[] {
-  return FREE_DRIVES.filter((freeDrive) =>
-    progress.completedLessonIds.includes(freeDrive.unlockAfter),
-  ).map((freeDrive) => freeDrive.id);
-}
-
-export function getRecommendedDrive(
-  progress: PlayerProgressV1,
-  destinationId: DestinationId,
-): RecommendedDrive {
-  const destination = getDestinationProfile(destinationId);
-  const countryId = destination.countryId;
-  const orientation = getOrientationForTrafficSide(
-    getCountryProfile(countryId).trafficSide,
-  );
-
-  if (!progress.completedLessonIds.includes(orientation.id)) {
-    return {
-      countryId,
-      destinationId,
-      scenarioId: orientation.id,
-      kind: "orientation",
-      ctaLabel: "Start",
-    };
-  }
-
-  const nextLesson = getLessonsForDestination(destinationId).find(
-    (lesson) =>
-      !progress.completedLessonIds.includes(lesson.id) &&
-      isLessonUnlocked(progress, lesson.id),
-  );
-  if (nextLesson) {
-    return {
-      countryId,
-      destinationId,
-      scenarioId: nextLesson.id,
-      kind: "lesson",
-      ctaLabel: "Start",
-    };
-  }
-
-  const capstone = getLesson("uk-fr-side-swap");
-  if (
-    isCapstoneEligible(progress) &&
-    !progress.completedLessonIds.includes(capstone.id)
-  ) {
-    const capstoneDestinationId =
-      destination.countryId === "uk"
-        ? destinationId
-        : getDestinationProfile(progress.lastDestinationId).countryId === "uk"
-          ? progress.lastDestinationId
-          : "uk-london";
-    return {
-      countryId: getCountryIdForScenario(capstone.id),
-      destinationId: capstoneDestinationId,
-      scenarioId: capstone.id,
-      kind: "capstone",
-      ctaLabel: "Start",
-    };
-  }
-
-  const freeDrive = getFreeDriveForDestination(destinationId);
-  return {
-    countryId,
-    destinationId,
-    scenarioId: freeDrive.id,
-    kind: "free_drive",
-    ctaLabel: "Start",
-  };
 }
 
 export function resetProgress(

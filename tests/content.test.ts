@@ -3,34 +3,20 @@ import {
   COUNTRY_PROFILES,
   DESTINATION_PROFILES,
   FREE_DRIVES,
-  LESSONS,
   MAP_PACKS,
   getCountryProfile,
   getDestinationProfile,
-  getLesson,
   getMapPack,
-  getOrientationForTrafficSide,
-  isScenarioCompatibleWithDestination,
-  resolveSessionConfig,
   resolveSteeringSide,
 } from "../app/game/content";
 import type {
-  DestinationId,
-  GameSessionConfig,
   LaneAnchor,
   LaneSegment,
-  ScenarioId,
-  SteeringPreference,
   WorldPoint,
 } from "../app/game/types";
-import {
-  isLaneGuidanceDistanceAllowed,
-  resolveCheckpointTargetWidth,
-  resolveRouteChevronHalfSpan,
-} from "../app/game/GameCanvas";
+import { resolveCheckpointTargetWidth } from "../app/game/GameCanvas";
 
 const GEOMETRY_EPSILON = 1e-5;
-const START_ENDPOINT_CLEARANCE_M = 10;
 const ROAD_ENVELOPE_SAMPLE_INTERVAL_M = 0.25;
 const ROAD_ENVELOPE_EPSILON_M = 0.1;
 const JUNCTION_TAPER_LENGTH_M = 2;
@@ -348,26 +334,6 @@ const nearCollinearReverseOverlapM = (
   );
 };
 
-const sessionConfig = (
-  destinationId: DestinationId,
-  scenarioId: ScenarioId,
-  steeringPreference: SteeringPreference = "auto",
-): GameSessionConfig => ({
-  countryId: getDestinationProfile(destinationId).countryId,
-  destinationId,
-  scenarioId,
-  familiarTrafficSide: "right",
-  steeringPreference,
-  camera: "third_person",
-  assistance: {
-    coachPrompts: true,
-    subtitles: true,
-    wrongSideWarnings: true,
-    autoResetAfterCriticalError: true,
-    reducedMotion: false,
-  },
-});
-
 describe("SideSwap content", () => {
   it("keeps four legal country profiles and five destination profiles", () => {
     expect(COUNTRY_PROFILES.map((country) => country.id)).toEqual([
@@ -385,10 +351,8 @@ describe("SideSwap content", () => {
     ]);
     expect(DESTINATION_PROFILES[0].promotion).toBe("featured");
     expect(getDestinationProfile("uk-milton-keynes").promotion).toBe("specialist");
-    expect(LESSONS).toHaveLength(18);
     expect(FREE_DRIVES).toHaveLength(5);
-    expect(MAP_PACKS).toHaveLength(7);
-    expect(getLesson("uk-fr-side-swap").profileTransitions).toHaveLength(1);
+    expect(MAP_PACKS).toHaveLength(5);
   });
 
   it("keeps traffic side independent from steering-wheel side", () => {
@@ -402,20 +366,6 @@ describe("SideSwap content", () => {
     expect(us.trafficSide).toBe("right");
   });
 
-  it("keeps London left-side and New York right-side regardless of familiar-side metadata", () => {
-    const london = resolveSessionConfig({
-      ...sessionConfig("uk-london", "orientation-left"),
-      familiarTrafficSide: "right",
-    });
-    const newYork = resolveSessionConfig({
-      ...sessionConfig("us-nyc", "orientation-right"),
-      familiarTrafficSide: "left",
-    });
-
-    expect(london.trafficSide).toBe("left");
-    expect(newYork.trafficSide).toBe("right");
-  });
-
   it("resolves every traffic-side and steering-side combination independently", () => {
     for (const country of COUNTRY_PROFILES) {
       expect(resolveSteeringSide("auto", country)).toBe(
@@ -426,123 +376,6 @@ describe("SideSwap content", () => {
       expect(country.trafficSide).toBe(
         country.id === "us" || country.id === "fr" ? "right" : "left",
       );
-    }
-  });
-
-  it("maps each traffic side to its mirrored orientation", () => {
-    expect(getOrientationForTrafficSide("right").id).toBe("orientation-right");
-    expect(getOrientationForTrafficSide("left").id).toBe("orientation-left");
-  });
-
-  it("resolves shared orientations against the selected destination", () => {
-    for (const destination of DESTINATION_PROFILES) {
-      const country = getCountryProfile(destination.countryId);
-      for (const orientationId of [
-        "orientation-right",
-        "orientation-left",
-      ] as const) {
-        const expected = orientationId.endsWith(country.trafficSide);
-        expect(
-          isScenarioCompatibleWithDestination(orientationId, destination.id),
-        ).toBe(expected);
-
-        if (expected) {
-          const resolved = resolveSessionConfig(
-            sessionConfig(destination.id, orientationId),
-          );
-          expect(resolved.countryId).toBe(country.id);
-          expect(resolved.destinationId).toBe(destination.id);
-          expect(resolved.trafficSide).toBe(country.trafficSide);
-          expect(resolved.steeringSide).toBe(country.defaultSteeringSide);
-          expect(resolved.speedUnit).toBe(country.speedUnit);
-        } else {
-          expect(() =>
-            resolveSessionConfig(sessionConfig(destination.id, orientationId)),
-          ).toThrow(/not compatible/);
-        }
-      }
-    }
-  });
-
-  it("accepts every regular scenario only for its exact destination", () => {
-    const destinationScenarios = [
-      ...LESSONS.filter((lesson) => lesson.destinationId),
-      ...FREE_DRIVES,
-    ];
-
-    for (const scenario of destinationScenarios) {
-      for (const destination of DESTINATION_PROFILES) {
-        expect(
-          isScenarioCompatibleWithDestination(scenario.id, destination.id),
-          `${scenario.id} with ${destination.id}`,
-        ).toBe(scenario.destinationId === destination.id);
-      }
-    }
-  });
-
-  it("rejects traffic-side and destination mismatches", () => {
-    expect(() =>
-      resolveSessionConfig(sessionConfig("us-nyc", "orientation-left")),
-    ).toThrow(/not compatible/);
-    expect(() =>
-      resolveSessionConfig(sessionConfig("uk-london", "us-one-way-grid")),
-    ).toThrow(/not compatible/);
-    expect(() => resolveSessionConfig(sessionConfig("fr-calais", "free-jp"))).toThrow(
-      /not compatible/,
-    );
-    expect(() =>
-      resolveSessionConfig({
-        ...sessionConfig("uk-london", "orientation-left"),
-        countryId: "us",
-      }),
-    ).toThrow(/destination .* not compatible with country/);
-  });
-
-  it("keeps wheel overrides independent in every valid country session", () => {
-    for (const destination of DESTINATION_PROFILES) {
-      const country = getCountryProfile(destination.countryId);
-      const orientationId =
-        country.trafficSide === "right" ? "orientation-right" : "orientation-left";
-      for (const steeringPreference of ["left", "right"] as const) {
-        const resolved = resolveSessionConfig(
-          sessionConfig(destination.id, orientationId, steeringPreference),
-        );
-        expect(resolved.steeringSide).toBe(steeringPreference);
-        expect(resolved.trafficSide).toBe(country.trafficSide);
-      }
-    }
-  });
-
-  it("starts the travel-transition capstone from either UK destination only", () => {
-    for (const destinationId of ["uk-london", "uk-milton-keynes"] as const) {
-      expect(
-        isScenarioCompatibleWithDestination("uk-fr-side-swap", destinationId),
-      ).toBe(true);
-    }
-    for (const destinationId of ["us-nyc", "fr-calais", "jp-tokyo"] as const) {
-      expect(
-        isScenarioCompatibleWithDestination("uk-fr-side-swap", destinationId),
-      ).toBe(false);
-    }
-
-    const resolved = resolveSessionConfig(
-      sessionConfig("uk-london", "uk-fr-side-swap"),
-    );
-    expect(resolved.trafficSide).toBe("left");
-    expect(resolved.speedUnit).toBe("mph");
-  });
-
-  it("links every assessed lesson to reviewed official sources", () => {
-    for (const lesson of LESSONS) {
-      expect(lesson.sourceReferenceIds.length).toBeGreaterThan(0);
-      for (const sourceId of lesson.sourceReferenceIds) {
-        const source = COUNTRY_PROFILES.flatMap(
-          (country) => country.officialReferences,
-        ).find((candidate) => candidate.id === sourceId);
-        expect(source, `${lesson.id} → ${sourceId}`).toBeDefined();
-        expect(source?.url.startsWith("https://")).toBe(true);
-        expect(source?.reviewedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      }
     }
   });
 
@@ -675,105 +508,6 @@ describe("SideSwap content", () => {
 
     expect(sampledPointCount).toBeGreaterThan(1_000);
     expect(envelopeViolations).toEqual([]);
-  });
-
-  it("keeps every lesson route connected and inside its declared map", () => {
-    const brokenRoutes: string[] = [];
-    for (const lesson of LESSONS) {
-      const map = getMapPack(lesson.mapId);
-      const lanes = new Map(map.laneGraph.lanes.map((lane) => [lane.id, lane]));
-      for (const laneId of lesson.route) {
-        expect(lanes.has(laneId), `${lesson.id} → ${laneId}`).toBe(true);
-      }
-      const start = map.laneGraph.spawnPoints.find(
-        (spawn) => spawn.id === lesson.startSpawnId,
-      );
-      expect(start?.kind, `${lesson.id} → ${lesson.startSpawnId}`).toBe("player");
-      if (start?.kind === "player") {
-        expect(start.anchor.laneId).toBe(lesson.route[0]);
-      }
-      for (let index = 0; index < lesson.route.length - 1; index += 1) {
-        const lane = lanes.get(lesson.route[index])!;
-        const successorId = lesson.route[index + 1];
-        if (!lane.successors.includes(successorId)) {
-          brokenRoutes.push(`${lesson.id}: ${lane.id} ⇥ ${successorId}`);
-        }
-      }
-      const checkpointIds = new Set(
-        map.laneGraph.checkpoints.map((checkpoint) => checkpoint.id),
-      );
-      for (const checkpointId of lesson.checkpoints) {
-        expect(
-          checkpointIds.has(checkpointId),
-          `${lesson.id} → ${checkpointId}`,
-        ).toBe(true);
-      }
-    }
-    expect(brokenRoutes).toEqual([]);
-  });
-
-  it("anchors all 23 playable paths to route zero with safe endpoint clearance", () => {
-    const playablePaths = [
-      ...LESSONS.map((lesson) => ({
-        id: lesson.id,
-        mapId: lesson.mapId,
-        route: lesson.route,
-        startSpawnId: lesson.startSpawnId,
-      })),
-      ...FREE_DRIVES.map((freeDrive) => {
-        const firstDestinationLesson = getLesson(
-          getDestinationProfile(freeDrive.destinationId).lessonIds[0],
-        );
-        return {
-          id: freeDrive.id,
-          mapId: freeDrive.mapId,
-          route: firstDestinationLesson.route,
-          startSpawnId: freeDrive.startSpawnId,
-        };
-      }),
-    ];
-
-    expect(playablePaths).toHaveLength(23);
-    for (const path of playablePaths) {
-      expect(path.route.length, `${path.id} has a route`).toBeGreaterThan(0);
-      const map = getMapPack(path.mapId);
-      const start = map.laneGraph.spawnPoints.find(
-        (spawn) => spawn.id === path.startSpawnId,
-      );
-      expect(start?.kind, `${path.id} → ${path.startSpawnId}`).toBe("player");
-      if (start?.kind !== "player") {
-        continue;
-      }
-
-      expect(start.anchor.laneId, `${path.id} starts on route[0]`).toBe(
-        path.route[0],
-      );
-      const lane = map.laneGraph.lanes.find(
-        (candidate) => candidate.id === start.anchor.laneId,
-      );
-      expect(lane, `${path.id} → ${start.anchor.laneId}`).toBeDefined();
-      if (!lane) {
-        continue;
-      }
-
-      const resolved = resolveAnchor(lane, start.anchor);
-      expect(
-        start.anchor.distanceAlongM,
-        `${path.id} start clearance from lane entry`,
-      ).toBeGreaterThanOrEqual(START_ENDPOINT_CLEARANCE_M);
-      expect(
-        resolved.laneLengthM - start.anchor.distanceAlongM,
-        `${path.id} start clearance from lane exit`,
-      ).toBeGreaterThanOrEqual(START_ENDPOINT_CLEARANCE_M);
-      expect(Number.isFinite(resolved.position.x), path.id).toBe(true);
-      expect(Number.isFinite(resolved.position.z), path.id).toBe(true);
-      expect(Number.isFinite(resolved.headingDeg), path.id).toBe(true);
-
-      // Starts store only a lane anchor. Their position and heading are both
-      // derived from the same directed centreline, so the two cannot disagree.
-      expect(start).not.toHaveProperty("pose");
-      expect(start.anchor).not.toHaveProperty("headingDeg");
-    }
   });
 
   it("limits authored junction connectors to two metres and keeps anchors outside them", () => {
@@ -1099,197 +833,9 @@ describe("SideSwap content", () => {
         }
       }
 
-      const routedLaneIds = new Set(
-        LESSONS.filter((lesson) => lesson.mapId === map.id).flatMap(
-          (lesson) => lesson.route,
-        ),
-      );
-      for (const laneId of routedLaneIds) {
-        const lane = laneById.get(laneId);
-        if (!lane) continue;
-        if (restrictedLaneIds.has(lane.id)) {
-          violations.push(`${map.id}/${lane.id} routes through a restricted lane`);
-        }
-        const lengthM = laneLength(lane);
-        const halfSpanM = resolveRouteChevronHalfSpan(lane.widthM);
-        for (let distanceM = 7; distanceM <= lengthM; distanceM += 12) {
-          if (!isLaneGuidanceDistanceAllowed(lane, distanceM)) continue;
-          const tip = resolveAnchor(lane, {
-            laneId: lane.id,
-            distanceAlongM: distanceM,
-          });
-          const heading = (tip.headingDeg * Math.PI) / 180;
-          const forward = { x: Math.sin(heading), z: Math.cos(heading) };
-          const side = { x: forward.z, z: -forward.x };
-          const back = {
-            x: tip.position.x - forward.x * 1.45,
-            z: tip.position.z - forward.z * 1.45,
-          };
-          if (
-            map.laneGraph.conflictZones.some(
-              (zone) =>
-                zone.laneIds.includes(lane.id) &&
-                (pointInPolygon(tip.position, zone.polygon) ||
-                  pointInPolygon(back, zone.polygon)),
-            )
-          ) {
-            continue;
-          }
-          const points = [
-            tip.position,
-            {
-              x: back.x + side.x * halfSpanM,
-              z: back.z + side.z * halfSpanM,
-            },
-            {
-              x: back.x - side.x * halfSpanM,
-              z: back.z - side.z * halfSpanM,
-            },
-          ];
-          for (const [pointIndex, guidancePoint] of points.entries()) {
-            checkGuidancePoint(
-              map,
-              lane,
-              guidancePoint,
-              0.11,
-              `${lane.id}/chevron-${distanceM}-${pointIndex}`,
-              heading,
-              restrictedLaneIds,
-            );
-          }
-        }
-      }
     }
 
     expect(violations).toEqual([]);
-  });
-
-  it("orders every lesson checkpoint along its authored route", () => {
-    const violations: string[] = [];
-    const nextRouteOccurrence = (
-      route: readonly string[],
-      laneId: string,
-      distanceAlongM: number,
-      previousRouteIndex: number,
-      previousDistanceM: number,
-    ): number => {
-      for (
-        let routeIndex = Math.max(0, previousRouteIndex);
-        routeIndex < route.length;
-        routeIndex += 1
-      ) {
-        if (route[routeIndex] !== laneId) continue;
-        if (
-          routeIndex > previousRouteIndex ||
-          distanceAlongM > previousDistanceM
-        ) {
-          return routeIndex;
-        }
-      }
-      return -1;
-    };
-
-    for (const lesson of LESSONS) {
-      const map = getMapPack(lesson.mapId);
-      const checkpoints = new Map(
-        map.laneGraph.checkpoints.map((item) => [item.id, item]),
-      );
-      let previousRouteIndex = -1;
-      let previousDistanceM = -1;
-      for (const checkpointId of lesson.checkpoints) {
-        const item = checkpoints.get(checkpointId);
-        if (!item) continue;
-        const routeIndex = nextRouteOccurrence(
-          lesson.route,
-          item.anchor.laneId,
-          item.anchor.distanceAlongM,
-          previousRouteIndex,
-          previousDistanceM,
-        );
-        if (routeIndex < 0) {
-          violations.push(`${lesson.id}/${checkpointId} is not on the route`);
-          continue;
-        }
-        previousRouteIndex = routeIndex;
-        previousDistanceM = item.anchor.distanceAlongM;
-      }
-    }
-
-    expect(violations).toEqual([]);
-
-    const repeatedRoute = ["loop", "connector", "loop"];
-    let routeIndex = -1;
-    let distanceM = -1;
-    const resolvedOccurrences = [
-      { laneId: "loop", distanceAlongM: 30 },
-      { laneId: "loop", distanceAlongM: 8 },
-    ].map((anchor) => {
-      routeIndex = nextRouteOccurrence(
-        repeatedRoute,
-        anchor.laneId,
-        anchor.distanceAlongM,
-        routeIndex,
-        distanceM,
-      );
-      distanceM = anchor.distanceAlongM;
-      return routeIndex;
-    });
-    expect(resolvedOccurrences).toEqual([0, 2]);
-  });
-
-  it("authors the Milton Keynes overtake corridor and reviewed source chain", () => {
-    const lesson = getLesson("uk-dual-carriageway");
-    const maneuver = lesson.maneuvers?.[0];
-    expect(maneuver?.kind).toBe("overtake");
-    if (!maneuver || maneuver.kind !== "overtake") return;
-
-    expect(maneuver.normalLaneId).toBe("uk-dual-n-east");
-    expect(maneuver.passingLaneId).toBe("uk-dual-n-east-pass");
-    expect(
-      maneuver.corridorEnd.distanceAlongM -
-        maneuver.corridorStart.distanceAlongM,
-    ).toBeGreaterThanOrEqual(650);
-    expect(
-      maneuver.phaseAnchors.return.distanceAlongM -
-        maneuver.phaseAnchors.approach.distanceAlongM,
-    ).toBeGreaterThanOrEqual(500);
-    expect(
-      maneuver.phaseAnchors.complete.distanceAlongM -
-        maneuver.phaseAnchors.return.distanceAlongM,
-    ).toBeGreaterThanOrEqual(100);
-    expect(
-      maneuver.leadVehicleStart.distanceAlongM -
-        maneuver.phaseAnchors.approach.distanceAlongM,
-    ).toBeGreaterThanOrEqual(70);
-    expect(maneuver.leadVehicleSpeedFactor).toBeCloseTo(0.75);
-    expect(maneuver.predictedClearSeconds).toBe(4);
-    expect(maneuver.returnStandstillGapM).toBe(4);
-    expect(maneuver.returnHeadwaySeconds).toBe(1.8);
-    const map = getMapPack(lesson.mapId);
-    const normalLane = map.laneGraph.lanes.find(
-      (lane) => lane.id === maneuver.normalLaneId,
-    );
-    expect(normalLane).toBeDefined();
-    const limitMps = (normalLane?.speedLimit ?? 0) / 2.236936;
-    const leadSpeedMps = limitMps * maneuver.leadVehicleSpeedFactor;
-    const steadyStatePassTimeSeconds =
-      (maneuver.phaseAnchors.return.distanceAlongM -
-        maneuver.phaseAnchors.approach.distanceAlongM) /
-      limitMps;
-    const availableRelativeGainM =
-      (limitMps - leadSpeedMps) * steadyStatePassTimeSeconds;
-    const requiredRelativeGainM =
-      maneuver.leadVehicleStart.distanceAlongM -
-      maneuver.phaseAnchors.approach.distanceAlongM +
-      maneuver.returnStandstillGapM +
-      leadSpeedMps * maneuver.returnHeadwaySeconds +
-      4; // Approximate combined vehicle length in the pure simulation.
-    expect(availableRelativeGainM).toBeGreaterThan(requiredRelativeGainM);
-    expect(maneuver.sourceReferenceIds).toEqual([
-      "uk-highway-code-general",
-      "uk-highway-code-road",
-      "uk-highway-code-motorways",
-    ]);
   });
 
   it("resolves every checkpoint, stop line, and anchored spawn within its lane", () => {
@@ -1499,40 +1045,6 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("gives each NYC lesson its own two-way route with a distinct start", () => {
-    const map = getMapPack("nyc-upper-west-side");
-    const playerSpawnIds = new Set(
-      map.laneGraph.spawnPoints
-        .filter((spawn) => spawn.kind === "player")
-        .map((spawn) => spawn.id),
-    );
-
-    const expected = [
-      {
-        lessonId: "us-one-way-grid",
-        start: "nyc-player-1way",
-        route: ["nyc-72-e-1", "nyc-72-e-2", "nyc-amst-n-1a", "nyc-amst-n-1b", "nyc-86-e-3", "nyc-col-s-1a", "nyc-col-s-1b"],
-      },
-      {
-        lessonId: "us-signals-crosswalks",
-        start: "nyc-player-signals",
-        route: ["nyc-bway-n-1", "nyc-bway-n-2", "nyc-86-w-4"],
-      },
-      {
-        lessonId: "us-lane-choice",
-        start: "nyc-player-lane",
-        route: ["nyc-we-n-1", "nyc-we-n-2", "nyc-86-e-1", "nyc-86-e-2"],
-      },
-    ] as const;
-
-    for (const { lessonId, start, route } of expected) {
-      const lesson = getLesson(lessonId);
-      expect(lesson.route).toEqual(route);
-      expect(lesson.startSpawnId).toBe(start);
-      expect(playerSpawnIds.has(start)).toBe(true);
-    }
-  });
-
   it("authors yield controls for every taught east and west roundabout re-entry", () => {
     const uk = getMapPack("milton-keynes-oldbrook");
     const france = getMapPack("calais-coquelles");
@@ -1626,23 +1138,6 @@ describe("SideSwap content", () => {
     }
   });
 
-  it("keeps the current France curriculum within its supported geometry", () => {
-    const priority = getLesson("fr-priority-roundabouts");
-    const fasterRoad = getLesson("fr-speed-merging");
-    const france = getMapPack("calais-coquelles");
-
-    expect(priority.assessedRules).not.toContain("priority_to_right");
-    expect(priority.summary).toContain("signed yields");
-    expect(fasterRoad.assessedRules).not.toContain("merge");
-    expect(fasterRoad.title).toBe("Faster-Road Lane Discipline");
-    expect(fasterRoad.checkpoints.at(-1)).toBe("fr-speed-finish");
-    expect(
-      france.laneGraph.checkpoints.find(
-        (checkpoint) => checkpoint.id === "fr-speed-finish",
-      )?.anchor,
-    ).toEqual({ laneId: "fr-exit-north", distanceAlongM: 60 });
-  });
-
   it("aligns the visible Tokyo railway and controls both crossing directions", () => {
     const tokyo = getMapPack("tokyo-setagaya");
     const railway = tokyo.geometry.landmarks.find(
@@ -1671,17 +1166,5 @@ describe("SideSwap content", () => {
       laneId: "jp-narrow-north-1",
       distanceAlongM: 82,
     });
-    expect(getLesson("jp-railway-crossings").checkpoints).toContain(
-      "jp-rail-clear",
-    );
-  });
-
-  it("keeps capstone coaching faithful to its authored terminal geometry", () => {
-    const capstone = getLesson("uk-fr-side-swap");
-    const francePrompt = capstone.coachPrompts.find(
-      (prompt) => prompt.id === "xf-fr",
-    );
-    expect(francePrompt?.message).toContain("marked terminal exit");
-    expect(francePrompt?.message.toLowerCase()).not.toContain("roundabout");
   });
 });

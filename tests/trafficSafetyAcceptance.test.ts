@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   FREE_DRIVES,
-  LESSONS,
-  getCountryIdForScenario,
   getCountryProfile,
-  getLessonsForDestination,
   getMapPack,
-  getOrientationForTrafficSide,
 } from "../app/game/content";
 import type { GameCanvasLesson, SpeedUnit as CanvasSpeedUnit } from "../app/game/GameCanvas";
 import {
@@ -19,7 +15,6 @@ import {
 import { buildSimulationCoreConfig } from "../app/game/simulationAdapter";
 import type {
   FreeDriveDefinition,
-  LessonDefinition,
   MapPack,
   TrafficSide,
 } from "../app/game/types";
@@ -80,13 +75,9 @@ const freeDriveLesson = (
   freeDrive: FreeDriveDefinition,
 ): GameCanvasLesson => {
   const country = getCountryProfile(freeDrive.countryId);
-  const representativeLesson =
-    getLessonsForDestination(freeDrive.destinationId)[0] ??
-    getOrientationForTrafficSide(country.trafficSide);
-
-  // This intentionally mirrors the playable free-drive contract assembled by
-  // SideSwapApp. The authored spawn places the vehicle in a legal lane, while
-  // route guidance, ordered checkpoints and a forced finish stay disabled.
+  // Mirrors the self-contained free-drive contract assembled by SideSwapApp: the
+  // authored spawn places the vehicle in a legal lane, with no route guidance,
+  // ordered checkpoints or forced finish.
   return {
     id: freeDrive.id,
     title: freeDrive.title,
@@ -102,29 +93,11 @@ const freeDriveLesson = (
     ],
     trafficSeed: freeDrive.trafficSeed,
     trafficDensity: "moderate",
-    vulnerableRoadUsers: representativeLesson.vulnerableRoadUsers,
+    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
     checkpoints: [],
     coachPrompts: [],
-    assessedRules: Array.from(
-      new Set(
-        getLessonsForDestination(freeDrive.destinationId).flatMap(
-          (lesson) => lesson.assessedRules,
-        ),
-      ),
-    ),
+    assessedRules: [],
     scenarioClock: freeDrive.scenarioClock,
-  };
-};
-
-const lessonPath = (lesson: LessonDefinition): PlayablePath => {
-  const country = getCountryProfile(getCountryIdForScenario(lesson.id));
-  return {
-    id: lesson.id,
-    authoredSeed: lesson.trafficSeed,
-    lesson,
-    mapPack: getMapPack(lesson.mapId),
-    trafficSide: lesson.trafficSide,
-    speedUnit: toCanvasSpeedUnit(country.speedUnit),
   };
 };
 
@@ -141,10 +114,7 @@ const freeDrivePath = (freeDrive: FreeDriveDefinition): PlayablePath => {
   };
 };
 
-const PLAYABLE_PATHS: readonly PlayablePath[] = [
-  ...LESSONS.map(lessonPath),
-  ...FREE_DRIVES.map(freeDrivePath),
-];
+const PLAYABLE_PATHS: readonly PlayablePath[] = FREE_DRIVES.map(freeDrivePath);
 
 const distance = (
   left: { readonly x: number; readonly z: number },
@@ -575,7 +545,7 @@ const syntheticTrafficCases = (): readonly TrafficRunCase[] => {
 
 const authoredTrafficCase = (): TrafficRunCase => {
   const path = PLAYABLE_PATHS.find(
-    (candidate) => candidate.id === "uk-london-museum-traffic",
+    (candidate) => candidate.id === "free-uk-london",
   );
   if (!path) throw new Error("Missing London traffic acceptance path");
   const adapted = buildSimulationCoreConfig({
@@ -599,28 +569,20 @@ describe("traffic safety acceptance", () => {
   it(
     "keeps every playable start and checkpoint safe for 60 seconds across 51 seeds",
     () => {
-      expect(PLAYABLE_PATHS).toHaveLength(23);
-      expect(new Set(PLAYABLE_PATHS.map((path) => path.id)).size).toBe(23);
+      expect(PLAYABLE_PATHS).toHaveLength(5);
+      expect(new Set(PLAYABLE_PATHS.map((path) => path.id)).size).toBe(5);
       expect(ADDITIONAL_TRAFFIC_SEEDS).toHaveLength(50);
       expect(new Set(ADDITIONAL_TRAFFIC_SEEDS).size).toBe(50);
       expect(
         Object.fromEntries(
-          PLAYABLE_PATHS.filter((path) =>
-            [
-              "uk-london-left-side-basics",
-              "uk-london-museum-traffic",
-              "uk-london-exhibition-road",
-              "free-uk-london",
-              "uk-fr-side-swap",
-            ].includes(path.id),
-          ).map((path) => [path.id, path.authoredSeed]),
+          PLAYABLE_PATHS.map((path) => [path.id, path.authoredSeed]),
         ),
       ).toEqual({
-        "uk-london-left-side-basics": 1251,
-        "uk-london-museum-traffic": 1252,
-        "uk-london-exhibition-road": 1253,
-        "uk-fr-side-swap": 1501,
+        "free-us": 2101,
+        "free-uk": 2201,
         "free-uk-london": 2251,
+        "free-fr": 2301,
+        "free-jp": 2401,
       });
 
       const failures: string[] = [];
@@ -689,11 +651,10 @@ describe("traffic safety acceptance", () => {
           : undefined,
       ).toEqual([]);
     },
-    // Exhaustive 60 s × 51-seed stationary check over every start + checkpoint on
-    // all 23 playable paths. The guarantee (seeds, duration, positions) is fixed;
-    // wall-clock scales with map size + density, which grew as NYC/London/Tokyo
-    // were enlarged ~3-4×. This body is synchronous, so the budget only labels a
-    // completed run — it never truncates coverage. Sized to the enlarged maps.
+    // Exhaustive 60 s × 51-seed stationary check over every start on all 5
+    // playable free-drive paths. The guarantee (seeds, duration, positions) is
+    // fixed; wall-clock scales with map size + density. This body is synchronous,
+    // so the budget only labels a completed run — it never truncates coverage.
     2_700_000,
   );
 

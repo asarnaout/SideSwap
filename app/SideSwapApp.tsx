@@ -18,10 +18,7 @@ import {
   getCountryProfile,
   getDestinationProfile,
   getFreeDrive,
-  getLesson,
-  getLessonsForDestination,
   getMapPack,
-  getOrientationForTrafficSide,
   resolveSessionConfig,
   resolveSteeringSide,
 } from "./game/content";
@@ -34,9 +31,7 @@ import {
 import type {
   CameraMode,
   DestinationId,
-  FreeDriveId,
   GameSessionConfig,
-  LessonId,
   PlayerProgressV1,
   ScenarioId,
 } from "./game/types";
@@ -160,9 +155,6 @@ const DESTINATION_PREVIEW_FOCUS: Partial<Record<DestinationId, string>> = {
   "fr-calais": "64% center",
 };
 
-const isFreeDriveScenario = (scenarioId: ScenarioId): scenarioId is FreeDriveId =>
-  scenarioId.startsWith("free-");
-
 const assistanceFromProgress = (
   progress: PlayerProgressV1,
 ): GameSessionConfig["assistance"] => ({
@@ -231,57 +223,31 @@ export default function SideSwapApp() {
     driveCountry,
   );
   const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
-  const activeIsFreeDrive = isFreeDriveScenario(activeScenarioId);
-  const activeFreeDrive = activeIsFreeDrive
-    ? getFreeDrive(activeScenarioId)
-    : null;
-  const activeLesson = activeIsFreeDrive
-    ? getLessonsForDestination(driveDestination.id)[0] ??
-      getOrientationForTrafficSide(driveCountry.trafficSide)
-    : getLesson(activeScenarioId as LessonId);
-  const runtimeMap = getMapPack(activeFreeDrive?.mapId ?? activeLesson.mapId);
-  const runtimeLesson: GameCanvasLesson = activeFreeDrive
-    ? {
-        id: activeFreeDrive.id,
-        title: activeFreeDrive.title,
-        kind: "free_drive",
-        trafficSide: driveCountry.trafficSide,
-        startSpawnId: activeFreeDrive.startSpawnId,
-        // Free drive is intentionally unstructured: the authored spawn still
-        // places the car in the correct legal lane, but no lesson route is
-        // borrowed or rendered as a mandatory path.
-        route: [],
-        objectives: [
-          {
-            id: `${activeFreeDrive.id}-explore`,
-            label: "Explore safely with no fixed finish",
-          },
-        ],
-        trafficSeed: activeFreeDrive.trafficSeed,
-        trafficDensity: "moderate",
-        vulnerableRoadUsers: activeLesson.vulnerableRoadUsers,
-        // Free drive has no authored finish sequence. Requiring every map
-        // checkpoint here made unrelated, off-route targets appear in turn and
-        // implied that the player was following a scored lesson.
-        checkpoints: [],
-        coachPrompts: [
-          {
-            id: `${activeFreeDrive.id}-start`,
-            trigger: { type: "start" },
-            message:
-              "Free drive has no finish line. Explore the map and practise the local road habits at your own pace.",
-          },
-        ],
-        assessedRules: Array.from(
-          new Set(
-            getLessonsForDestination(driveDestination.id).flatMap(
-              (lesson) => lesson.assessedRules,
-            ),
-          ),
-        ),
-        scenarioClock: activeFreeDrive.scenarioClock,
-      }
-    : activeLesson;
+  const activeFreeDrive = getFreeDrive(activeScenarioId);
+  const runtimeMap = getMapPack(activeFreeDrive.mapId);
+  // The open-world drive is self-contained: the authored spawn drops the car in
+  // a legal lane on the city map, with no route, checkpoints or finish line.
+  const runtimeLesson: GameCanvasLesson = {
+    id: activeFreeDrive.id,
+    title: activeFreeDrive.title,
+    kind: "free_drive",
+    trafficSide: driveCountry.trafficSide,
+    startSpawnId: activeFreeDrive.startSpawnId,
+    route: [],
+    objectives: [
+      {
+        id: `${activeFreeDrive.id}-explore`,
+        label: "Explore the city",
+      },
+    ],
+    trafficSeed: activeFreeDrive.trafficSeed,
+    trafficDensity: "moderate",
+    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
+    checkpoints: [],
+    coachPrompts: [],
+    assessedRules: [],
+    scenarioClock: activeFreeDrive.scenarioClock,
+  };
 
   const themeDestination = view === "driving" ? driveDestination : destination;
   const themeStyle = {
