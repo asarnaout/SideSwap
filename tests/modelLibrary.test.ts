@@ -52,6 +52,22 @@ describe("vehicle model assets", () => {
     van.scene.dispose();
     van.engine.dispose();
   });
+
+  // The London double-decker is a purchased Envato asset: gitignored (absent in
+  // CI), present after a local `node tools/build-london-bus.mjs` build. Validate
+  // it when present — semantic `body` material the registry recolours — and skip
+  // where the file is absent so CI stays green without the asset.
+  const busPath = path.join(dir, "london-double-decker.glb");
+  it.skipIf(!fs.existsSync(busPath))(
+    "loads the local London double-decker with a recolourable body",
+    async () => {
+      const { container, scene, engine } = await load("london-double-decker.glb");
+      expect(container.meshes.length).toBeGreaterThan(0);
+      expect(container.materials.some((m) => m.name === "body")).toBe(true);
+      scene.dispose();
+      engine.dispose();
+    },
+  );
 });
 
 describe("character model assets", () => {

@@ -23,5 +23,15 @@ free for commercial use. Files live under `public/models/`.
   (<https://poly.pizza/m/eRg_VrQlvXY>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
 
-_The London double-decker keeps SideSwap's own procedural model; no CC0/CC-BY
-double-decker `.glb` was available for direct download at authoring time._
+## Purchased — used under licence, NOT redistributed in this repo
+
+- **london-double-decker.glb** — "Low Poly London Bus" by **LinderMedia**
+  (Envato / 3DOcean, TurboSquid product 1381797,
+  <https://3docean.net/item/low-poly-london-bus/23371870>), used under a
+  purchased Envato Market licence. That licence permits use of the model in the
+  game but **not** redistribution of the raw asset, so this `.glb` is
+  **gitignored** and never committed to this public repo. If you own the asset,
+  regenerate it from your purchased OBJ with
+  `node tools/build-london-bus.mjs <path-to/LowPoly-LondonBus_OBJ.obj>`. When the
+  file is absent, the game falls back to its procedural double-decker
+  automatically. Recoloured to plain London red with no operator/TfL branding.
