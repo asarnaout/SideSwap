@@ -1290,28 +1290,46 @@ canvas:focus-visible {
 .incident-explanation dt { color: var(--ink-soft); font-size: 8px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
 .incident-explanation dd { margin: 0; font-size: 10px; line-height: 1.45; }
 
-.source-list { display: grid; gap: 8px; }
-.source-list a { position: relative; display: grid; gap: 4px; padding: 17px 48px 17px 18px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255, 255, 255, 0.5); color: inherit; text-decoration: none; }
-.source-list a:hover { background: var(--paper-bright); }
-.source-list a span { color: #766b39; font-size: 8px; font-weight: 850; letter-spacing: 0.11em; }
-.source-list a strong { font-size: 12px; }
-.source-list a small { color: var(--ink-soft); font-size: 9px; }
-.source-list a b { position: absolute; top: 19px; right: 18px; }
+.credits-section-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--hud-cream);
+}
+.credits-section-title.with-count { margin-top: 34px; }
+.credits-count { color: var(--hud-cream-50); font-size: 12px; font-weight: 600; }
 
-.license-card { margin-top: 28px; padding: 28px; border-radius: 20px; background: var(--asphalt); color: white; }
-.license-card h2 { margin: 0; font-family: var(--font-serif); font-size: 28px; }
-.license-card p:not(.eyebrow) { max-width: 750px; color: rgba(255,255,255,.66); font-size: 11px; line-height: 1.6; }
-.license-card > a { color: var(--yellow); font-size: 10px; }
-.map-downloads { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 20px 0; }
-.map-downloads a { display: grid; gap: 4px; padding: 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 11px; color: white; text-decoration: none; }
-.map-downloads a:hover { border-color: var(--yellow); }
-.map-downloads span { font-size: 10px; font-weight: 800; }
-.map-downloads small { color: rgba(255,255,255,.55); font-size: 8px; }
+.license-card { padding: 24px 26px; border: 1px solid var(--hud-line); border-radius: 22px; background: var(--hud-surface); color: var(--hud-cream); }
+.license-card p:not(.eyebrow) { max-width: 900px; margin: 0 0 18px; color: var(--hud-cream-50); font-size: 13px; line-height: 1.55; }
+.map-downloads { display: grid; grid-template-columns: repeat(5, 1fr); gap: 11px; margin: 0 0 16px; }
+.map-downloads a { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid var(--hud-line-2); border-radius: 13px; background: var(--hud-surface); color: var(--hud-cream); text-decoration: none; transition: 150ms ease; }
+.map-downloads a:hover { border-color: rgba(122, 138, 94, 0.5); background: var(--hud-surface-2); }
+.map-glyph { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid rgba(122, 138, 94, 0.35); border-radius: 8px; background: rgba(122, 138, 94, 0.16); color: var(--hud-sage-bright); font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-weight: 700; }
+.map-copy { display: grid; gap: 1px; min-width: 0; }
+.map-copy strong { font-size: 12.5px; font-weight: 700; }
+.map-copy small { color: var(--hud-cream-40); font-size: 10px; }
+.osm-link { display: inline-flex; align-items: center; gap: 7px; width: 100%; padding-top: 15px; border-top: 1px solid var(--hud-line); color: var(--hud-sage-bright); font-size: 12.5px; font-weight: 600; text-decoration: none; }
+.osm-link:hover { color: var(--hud-yellow); }
+
+.source-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+.source-group { padding: 20px 22px; border: 1px solid var(--hud-line); border-radius: 20px; background: var(--hud-surface); }
+.source-group-head { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; font-size: 14px; font-weight: 800; color: var(--hud-cream); }
+.source-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 0; border-top: 1px solid var(--hud-line); color: inherit; text-decoration: none; }
+.source-row-copy { display: grid; gap: 3px; min-width: 0; }
+.source-juris { color: var(--hud-sage); font-size: 8px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.source-row-copy strong { font-size: 14px; font-weight: 600; color: var(--hud-cream); line-height: 1.25; }
+.source-row-copy small { color: var(--hud-cream-50); font-size: 12px; }
+.source-arrow { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid var(--hud-line-3); border-radius: 9px; color: var(--hud-yellow); font-size: 13px; }
+.source-row:hover .source-arrow { border-color: var(--hud-yellow); }
 
 @media (max-width: 780px) {
   .map-downloads { grid-template-columns: 1fr 1fr; }
+  .source-groups { grid-template-columns: 1fr; }
 }
-.license-card a { color: var(--yellow); font-size: 10px; font-weight: 800; }
 
 .loading-screen {
   display: grid;
