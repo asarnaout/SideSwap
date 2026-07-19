@@ -18,6 +18,7 @@ import {
   FUEL_CONSUMPTION_L_PER_M,
   FUEL_PRICE_PER_LITRE_BY_COUNTRY,
   GIG_FARE_BY_COUNTRY,
+  PASSENGER_FARE_BY_COUNTRY,
   TANK_CAPACITY_L,
   formatMoney,
   getCountryProfile,
@@ -38,10 +39,11 @@ import {
 } from "./game/progress";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import { Minimap } from "./game/MinimapCanvas";
-import { advanceGig, generateGig, gigTarget } from "./game/gigs";
+import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
 import type {
   CameraMode,
+  CountryProfile,
   DestinationId,
   GameSessionConfig,
   PlayerProgressV2,
@@ -196,6 +198,30 @@ function resolveGigVenues(
   });
 }
 
+/**
+ * Builds the next gig for a drive: picks delivery vs. passenger deterministically
+ * from the seed, then draws from the matching fare table so rides pay their
+ * premium. Returns null when the map has too few venues.
+ */
+function nextGigFor(
+  map: ReturnType<typeof getMapPack>,
+  country: CountryProfile,
+  seed: number,
+): Gig | null {
+  const kind = pickGigKind(seed);
+  const fare =
+    kind === "passenger"
+      ? PASSENGER_FARE_BY_COUNTRY[country.id]
+      : GIG_FARE_BY_COUNTRY[country.id];
+  return generateGig(
+    resolveGigVenues(map),
+    fare,
+    country.currency.code,
+    seed,
+    kind,
+  );
+}
+
 export default function SideSwapApp() {
   const [progress, setProgress] = useState<PlayerProgressV2>(() =>
     createDefaultProgress(),
@@ -345,14 +371,7 @@ export default function SideSwapApp() {
     setProgress(settled);
     saveProgress(settled);
     gigSeedRef.current += 1;
-    setGig(
-      generateGig(
-        resolveGigVenues(runtimeMap),
-        GIG_FARE_BY_COUNTRY[driveCountry.id],
-        driveCountry.currency.code,
-        gigSeedRef.current,
-      ),
-    );
+    setGig(nextGigFor(runtimeMap, driveCountry, gigSeedRef.current));
   }, [gig, progress, driveCountry, runtimeMap]);
 
   const chooseDestination = (id: DestinationId) => {
@@ -396,10 +415,9 @@ export default function SideSwapApp() {
     gigSeedRef.current = nextFreeDrive.trafficSeed;
     paidGigRef.current = null;
     setGig(
-      generateGig(
-        resolveGigVenues(getMapPack(nextFreeDrive.mapId)),
-        GIG_FARE_BY_COUNTRY[nextCountryId],
-        getCountryProfile(nextCountryId).currency.code,
+      nextGigFor(
+        getMapPack(nextFreeDrive.mapId),
+        getCountryProfile(nextCountryId),
         gigSeedRef.current,
       ),
     );
@@ -483,6 +501,11 @@ export default function SideSwapApp() {
         },
       ]
     : gasPins;
+  // A waiting rider mesh only makes sense while heading to a passenger pickup.
+  const riderVenueId =
+    gig && gig.kind === "passenger" && gig.state === "enroute_pickup"
+      ? gig.pickup.id
+      : null;
 
   if (!hydrated) {
     return (
@@ -517,6 +540,7 @@ export default function SideSwapApp() {
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           outOfFuel={driveFuel <= 0}
+          riderVenueId={riderVenueId}
           onHudUpdate={handleHud}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
@@ -561,7 +585,13 @@ export default function SideSwapApp() {
                 marginBottom: "0.15rem",
               }}
             >
-              {gig.state === "carrying" ? "Deliver to" : "Pick up at"}
+              {gig.kind === "passenger"
+                ? gig.state === "carrying"
+                  ? "🧑 Drop off rider"
+                  : "🧑 Pick up rider"
+                : gig.state === "carrying"
+                  ? "📦 Deliver to"
+                  : "📦 Pick up at"}
             </div>
             <strong style={{ fontSize: "1.02rem" }}>
               {gig.state === "carrying" ? gig.dropoff.name : gig.pickup.name}

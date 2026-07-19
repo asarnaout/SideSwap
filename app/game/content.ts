@@ -1865,6 +1865,20 @@ export const GIG_FARE_BY_COUNTRY: Readonly<
   jp: { base: 600, ratePerM: 2 },
 };
 
+/**
+ * Passenger fares carry a pickup premium over parcel deliveries: a higher base
+ * plus a slightly steeper per-metre rate, so ferrying a rider pays better than
+ * dropping a package the same distance.
+ */
+export const PASSENGER_FARE_BY_COUNTRY: Readonly<
+  Record<CountryId, { base: number; ratePerM: number }>
+> = {
+  us: { base: 7, ratePerM: 0.018 },
+  uk: { base: 7, ratePerM: 0.018 },
+  fr: { base: 8, ratePerM: 0.02 },
+  jp: { base: 1000, ratePerM: 3 },
+};
+
 /** Starting cash a new (or migrated) player holds in each country's currency. */
 export const STARTING_WALLET_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
   us: 20,
