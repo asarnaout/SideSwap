@@ -35,3 +35,22 @@ free for commercial use. Files live under `public/models/`.
   `node tools/build-london-bus.mjs <path-to/LowPoly-LondonBus_OBJ.obj>`. When the
   file is absent, the game falls back to its procedural double-decker
   automatically. Recoloured to plain London red with no operator/TfL branding.
+
+## Fonts — SIL Open Font License 1.1
+
+Self-hosted under `public/fonts/`. The OFL permits bundling/redistribution
+provided its licence text travels with the fonts (included alongside them):
+
+- **Figtree** (`figtree.woff2`) — Erik Kennedy, © 2022 The Figtree Project
+  Authors. Licence: `public/fonts/Figtree-OFL.txt`.
+- **Playfair Display** (`playfair-display.woff2`, `playfair-display-italic.woff2`)
+  — Claus Eggers Sørensen, © 2017 The Playfair Display Project Authors, Reserved
+  Font Name "Playfair Display". Licence: `public/fonts/PlayfairDisplay-OFL.txt`.
+
+## First-party — created for SideSwap (no third-party rights)
+
+- **favicon.svg** — original SideSwap mark.
+- **og.png** and **`public/landing/*.webp`** (per-city preview illustrations) —
+  generated with OpenAI (ChatGPT) by the project owner, who owns the output
+  under OpenAI's Terms of Use. Stylised generic city scenes; no third-party
+  assets, logos, or branding.
