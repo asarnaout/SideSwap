@@ -522,8 +522,8 @@ export default function SideSwapApp() {
         <section className="launcher-page">
           <div className="launcher-copy">
             <p className="eyebrow">READY TO EARN</p>
-            <h1 aria-label="Pick up. Drop off. Get paid.">
-              <>Pick up. Drop off.<br /><em>Get paid.</em></>
+            <h1 aria-label="Pick up. Drop off. Repeat.">
+              <>Pick up. Drop off.<br /><em>Repeat.</em></>
             </h1>
             <p
               className="launcher-lead"
