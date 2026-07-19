@@ -114,6 +114,10 @@ export interface GameHudSnapshot {
   objective: string;
   checkpoint: string;
   trafficSide: TrafficSide;
+  /** Player world position and heading (radians), for the corner minimap. */
+  playerX: number;
+  playerZ: number;
+  heading: number;
   scenarioClock?: string;
 }
 
@@ -7613,6 +7617,9 @@ class BabylonGameSession {
         "Reach the end of the training route",
       checkpoint: this.checkpointLabel,
       trafficSide: this.simulationSnapshot.trafficSide,
+      playerX: this.playerState.x,
+      playerZ: this.playerState.z,
+      heading: this.playerState.heading,
       scenarioClock: this.options.lesson?.scenarioClock?.label,
     });
   }
@@ -7827,6 +7834,9 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         "Reach the end of the training route",
       checkpoint: "Start",
       trafficSide: lesson?.trafficSide ?? trafficSide,
+      playerX: 0,
+      playerZ: 0,
+      heading: 0,
     });
 
     callbackRef.current = {

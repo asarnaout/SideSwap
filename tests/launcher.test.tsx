@@ -1,56 +1,84 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LESSONS } from "../app/game/content";
-import type { SimulationScoreSnapshot } from "../app/game/simulation";
 import {
-  PROGRESS_STORAGE_KEY,
-  createDefaultProgress,
-} from "../app/game/progress";
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getCountryProfile,
+  getDestinationProfile,
+} from "../app/game/content";
+import { PROGRESS_STORAGE_KEY } from "../app/game/progress";
 import SideSwapApp from "../app/SideSwapApp";
 
-const MOCK_CORE_SCORE: SimulationScoreSnapshot = {
-  safety: 73.5,
-  ruleUse: 42.25,
-  vehicleControl: 91.75,
-  total: 63.4,
-  criticalErrors: 2,
-  mastered: false,
-};
-
+// The gig launcher drops the player straight into a city's open free drive. The
+// mock exposes the scenario plus the resolved driving parameters as data
+// attributes, so we can assert the free-roam handoff (correct scenario, local
+// traffic side, auto steering, built-in HUD off) without a real Babylon canvas.
 vi.mock("next/dynamic", () => ({
   default: () =>
     function MockGameCanvas({
       lesson,
-      onComplete,
+      trafficSide,
+      steeringSide,
+      cameraMode,
+      showBuiltInHud,
     }: {
       lesson?: {
         readonly id: string;
         readonly title: string;
         readonly route?: readonly string[];
-        readonly checkpoints?: readonly string[];
-        readonly startSpawnId?: string;
       };
-      onComplete?: (score: SimulationScoreSnapshot) => void;
+      trafficSide?: string;
+      steeringSide?: string;
+      cameraMode?: string;
+      showBuiltInHud?: boolean;
     }) {
       return (
         <section
           aria-label="Mock driving scene"
           data-scenario={lesson?.id}
           data-route-count={lesson?.route?.length ?? 0}
-          data-checkpoint-count={lesson?.checkpoints?.length ?? 0}
-          data-start-spawn={lesson?.startSpawnId}
+          data-traffic-side={trafficSide}
+          data-steering-side={steeringSide}
+          data-camera={cameraMode}
+          data-show-hud={String(showBuiltInHud)}
         >
           <span>{lesson?.title}</span>
-          <button type="button" onClick={() => onComplete?.(MOCK_CORE_SCORE)}>
-            Finish mock drive
-          </button>
         </section>
       );
     },
 }));
+
+// jsdom in this project does not expose window.localStorage; install a minimal
+// in-memory polyfill so the app's progress persistence can run under test.
+const installLocalStorage = () => {
+  const store = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+      key: (index: number) => Array.from(store.keys())[index] ?? null,
+      get length() {
+        return store.size;
+      },
+    },
+  });
+};
 
 const desktopMatchMedia = (query: string): MediaQueryList =>
   ({
@@ -65,14 +93,18 @@ const desktopMatchMedia = (query: string): MediaQueryList =>
   }) as unknown as MediaQueryList;
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-const originalGetGamepads = Object.getOwnPropertyDescriptor(navigator, "getGamepads");
-
-const createGamepadButtons = (count = 17) =>
-  Array.from({ length: count }, () => ({ pressed: false, touched: false, value: 0 }));
+const originalGetGamepads = Object.getOwnPropertyDescriptor(
+  navigator,
+  "getGamepads",
+);
 
 beforeEach(() => {
+  installLocalStorage();
   window.localStorage.clear();
-  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     callback(0);
     return 1;
@@ -96,463 +128,95 @@ afterEach(() => {
   });
 });
 
-describe("game-first launcher", () => {
-  it("returns corrupted saves to a directly playable default launcher", async () => {
+const findTagline = () =>
+  screen.findByRole("heading", {
+    name: /Pick up\. Drop off\. Get paid\./i,
+  });
+
+const startButton = (destinationId: Parameters<typeof getDestinationProfile>[0]) =>
+  screen.getByRole("button", {
+    name: new RegExp(
+      `Start driving in ${getDestinationProfile(destinationId).destinationName}`,
+      "i",
+    ),
+  });
+
+describe("gig launcher", () => {
+  it("shows the gig tagline and hides all lesson, setup and passport chrome", async () => {
+    render(<SideSwapApp />);
+
+    expect(await findTagline()).toBeVisible();
+    // The lesson hub, wheel/camera choosers, passport and capstone are gone.
+    expect(
+      screen.queryByRole("button", { name: /Browse all drives/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Drives$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Passport/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Wheel$/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("drops the player straight into the selected city's open free drive", async () => {
+    render(<SideSwapApp />);
+    await findTagline();
+
+    const london = getDestinationProfile("uk-london");
+    fireEvent.click(startButton("uk-london"));
+
+    const scene = await screen.findByLabelText("Mock driving scene");
+    // Launches the free drive directly — no lesson id, no route, no finish.
+    expect(scene).toHaveAttribute("data-scenario", london.freeDriveId);
+    expect(scene).toHaveAttribute("data-route-count", "0");
+    // The reworked HUD replaces the built-in coach/score panel.
+    expect(scene).toHaveAttribute("data-show-hud", "false");
+  });
+
+  it.each(["uk-london", "us-nyc"] as const)(
+    "matches the car and road to %s (auto steering, local traffic side)",
+    async (destinationId) => {
+      const destination = getDestinationProfile(destinationId);
+      const country = getCountryProfile(destination.countryId);
+      render(<SideSwapApp />);
+      await findTagline();
+
+      const group = screen.getByRole("group", { name: "Destination" });
+      fireEvent.click(
+        within(group).getByRole("button", {
+          name: new RegExp(destination.destinationName, "i"),
+        }),
+      );
+      fireEvent.click(startButton(destinationId));
+
+      const scene = await screen.findByLabelText("Mock driving scene");
+      expect(scene).toHaveAttribute("data-scenario", destination.freeDriveId);
+      expect(scene).toHaveAttribute("data-traffic-side", country.trafficSide);
+      // "auto" resolves to the country's own convention — you drive the local car.
+      expect(scene).toHaveAttribute(
+        "data-steering-side",
+        country.defaultSteeringSide,
+      );
+    },
+  );
+
+  it("keeps Settings reachable from the header", async () => {
+    render(<SideSwapApp />);
+    await findTagline();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Settings$/i }));
+    expect(
+      await screen.findByRole("heading", { name: /comfortable to read/i }),
+    ).toBeVisible();
+  });
+
+  it("boots a corrupted save straight to a playable launcher", async () => {
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, "{broken");
     render(<SideSwapApp />);
 
-    expect(
-      await screen.findByRole("heading", {
-        name: /Swap your instincts. Start driving./i,
-      }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
-    ).toBeEnabled();
-    expect(screen.queryByText(/Tell us where you normally drive/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Traffic keeps (right|left)/i })).not.toBeInTheDocument();
-  });
-
-  it("starts the selected destination immediately without a familiarity profile", async () => {
-    render(<SideSwapApp />);
-
-    expect(
-      await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
-    ).toBeEnabled();
-    const destinations = within(
-      screen.getByRole("group", { name: "Destination" }),
-    ).getAllByRole("button");
-    expect(destinations[0]).toHaveAccessibleName(/London/i);
-    expect(destinations[0]).not.toHaveTextContent("Featured · Recommended start");
-    expect(destinations[2]).not.toHaveTextContent("Specialist · Roundabout Academy");
-    expect(destinations[0]).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(destinations[1]);
-    expect(
-      screen.getByRole("button", { name: /Start Right-Side Orientation/i }),
-    ).toBeEnabled();
-    expect(destinations[1]).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /Start Right-Side Orientation/i }),
-    );
-    expect(await screen.findByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "orientation-right",
-    );
-  });
-
-  it("renders a destination-specific preview image with the local traffic side", async () => {
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-
-    const londonPreview = screen.getByLabelText("London training preview");
-    expect(londonPreview.querySelector("img.launcher-photo")).toHaveAttribute(
-      "src",
-      "/landing/london.webp",
-    );
-    expect(within(londonPreview).getByText(/Traffic keeps left/i)).toBeInTheDocument();
-
-    fireEvent.click(
-      within(screen.getByRole("group", { name: "Destination" })).getByRole(
-        "button",
-        { name: /New York City/i },
-      ),
-    );
-
-    const newYorkPreview = screen.getByLabelText("New York City training preview");
-    expect(newYorkPreview.querySelector("img.launcher-photo")).toHaveAttribute(
-      "src",
-      "/landing/nyc.webp",
-    );
-    expect(within(newYorkPreview).getByText(/Traffic keeps right/i)).toBeInTheDocument();
-
-    fireEvent.click(
-      within(screen.getByRole("group", { name: "Destination" })).getByRole(
-        "button",
-        { name: /Tokyo — Setagaya/i },
-      ),
-    );
-    const tokyoPreview = screen.getByLabelText("Tokyo — Setagaya training preview");
-    expect(tokyoPreview.querySelector("img.launcher-photo")).toHaveAttribute(
-      "src",
-      "/landing/tokyo.webp",
-    );
-    expect(within(tokyoPreview).getByText(/Traffic keeps left/i)).toBeInTheDocument();
-  });
-
-  it("preserves a selected destination and restores focus after setup closes", async () => {
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-
-    const destinations = screen.getByRole("group", { name: "Destination" });
-    fireEvent.click(
-      within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
-    );
-
-    expect(
-      within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
-    ).toBeEnabled();
-
-    const setupTrigger = screen.getByRole("button", { name: /^Wheel/i });
-    setupTrigger.focus();
-    fireEvent.click(setupTrigger);
-    expect(screen.getByRole("dialog", { name: "Ready your drive" })).toBeVisible();
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(setupTrigger).toHaveFocus();
-  });
-
-  it("resets a wheel override to the destination default when the destination changes", async () => {
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-
-    fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^LeftWheel on the left$/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
-      /^Wheelleft$/,
-    );
-
-    const destinations = screen.getByRole("group", { name: "Destination" });
-    fireEvent.click(
-      within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }),
-    );
-    expect(screen.getByRole("button", { name: /^Wheel/i })).toHaveTextContent(
-      /^Wheelright$/,
-    );
-  });
-
-  it("offers only left and right wheel positions, defaulting to the selected destination", async () => {
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-
-    fireEvent.click(screen.getByRole("button", { name: /^Wheel/i }));
-    const wheelGroup = within(screen.getByRole("dialog", { name: "Ready your drive" }))
-      .getByRole("group", { name: "Wheel position" });
-    expect(within(wheelGroup).getAllByRole("button")).toHaveLength(2);
-    expect(within(wheelGroup).getByRole("button", { name: /^RightWheel on the right$/i }))
-      .toHaveAttribute("aria-pressed", "true");
-    expect(within(wheelGroup).queryByText(/Local default/i)).not.toBeInTheDocument();
-  });
-
-  it("uses modern option cards for wheel and camera without a control preference", async () => {
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-
-    const setupSummary = screen.getByLabelText("Current car setup");
-    expect(within(setupSummary).getAllByRole("button")).toHaveLength(2);
-    expect(within(setupSummary).queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Change setup" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /^Camera/i }));
-    const dialog = screen.getByRole("dialog", { name: "Ready your drive" });
-    expect(dialog.querySelector("select")).not.toBeInTheDocument();
-
-    const cameraGroup = within(dialog).getByRole("group", { name: "Starting camera" });
-    const driverView = within(cameraGroup).getByRole("button", { name: /Driver view/i });
-    const chaseView = within(cameraGroup).getByRole("button", { name: /Chase view/i });
-    expect(chaseView).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(driverView);
-    expect(driverView).toHaveAttribute("aria-pressed", "true");
-    expect(chaseView).toHaveAttribute("aria-pressed", "false");
-    expect(within(dialog).queryByRole("group", { name: "Control prompts" })).not.toBeInTheDocument();
-    expect(dialog.querySelector(".control-help")).not.toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
-    expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
-    expect(screen.queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
-  });
-
-  it("keeps camera preferences in Settings without persisting a control preference", async () => {
-    const { container } = render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-
-    expect(screen.getByRole("heading", { name: "Make the road comfortable to read" })).toBeVisible();
-    expect(container.querySelector("select")).not.toBeInTheDocument();
-    expect(screen.queryByText("Familiar traffic side")).not.toBeInTheDocument();
-
-    const cameraGroup = screen.getByRole("group", { name: "Default camera" });
-    fireEvent.click(within(cameraGroup).getByRole("button", { name: /Driver view/i }));
-    expect(screen.queryByRole("group", { name: "Control prompts" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-
-    expect(screen.getByRole("button", { name: /^Camera/i })).toHaveTextContent("First person");
-    expect(screen.queryByRole("button", { name: /^Controls/i })).not.toBeInTheDocument();
-    const saved = JSON.parse(window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}");
-    expect(saved.preferredCamera).toBe("first_person");
-    expect(saved).not.toHaveProperty("preferredInput");
-  });
-
-  it("gives returning players a compact Start action and advances from results", async () => {
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      familiarTrafficSide: "right" as const,
-      lastCountryId: "us" as const,
-      lastDestinationId: "us-nyc" as const,
-      completedLessonIds: ["orientation-right" as const],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-
-    const startButton = await screen.findByRole("button", {
-      name: /Start The Manhattan Grid/i,
-    });
-    expect(screen.queryByText(/Continue in New York City, or choose a different training route/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Next drive")).toBeVisible();
-    expect(screen.getByText("The Manhattan Grid")).toBeVisible();
-    expect(screen.getByRole("button", { name: /Browse all drives, lessons, and free practice/i })).toBeVisible();
-    fireEvent.click(startButton);
-
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "us-one-way-grid",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Finish mock drive" }));
-
-    const nextButton = await screen.findByRole("button", {
-      name: /Next — Signals & Crosswalks/i,
-    });
-    fireEvent.click(nextButton);
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "us-signals-crosswalks",
-    );
-  });
-
-  it("persists the authoritative simulation score without reconstructing or weighting it again", async () => {
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      familiarTrafficSide: "right" as const,
-      lastCountryId: "us" as const,
-      lastDestinationId: "us-nyc" as const,
-      completedLessonIds: ["orientation-right" as const],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Start The Manhattan Grid/i }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Finish mock drive" }));
-
-    const saved = JSON.parse(
-      window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}",
-    );
-    expect(saved.lessonScores["us-one-way-grid"]).toMatchObject({
-      lessonId: "us-one-way-grid",
-      total: MOCK_CORE_SCORE.total,
-      safety: MOCK_CORE_SCORE.safety,
-      ruleUse: MOCK_CORE_SCORE.ruleUse,
-      vehicleControl: MOCK_CORE_SCORE.vehicleControl,
-      criticalErrors: MOCK_CORE_SCORE.criticalErrors,
-      mastered: MOCK_CORE_SCORE.mastered,
-    });
-  });
-
-  it("lets a controller player launch a returning drive without choosing an input type", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    const buttons = createGamepadButtons();
-    const gamepad = { buttons, axes: [0, 0] } as unknown as Gamepad;
-    Object.defineProperty(navigator, "getGamepads", {
-      configurable: true,
-      value: () => [gamepad],
-    });
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      familiarTrafficSide: "right" as const,
-      lastCountryId: "us" as const,
-      lastDestinationId: "us-nyc" as const,
-      completedLessonIds: ["orientation-right" as const],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-    act(() => vi.advanceTimersByTime(1));
-    expect(
-      screen.getByRole("button", { name: /Start The Manhattan Grid/i }),
-    ).toBeEnabled();
-
-    buttons[0].pressed = true;
-    act(() => vi.advanceTimersByTime(34));
-
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "us-one-way-grid",
-    );
-  });
-
-  it("restores an existing Milton Keynes player to Roundabout Academy", async () => {
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      familiarTrafficSide: "right" as const,
-      lastCountryId: "uk" as const,
-      lastDestinationId: "uk-milton-keynes" as const,
-      completedLessonIds: ["orientation-left" as const],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-
-    await screen.findByRole("heading", { name: /Swap your instincts/i });
-    expect(
-      within(screen.getByRole("group", { name: "Destination" })).getByRole(
-        "button",
-        { name: /Milton Keynes/i },
-      ),
-    ).toHaveAttribute("aria-pressed", "true");
-    const startButton = screen.getByRole("button", {
-      name: /Start Keep Left/i,
-    });
-    fireEvent.click(startButton);
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "uk-left-side-basics",
-    );
-  });
-
-  it("launches a London lesson and its unlocked free drive directly", async () => {
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      familiarTrafficSide: "right" as const,
-      lastCountryId: "uk" as const,
-      lastDestinationId: "uk-london" as const,
-      completedLessonIds: [
-        "orientation-left" as const,
-        "uk-london-left-side-basics" as const,
-      ],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "Drives" }));
-
-    const londonLesson = screen.getByText("Left in London").closest("article");
-    expect(londonLesson).not.toBeNull();
-    fireEvent.click(within(londonLesson as HTMLElement).getByRole("button", { name: "Start drive" }));
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "uk-london-left-side-basics",
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
-    fireEvent.click(screen.getByRole("button", { name: "Drives" }));
-    fireEvent.click(screen.getByRole("button", { name: "Start free drive" }));
-    const freeDrive = screen.getByRole("region", { name: "Mock driving scene" });
-    expect(freeDrive).toHaveAttribute("data-scenario", "free-uk-london");
-    expect(freeDrive).toHaveAttribute("data-route-count", "0");
-    expect(freeDrive).toHaveAttribute("data-checkpoint-count", "0");
-    expect(freeDrive).toHaveAttribute("data-start-spawn", "london-player");
-  });
-
-  it("keeps four passport stamps and shows both UK destination paths", async () => {
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      lastCountryId: "uk" as const,
-      lastDestinationId: "uk-london" as const,
-      completedLessonIds: [
-        "orientation-left" as const,
-        "uk-london-left-side-basics" as const,
-        "uk-left-side-basics" as const,
-      ],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-    fireEvent.click(await screen.findByRole("button", { name: /Passport 0\/4/i }));
-
-    const passport = screen.getByRole("heading", {
-      name: "Your practised road habits",
-    }).closest("section");
-    expect(passport).not.toBeNull();
-    expect(within(passport as HTMLElement).getAllByRole("article")).toHaveLength(4);
-    const ukStamp = screen.getByRole("heading", { name: "London & Milton Keynes" }).closest("article");
-    expect(ukStamp).not.toBeNull();
-    expect(ukStamp).toHaveTextContent("UK");
-    expect(ukStamp).toHaveTextContent("United Kingdom");
-    expect(ukStamp).toHaveTextContent("London1/3");
-    expect(ukStamp).toHaveTextContent("Milton Keynes1/3");
-  });
-
-  it("auto-reveals the selected destination in the narrow launcher strip", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
-    render(<SideSwapApp />);
-    await screen.findByRole("heading", { name: /Swap your instincts. Start driving./i });
-    const destinations = screen.getByRole("group", { name: "Destination" });
-    fireEvent.click(within(destinations).getByRole("button", { name: /Tokyo — Setagaya/i }));
-
-    expect(scrollIntoView).toHaveBeenLastCalledWith({
-      behavior: "smooth",
-      block: "nearest",
-      inline: "center",
-    });
-    expect(
-      screen.getByRole("button", { name: /Start Left-Side Orientation/i }),
-    ).toBeVisible();
-  });
-
-  it("starts unlocked free drive and the cross-border capstone directly from the hub", async () => {
-    const completedCountryLessons = LESSONS.filter((lesson) => lesson.countryId).map(
-      (lesson) => lesson.id,
-    );
-    const progress = {
-      ...createDefaultProgress("2026-07-10T12:00:00.000Z"),
-      familiarSideConfirmed: true,
-      lastCountryId: "uk" as const,
-      lastDestinationId: "uk-milton-keynes" as const,
-      completedLessonIds: [
-        "orientation-left" as const,
-        "orientation-right" as const,
-        ...completedCountryLessons,
-      ],
-    };
-    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
-
-    render(<SideSwapApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "Drives" }));
-
-    const capstone = screen.getByRole("button", { name: "Start capstone" });
-    expect(capstone).toBeEnabled();
-    fireEvent.click(capstone);
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "uk-fr-side-swap",
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Exit lesson" }));
-    fireEvent.click(screen.getByRole("button", { name: "Drives" }));
-    fireEvent.click(screen.getByRole("button", { name: /Milton Keynes/i }));
-    const hub = screen.getByRole("heading", { name: "All drives and lessons." }).closest("section");
-    expect(hub).not.toBeNull();
-    fireEvent.click(within(hub as HTMLElement).getByRole("button", { name: "Start free drive" }));
-    expect(screen.getByRole("region", { name: "Mock driving scene" })).toHaveAttribute(
-      "data-scenario",
-      "free-uk",
-    );
+    expect(await findTagline()).toBeVisible();
+    expect(startButton("uk-london")).toBeEnabled();
   });
 });
