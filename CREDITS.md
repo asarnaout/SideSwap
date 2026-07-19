@@ -1,7 +1,9 @@
 # Third-party asset credits
 
-Curbside Rush's imported 3D vehicle models are low-poly glTF (`.glb`) assets, all
-free for commercial use. Files live under `public/models/`.
+Curbside Rush's imported 3D vehicle, character and building models are low-poly
+glTF (`.glb`) assets, all free for commercial use. Vehicles + people live under
+`public/models/{vehicles,characters}/`; environment buildings (gig venues + gas
+stations) live under `public/models/props/`.
 
 ## CC0 — public domain (no attribution required)
 
@@ -9,6 +11,13 @@ free for commercial use. Files live under `public/models/`.
   released CC0. Recolourable solid-material low-poly cars.
 - **person-a.glb, person-b.glb, person-c.glb** (rigged, animated pedestrians) —
   Quaternius, "Animated Men Pack" (<https://quaternius.com>), released CC0.
+- **props/residence.glb** ("House") and **props/office.glb** ("Big Building") —
+  Quaternius via Poly Pizza (<https://poly.pizza/m/HeHDd2rTpX>,
+  <https://poly.pizza/m/AVCS8jUd2l>), released **CC0 1.0**. Low-poly detached
+  house + civic block, used for residence / office gig venues.
+- **props/shop.glb** ("Building") — by **Kay Lousberg** via Poly Pizza
+  (<https://poly.pizza/m/EL3ePInr1N>), released **CC0 1.0**. Low-poly corner
+  shop, used for shop gig venues.
 
 ## CC-BY — attribution required
 
@@ -22,6 +31,14 @@ free for commercial use. Files live under `public/models/`.
 - **bicycle.glb** — by **"Poly by Google"** via Poly Pizza
   (<https://poly.pizza/m/eRg_VrQlvXY>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
+- **props/gas-station.glb** ("Gas Station") — by **Alex Safayan** via Poly Pizza
+  (<https://poly.pizza/m/7rUkCX-AIR2>), licensed **CC-BY 3.0**
+  (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Gas Station by Alex
+  Safayan". Fuel station used for the refuel service points.
+- **props/restaurant.glb** ("Diner") — by **"Poly by Google"** via Poly Pizza
+  (<https://poly.pizza/m/4Xlqz9IfdrV>), licensed **CC-BY 3.0**
+  (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
+  Diner used for restaurant gig venues.
 
 ## Purchased — used under licence, NOT redistributed in this repo
 

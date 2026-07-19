@@ -82,7 +82,11 @@ import {
 } from "./vehicleVisuals";
 import {
   disposeModels,
+  instantiateModel,
+  isModelReady,
+  PROP_MODEL_REGISTRY,
   preloadModels,
+  propModelUrls,
   vehicleModelUrls,
 } from "./modelLibrary";
 import {
@@ -2961,6 +2965,7 @@ class BabylonGameSession {
       await preloadModels(this.scene, [
         ...vehicleModelUrls(),
         ...characterModelUrls(),
+        ...propModelUrls(),
       ]);
     } catch {
       // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
@@ -4191,6 +4196,34 @@ class BabylonGameSession {
     return false;
   }
 
+  /**
+   * Places the low-poly building glb for a venue/service `kind` at (x, z), facing
+   * the road via the lane `heading` + the model's yaw offset. Returns false when
+   * the kind has no registered model or its glb has not preloaded, signalling the
+   * caller to keep its procedural box.
+   */
+  private instantiateProp(
+    kind: string,
+    x: number,
+    z: number,
+    heading: number,
+  ): boolean {
+    const config = PROP_MODEL_REGISTRY[kind];
+    if (!config || !isModelReady(this.scene, config.url)) return false;
+    const instance = instantiateModel(this.scene, config.url);
+    const root = instance?.rootNodes[0] as TransformNode | undefined;
+    if (!instance || !root) return false;
+    const holder = new TransformNode(
+      `prop-${kind}-${Math.round(x)}-${Math.round(z)}`,
+      this.scene,
+    );
+    holder.position.set(x, 0, z);
+    holder.rotation.y = heading + config.yawOffset;
+    root.parent = holder;
+    root.scaling.setAll(config.scale);
+    return true;
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
@@ -4906,6 +4939,7 @@ class BabylonGameSession {
       // Set the forecourt back from the lane, on the kerb side.
       const px = pose.x + Math.cos(pose.heading) * 7;
       const pz = pose.z - Math.sin(pose.heading) * 7;
+      if (this.instantiateProp(service.kind, px, pz, pose.heading)) continue;
       const trim = makeMaterial(
         scene,
         `${service.id}-trim`,
@@ -4962,6 +4996,7 @@ class BabylonGameSession {
         z: pose.z - Math.sin(pose.heading) * 4.5,
         facing: Math.atan2(-Math.cos(pose.heading), Math.sin(pose.heading)),
       });
+      if (this.instantiateProp(venue.kind, px, pz, pose.heading)) continue;
       const height = 6;
       createBox(
         scene,

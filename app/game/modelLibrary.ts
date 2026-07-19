@@ -155,3 +155,43 @@ export function vehicleModelUrls(): string[] {
     ),
   ];
 }
+
+const P = "/models/props";
+
+/**
+ * Per-prop import configuration for static environment models (gig venues + gas
+ * stations). Unlike vehicles, props keep their own materials — no recolour — so
+ * there is no material-name list. `scale` normalises the model to roughly its
+ * on-map footprint; `yawOffset` corrects facing so the model's front lands toward
+ * the road (the venue loop rotates the holder by the lane heading + this offset).
+ */
+export interface PropModelConfig {
+  readonly url: string;
+  readonly scale: number;
+  readonly yawOffset: number;
+}
+
+/**
+ * Maps a venue/service kind to its low-poly building glb — keyed by the
+ * ServicePoint kind ("gas_station") and by GigVenueKind. Any kind absent here,
+ * or whose glb has not preloaded, falls back to the procedural box in GameCanvas.
+ * All CC0/CC-BY low-poly glbs live under public/models/props/ (see CREDITS.md).
+ */
+export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
+  // Scales derived from each glb's measured bounding box (native sizes vary
+  // wildly — the diner is authored at ~300 units, the shop at ~2) then set to a
+  // sensible real-world footprint per building type. yawOffset 0: the buildings
+  // read from any side; exact facing/height is a playtest tweak.
+  gas_station: { url: `${P}/gas-station.glb`, scale: 1.6, yawOffset: 0 },
+  restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: 0 },
+  shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: 0 },
+  residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: 0 },
+  office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: 0 },
+};
+
+/** De-duplicated list of every prop glb URL the registry references, for preload. */
+export function propModelUrls(): string[] {
+  return [
+    ...new Set(Object.values(PROP_MODEL_REGISTRY).map((config) => config.url)),
+  ];
+}
