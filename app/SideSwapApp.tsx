@@ -930,9 +930,23 @@ export default function SideSwapApp() {
               </button>
             ))}
           </div>
-          <div className="hub-destination-heading">
-            <div><span>{country.flagEmoji}</span><div><small>{country.countryName}</small><h2>{destination.destinationName}</h2><em>{destination.destinationSubtitle}</em></div></div>
-            <p>Traffic keeps <strong>{country.trafficSide}</strong> · wheel defaults <strong>{country.defaultSteeringSide}</strong></p>
+          <div className="hub-destination-banner">
+            {/* eslint-disable-next-line @next/next/no-img-element -- static preview art in /public; next/image adds no value for a fixed, non-critical banner */}
+            <img
+              className="hub-banner-photo"
+              src={DESTINATION_PREVIEW_IMAGES[destination.id]}
+              style={{ objectPosition: DESTINATION_PREVIEW_FOCUS[destination.id] }}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+            />
+            <div className="hub-banner-copy">
+              <p className="hub-banner-eyebrow">
+                <span className="flag">{country.flagEmoji}</span> {country.countryName} · Keeps {country.trafficSide}
+              </p>
+              <h2>{destination.destinationName}</h2>
+              <p className="hub-banner-sub">{destination.destinationSubtitle} · wheel defaults {country.defaultSteeringSide}</p>
+            </div>
           </div>
           {destination.id === "uk-london" && (
             <p className="hub-charge-note">
@@ -949,34 +963,40 @@ export default function SideSwapApp() {
               const complete = progress.completedLessonIds.includes(lesson.id);
               const score = progress.lessonScores[lesson.id];
               return (
-                <article className={`lesson-card ${complete ? "complete" : ""}`} key={lesson.id}>
-                  <span className="lesson-index">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "—"}</span>
-                  <span className="lesson-copy">
-                    <small>{lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}</small>
-                    <strong>{lesson.title}</strong>
-                    <em>{lesson.summary}</em>
-                  </span>
+                <article className={`lesson-card ${complete ? "complete" : ""} ${unlocked ? "" : "locked"}`} key={lesson.id}>
+                  <div className="lesson-card-head">
+                    <span className="lesson-tier">
+                      <span className="lesson-status" aria-hidden="true">{complete ? "✓" : unlocked ? String(index + 1).padStart(2, "0") : "🔒"}</span>
+                      {lesson.kind === "orientation" ? "ORIENTATION" : `LEVEL ${lesson.difficulty}`} · {formatMinutes(lesson)}
+                    </span>
+                    {score && <span className="lesson-score">{score.total}</span>}
+                  </div>
+                  <strong className="lesson-title">{lesson.title}</strong>
+                  <em className="lesson-summary">{lesson.summary}</em>
                   <button
                     type="button"
                     className="lesson-start"
                     disabled={!unlocked}
                     onClick={() => beginDrive(lesson.id, destinationId)}
                   >
-                    {score ? `${score.total} · Drive again` : unlocked ? "Start" : "Locked"}
+                    {score ? "Drive again ↻" : unlocked ? "Start drive →" : "Locked"}
                   </button>
                 </article>
               );
             })}
             <article className={`lesson-card free-drive-card ${isFreeDriveUnlocked(progress, destination.freeDriveId) ? "" : "locked"}`}>
-              <span className="lesson-index">∞</span>
-              <span className="lesson-copy"><small>OPEN PRACTICE</small><strong>{getFreeDriveForDestination(destinationId).title}</strong><em>Explore the map with local traffic and no fixed finish.</em></span>
+              <div className="lesson-card-head">
+                <span className="lesson-tier"><span className="lesson-status free" aria-hidden="true">∞</span>OPEN PRACTICE</span>
+              </div>
+              <strong className="lesson-title">{getFreeDriveForDestination(destinationId).title}</strong>
+              <em className="lesson-summary">Explore the map with local traffic and no fixed finish.</em>
               <button
                 type="button"
-                className="lesson-start"
+                className="lesson-start block"
                 disabled={!isFreeDriveUnlocked(progress, destination.freeDriveId)}
                 onClick={() => beginDrive(destination.freeDriveId, destinationId)}
               >
-                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive" : "Complete lesson 1"}
+                {isFreeDriveUnlocked(progress, destination.freeDriveId) ? "Start free drive →" : "Complete lesson 1 to unlock"}
               </button>
             </article>
           </div>
