@@ -128,10 +128,13 @@ export const WORLD_LAYER_MASK = 0x0fffffff;
 export const GUIDANCE_LAYER_MASK = 0x10000000;
 export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
 const ROAD_SURFACE_Y = 0.07;
-// Junction fills sit a hair below their carriageway/shoulder strips so the road
-// always wins on overlap (no depth flicker) and the fill only shows through the
-// genuine seams and corner throats between independently-authored surfaces.
-const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y - 0.0015;
+// The asphalt junction fill sits a hair ABOVE the carriageway strips so it wins
+// the depth test across the whole crossing: it caps the two coplanar road strips
+// that would otherwise z-fight where they overlap, and it paves over any dirt
+// shoulder that a crossing road's wider strip pushes into the junction throat.
+// The dirt-shoulder junction fill stays just below its shoulder strips, forming
+// the thin tan apron that rings the paved junction.
+const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y + 0.0016;
 const ROAD_SHOULDER_Y = 0.045;
 const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
@@ -404,10 +407,13 @@ export function convexHullXZ(
  * Paves each junction where independently-authored road surfaces share a node
  * (a side street meeting an avenue, a roundabout approach, a spliced segment)
  * with the convex hull of the road cross-sections that meet there. Unlike a
- * circular apron, the hull's straight edges align to the carriageways and stop
- * at their footprints, so it fills the seam and the corner throats without a
- * round lip spilling onto the grass. `lateralInflationM` widens the sections to
- * build the matching dirt-shoulder fill.
+ * circular apron, the hull's straight edges align to the carriageways so it fills
+ * the seam without a round lip spilling onto the grass. Each incident arm reaches
+ * into the crossing by the WIDEST half-width present at the node — not just its
+ * own — so the hull squares off past every crossing edge and covers the gore of a
+ * T/Y split, instead of chamfering short and leaving the dirt shoulder to show
+ * through as a triangular wedge. `lateralInflationM` widens the sections to build
+ * the matching dirt-shoulder fill that rings the paved junction.
  */
 export function collectRoadJunctionFills(
   surfaces: readonly RoadJunctionSource[],
@@ -417,8 +423,15 @@ export function collectRoadJunctionFills(
     x: number;
     z: number;
     surfaceIds: Set<string>;
-    corners: GameCanvasPoint[];
+    maxHalf: number;
+    arms: Array<{
+      half: number;
+      node: GameCanvasPoint;
+      neighbours: GameCanvasPoint[];
+    }>;
   }> = [];
+  // Pass 1: gather every centreline point into shared-node clusters, recording
+  // the widest half-width that meets there so the reach can clear it.
   for (const surface of surfaces) {
     const { points } = normalizeRoadCenterline(surface.centerline);
     const half = surface.widthM / 2 + lateralInflationM;
@@ -430,45 +443,60 @@ export function collectRoadJunctionFills(
           ROAD_POINT_EPSILON_M,
       );
       if (!cluster) {
-        cluster = { x: node.x, z: node.z, surfaceIds: new Set(), corners: [] };
+        cluster = {
+          x: node.x,
+          z: node.z,
+          surfaceIds: new Set(),
+          maxHalf: 0,
+          arms: [],
+        };
         clusters.push(cluster);
       }
       cluster.surfaceIds.add(surface.id);
-      // Emit the strip's lateral corners at the node and a short reach into each
-      // adjacent segment; the union's hull then squares off to the roads.
+      cluster.maxHalf = Math.max(cluster.maxHalf, half);
       const neighbours: GameCanvasPoint[] = [];
       if (index > 0) neighbours.push(points[index - 1]);
       if (index < points.length - 1) neighbours.push(points[index + 1]);
-      for (const neighbour of neighbours) {
+      cluster.arms.push({ half, node, neighbours });
+    }
+  }
+  // Pass 2: at every shared node, emit each arm's lateral corners at the node and
+  // a reach into each adjacent segment sized to clear the widest road; the hull
+  // of the union then squares the junction off to the carriageways.
+  const fills: RoadJunctionFill[] = [];
+  for (const cluster of clusters) {
+    if (cluster.surfaceIds.size <= 1) continue;
+    const corners: GameCanvasPoint[] = [];
+    for (const arm of cluster.arms) {
+      for (const neighbour of arm.neighbours) {
         const direction = normalizeRoadDirection({
-          x: neighbour.x - node.x,
-          z: neighbour.z - node.z,
+          x: neighbour.x - arm.node.x,
+          z: neighbour.z - arm.node.z,
         });
         if (!direction) continue;
         const lateral = roadLateral(direction);
         const reach = Math.min(
-          half * 1.5,
-          roadPointDistance(node, neighbour) * 0.9,
+          Math.max(cluster.maxHalf * 1.7, arm.half * 1.3),
+          roadPointDistance(arm.node, neighbour) * 0.9,
         );
         for (const along of [0, reach]) {
-          const baseX = node.x + direction.x * along;
-          const baseZ = node.z + direction.z * along;
-          cluster.corners.push({
-            x: baseX + lateral.x * half,
-            z: baseZ + lateral.z * half,
+          const baseX = arm.node.x + direction.x * along;
+          const baseZ = arm.node.z + direction.z * along;
+          corners.push({
+            x: baseX + lateral.x * arm.half,
+            z: baseZ + lateral.z * arm.half,
           });
-          cluster.corners.push({
-            x: baseX - lateral.x * half,
-            z: baseZ - lateral.z * half,
+          corners.push({
+            x: baseX - lateral.x * arm.half,
+            z: baseZ - lateral.z * arm.half,
           });
         }
       }
     }
+    const polygon = convexHullXZ(corners);
+    if (polygon.length >= 3) fills.push({ polygon });
   }
-  return clusters
-    .filter((cluster) => cluster.surfaceIds.size > 1)
-    .map((cluster) => ({ polygon: convexHullXZ(cluster.corners) }))
-    .filter((fill) => fill.polygon.length >= 3);
+  return fills;
 }
 
 /** Keeps a checkpoint target wholly inside its authored lane. */
@@ -4585,7 +4613,14 @@ class BabylonGameSession {
         ROAD_SHOULDER_JUNCTION_FILL_Y,
       );
     }
-    for (const [index, fill] of collectRoadJunctionFills(roadSurfaces).entries()) {
+    // Inflate the asphalt fill part-way into the shoulder band so it paves over
+    // the shoulder strips that overlap in a junction's throats and Y-split gores
+    // (which would otherwise read as tan wedges), while the wider dirt-shoulder
+    // fill below still rings the paved junction with a thin, even tan edge.
+    for (const [index, fill] of collectRoadJunctionFills(
+      roadSurfaces,
+      shoulderWidth * 0.55,
+    ).entries()) {
       this.createRoadJunctionFill(
         `road-junction-${index}`,
         fill.polygon,
