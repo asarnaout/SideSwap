@@ -1,42 +1,30 @@
 import {
-  SCORING_CONFIG,
+  STARTING_WALLET_BY_COUNTRY,
+  TANK_CAPACITY_L,
   getDestinationProfile,
-  isLessonId,
 } from "./content";
 import type {
   AccessibilityPreferences,
-  BadgeId,
   CameraMode,
   CountryId,
   DestinationId,
-  LessonId,
-  LessonScore,
-  PlayerProgressV1,
-  TrafficSide,
+  PlayerProgressV2,
 } from "./types";
 
-export const PROGRESS_STORAGE_KEY = "sideswap:v1";
+export const PROGRESS_STORAGE_KEY = "sideswap:v2";
 
-const LEGACY_STORAGE_KEYS = ["sideswap:progress", "sideswap:v0"] as const;
+// Older keys are migrated forward and then removed. "sideswap:v1" held the
+// (now-retired) lesson progress; its preference fields are preserved, its lesson
+// data discarded, and a fresh per-country wallet + full fuel tank are seeded.
+const LEGACY_STORAGE_KEYS = ["sideswap:v1", "sideswap:progress", "sideswap:v0"] as const;
+
+const WALLET_MAX = Number.MAX_SAFE_INTEGER;
 
 export interface ProgressStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem?(key: string): void;
 }
-
-const BADGE_IDS = new Set<BadgeId>([
-  "right_side_ready",
-  "left_side_ready",
-  "signal_scholar",
-  "roundabout_ready",
-  "lane_courtesy",
-  "vulnerable_road_guardian",
-  "rail_crossing_ready",
-  "side_swap_traveler",
-  "first_person_mastery",
-  "london_city_ready",
-]);
 
 const COUNTRY_IDS = new Set<CountryId>(["us", "uk", "fr", "jp"]);
 const DESTINATION_IDS = new Set<DestinationId>([
@@ -65,9 +53,6 @@ type UnknownRecord = Record<string, unknown>;
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const hasOwn = (record: UnknownRecord, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(record, key);
-
 const clamp = (value: unknown, minimum: number, maximum: number, fallback: number): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return fallback;
@@ -85,8 +70,6 @@ const asIsoDate = (value: unknown, fallback: string): string => {
   return new Date(value).toISOString();
 };
 
-const unique = <T>(values: readonly T[]): T[] => [...new Set(values)];
-
 const nowIso = (): string => new Date().toISOString();
 
 const getDefaultStorage = (): ProgressStorage | undefined => {
@@ -102,9 +85,6 @@ const getDefaultStorage = (): ProgressStorage | undefined => {
 
 const readNestedRecord = (record: UnknownRecord, key: string): UnknownRecord =>
   isRecord(record[key]) ? record[key] : {};
-
-const parseTrafficSide = (value: unknown): TrafficSide =>
-  value === "left" ? "left" : "right";
 
 const parseCountryId = (value: unknown): CountryId | undefined =>
   typeof value === "string" && COUNTRY_IDS.has(value as CountryId)
@@ -147,110 +127,39 @@ const parseAccessibility = (value: unknown): AccessibilityPreferences => {
   };
 };
 
-const parseLessonIds = (value: unknown): LessonId[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return unique(
-    value.filter((item): item is LessonId => typeof item === "string" && isLessonId(item)),
-  );
-};
+const eachCountry = (value: number): Record<CountryId, number> => ({
+  us: value,
+  uk: value,
+  fr: value,
+  jp: value,
+});
 
-const parseBadges = (value: unknown): BadgeId[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return unique(
-    value.filter(
-      (item): item is BadgeId => typeof item === "string" && BADGE_IDS.has(item as BadgeId),
-    ),
-  );
-};
-
-const parseStamps = (value: unknown): CountryId[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return unique(
-    value.filter(
-      (item): item is CountryId =>
-        typeof item === "string" && COUNTRY_IDS.has(item as CountryId),
-    ),
-  );
-};
-
-const normalizeScore = (
-  lessonId: LessonId,
+// Reads a persisted per-country number map, clamping each entry to [0, max] and
+// falling back to `defaults` for any missing or invalid country.
+const parseCountryNumberMap = (
   value: unknown,
-  fallbackDate: string,
-): LessonScore | undefined => {
-  if (typeof value === "number") {
-    const total = clamp(value, 0, 100, 0);
-    return {
-      lessonId,
-      total,
-      safety: total,
-      ruleUse: total,
-      vehicleControl: total,
-      criticalErrors: 0,
-      mastered: total >= SCORING_CONFIG.masteryThreshold,
-      completedAt: fallbackDate,
-      durationMs: 0,
-    };
+  defaults: Readonly<Record<CountryId, number>>,
+  max: number,
+): Record<CountryId, number> => {
+  const record = isRecord(value) ? value : {};
+  const result = {} as Record<CountryId, number>;
+  for (const id of COUNTRY_IDS) {
+    result[id] = clamp(record[id], 0, max, defaults[id]);
   }
-
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const safety = clamp(value.safety, 0, 100, 100);
-  const ruleUse = clamp(value.ruleUse, 0, 100, 100);
-  const vehicleControl = clamp(value.vehicleControl, 0, 100, 100);
-  const weightedTotal =
-    safety * SCORING_CONFIG.weights.safety +
-    ruleUse * SCORING_CONFIG.weights.ruleUse +
-    vehicleControl * SCORING_CONFIG.weights.vehicleControl;
-  const total = clamp(value.total, 0, 100, Math.round(weightedTotal));
-  const criticalErrors = Math.round(clamp(value.criticalErrors, 0, 999, 0));
-
-  return {
-    lessonId,
-    total,
-    safety,
-    ruleUse,
-    vehicleControl,
-    criticalErrors,
-    mastered:
-      total >= SCORING_CONFIG.masteryThreshold &&
-      (SCORING_CONFIG.masteryAllowsCriticalErrors || criticalErrors === 0),
-    completedAt: asIsoDate(value.completedAt, fallbackDate),
-    durationMs: Math.round(clamp(value.durationMs, 0, 24 * 60 * 60 * 1000, 0)),
-  };
+  return result;
 };
 
-const parseLessonScores = (
-  value: unknown,
-  fallbackDate: string,
-): Partial<Record<LessonId, LessonScore>> => {
+const isCountryNumberMap = (value: unknown): boolean => {
   if (!isRecord(value)) {
-    return {};
+    return false;
   }
-
-  const scores: Partial<Record<LessonId, LessonScore>> = {};
-  for (const [key, candidate] of Object.entries(value)) {
-    if (!isLessonId(key)) {
-      continue;
-    }
-    const score = normalizeScore(key, candidate, fallbackDate);
-    if (score) {
-      scores[key] = score;
+  for (const id of COUNTRY_IDS) {
+    if (typeof value[id] !== "number" || !Number.isFinite(value[id] as number)) {
+      return false;
     }
   }
-  return scores;
+  return true;
 };
-
-const oppositeSideStarterCountry = (familiarTrafficSide: TrafficSide): CountryId =>
-  familiarTrafficSide === "right" ? "uk" : "us";
 
 const defaultDestinationForCountry = (countryId: CountryId): DestinationId => {
   switch (countryId) {
@@ -264,49 +173,6 @@ const defaultDestinationForCountry = (countryId: CountryId): DestinationId => {
       return "jp-tokyo";
   }
 };
-
-const hasLegacyProgressShape = (value: UnknownRecord): boolean => {
-  if (value.version === 1) {
-    return (
-      Array.isArray(value.completedLessonIds) &&
-      isRecord(value.lessonScores) &&
-      Array.isArray(value.badges) &&
-      Array.isArray(value.passportStamps) &&
-      (value.familiarTrafficSide === "left" || value.familiarTrafficSide === "right") &&
-      (value.preferredCamera === "first_person" ||
-        value.preferredCamera === "third_person") &&
-      isRecord(value.accessibility) &&
-      typeof value.updatedAt === "string"
-    );
-  }
-
-  if (value.version !== undefined && value.version !== 0) {
-    return false;
-  }
-
-  const settings = readNestedRecord(value, "settings");
-  const preferences = readNestedRecord(value, "preferences");
-  const familiarSide =
-    value.familiarTrafficSide ?? settings.familiarTrafficSide ?? preferences.familiarTrafficSide;
-  const camera =
-    value.preferredCamera ?? settings.camera ?? preferences.camera ?? preferences.preferredCamera;
-
-  return (
-    Array.isArray(value.completedLessonIds) ||
-    Array.isArray(value.completedLessons) ||
-    isRecord(value.lessonScores) ||
-    isRecord(value.scores) ||
-    familiarSide === "left" ||
-    familiarSide === "right" ||
-    camera === "first_person" ||
-    camera === "third_person" ||
-    camera === "first" ||
-    camera === "third"
-  );
-};
-
-const inferLastCountryId = (familiarTrafficSide: TrafficSide): CountryId =>
-  oppositeSideStarterCountry(familiarTrafficSide);
 
 const inferLastDestinationId = (
   explicitDestinationId: unknown,
@@ -322,16 +188,14 @@ const inferLastDestinationId = (
   return defaultDestinationForCountry(lastCountryId);
 };
 
-export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 {
+export function createDefaultProgress(now: string = nowIso()): PlayerProgressV2 {
   const updatedAt = asIsoDate(now, nowIso());
   return {
-    version: 1,
-    completedLessonIds: [],
-    lessonScores: {},
-    badges: [],
-    passportStamps: [],
-    familiarTrafficSide: "right",
-    familiarSideConfirmed: false,
+    version: 2,
+    walletByCountry: { ...STARTING_WALLET_BY_COUNTRY },
+    fuelByCountry: eachCountry(TANK_CAPACITY_L),
+    lifetimeEarnings: eachCountry(0),
+    completedGigCount: 0,
     lastCountryId: "uk",
     lastDestinationId: "uk-london",
     preferredCamera: "third_person",
@@ -341,10 +205,12 @@ export function createDefaultProgress(now: string = nowIso()): PlayerProgressV1 
 }
 
 /**
- * Normalizes v1, pre-versioned, and lightweight v0 progress shapes. Unknown,
- * malformed, and future fields are discarded rather than trusted.
+ * Normalizes any prior progress blob (v2, the lesson-era v1, or older) into the
+ * current V2 shape. Preferences (last city, camera, accessibility) are carried
+ * across; wallet/fuel/earnings are preserved when present and otherwise seeded
+ * to the starting balance + a full tank. Unknown fields are discarded.
  */
-export function migrateProgress(value: unknown, now: string = nowIso()): PlayerProgressV1 {
+export function migrateProgress(value: unknown, now: string = nowIso()): PlayerProgressV2 {
   const fallback = createDefaultProgress(now);
   if (!isRecord(value)) {
     return fallback;
@@ -353,50 +219,31 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
   const settings = readNestedRecord(value, "settings");
   const preferences = readNestedRecord(value, "preferences");
   const updatedAt = asIsoDate(value.updatedAt, fallback.updatedAt);
-
-  const completedCandidate = hasOwn(value, "completedLessonIds")
-    ? value.completedLessonIds
-    : value.completedLessons;
-  const scoresCandidate = hasOwn(value, "lessonScores") ? value.lessonScores : value.scores;
-  const familiarCandidate =
-    value.familiarTrafficSide ?? settings.familiarTrafficSide ?? preferences.familiarTrafficSide;
+  const lastCountryId = parseCountryId(value.lastCountryId) ?? fallback.lastCountryId;
+  const lastDestinationId = inferLastDestinationId(value.lastDestinationId, lastCountryId);
   const cameraCandidate =
     value.preferredCamera ?? settings.camera ?? preferences.camera ?? preferences.preferredCamera;
   const accessibilityCandidate =
     value.accessibility ?? settings.accessibility ?? preferences.accessibility;
 
-  const scores = parseLessonScores(scoresCandidate, updatedAt);
-  const completedFromScores = Object.keys(scores).filter(isLessonId);
-  const familiarTrafficSide = parseTrafficSide(familiarCandidate);
-  const recognizedProgress = hasLegacyProgressShape(value);
-  const familiarSideConfirmed = recognizedProgress
-    ? asBoolean(value.familiarSideConfirmed, true)
-    : false;
-  const lastCountryId =
-    (recognizedProgress ? parseCountryId(value.lastCountryId) : undefined) ??
-    inferLastCountryId(familiarTrafficSide);
-  const lastDestinationId = inferLastDestinationId(
-    recognizedProgress ? value.lastDestinationId : undefined,
-    lastCountryId,
-  );
-  const completedLessonIds = unique([
-    ...parseLessonIds(completedCandidate),
-    ...completedFromScores,
-  ]);
-  const badges = parseBadges(value.badges).filter(
-    (badge) =>
-      badge !== "london_city_ready" ||
-      completedLessonIds.includes("uk-london-exhibition-road"),
-  );
-
   return {
-    version: 1,
-    completedLessonIds,
-    lessonScores: scores,
-    badges,
-    passportStamps: parseStamps(value.passportStamps ?? value.stamps),
-    familiarTrafficSide,
-    familiarSideConfirmed,
+    version: 2,
+    walletByCountry: parseCountryNumberMap(
+      value.walletByCountry,
+      STARTING_WALLET_BY_COUNTRY,
+      WALLET_MAX,
+    ),
+    fuelByCountry: parseCountryNumberMap(
+      value.fuelByCountry,
+      eachCountry(TANK_CAPACITY_L),
+      TANK_CAPACITY_L,
+    ),
+    lifetimeEarnings: parseCountryNumberMap(
+      value.lifetimeEarnings,
+      eachCountry(0),
+      WALLET_MAX,
+    ),
+    completedGigCount: Math.round(clamp(value.completedGigCount, 0, WALLET_MAX, 0)),
     lastCountryId,
     lastDestinationId,
     preferredCamera: parseCamera(cameraCandidate),
@@ -405,20 +252,18 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
   };
 }
 
-export function isPlayerProgressV1(value: unknown): value is PlayerProgressV1 {
-  if (!isRecord(value) || value.version !== 1) {
+export function isPlayerProgressV2(value: unknown): value is PlayerProgressV2 {
+  if (!isRecord(value) || value.version !== 2) {
     return false;
   }
-  if (!Array.isArray(value.completedLessonIds) || !isRecord(value.lessonScores)) {
+  if (
+    !isCountryNumberMap(value.walletByCountry) ||
+    !isCountryNumberMap(value.fuelByCountry) ||
+    !isCountryNumberMap(value.lifetimeEarnings)
+  ) {
     return false;
   }
-  if (!Array.isArray(value.badges) || !Array.isArray(value.passportStamps)) {
-    return false;
-  }
-  if (value.familiarTrafficSide !== "left" && value.familiarTrafficSide !== "right") {
-    return false;
-  }
-  if (typeof value.familiarSideConfirmed !== "boolean") {
+  if (typeof value.completedGigCount !== "number") {
     return false;
   }
   if (typeof value.lastCountryId !== "string" || !COUNTRY_IDS.has(value.lastCountryId as CountryId)) {
@@ -440,7 +285,7 @@ export function isPlayerProgressV1(value: unknown): value is PlayerProgressV1 {
 
 export function loadProgress(
   storage: ProgressStorage | undefined = getDefaultStorage(),
-): PlayerProgressV1 {
+): PlayerProgressV2 {
   const fallback = createDefaultProgress();
   if (!storage) {
     return fallback;
@@ -494,7 +339,7 @@ export function loadProgress(
 }
 
 export function saveProgress(
-  progress: PlayerProgressV1,
+  progress: PlayerProgressV2,
   storage: ProgressStorage | undefined = getDefaultStorage(),
 ): boolean {
   if (!storage) {
@@ -511,7 +356,7 @@ export function saveProgress(
 
 export function resetProgress(
   storage: ProgressStorage | undefined = getDefaultStorage(),
-): PlayerProgressV1 {
+): PlayerProgressV2 {
   const progress = createDefaultProgress();
   if (storage) {
     try {
@@ -524,4 +369,86 @@ export function resetProgress(
     }
   }
   return progress;
+}
+
+const withCountryValue = (
+  map: Readonly<Record<CountryId, number>>,
+  countryId: CountryId,
+  next: number,
+): Record<CountryId, number> => ({ ...map, [countryId]: next });
+
+/** Adds gig income to a country's wallet (and lifetime earnings). Immutable. */
+export function credit(
+  progress: PlayerProgressV2,
+  countryId: CountryId,
+  amount: number,
+): PlayerProgressV2 {
+  const gain = Math.max(0, amount);
+  return {
+    ...progress,
+    walletByCountry: withCountryValue(
+      progress.walletByCountry,
+      countryId,
+      progress.walletByCountry[countryId] + gain,
+    ),
+    lifetimeEarnings: withCountryValue(
+      progress.lifetimeEarnings,
+      countryId,
+      progress.lifetimeEarnings[countryId] + gain,
+    ),
+    updatedAt: nowIso(),
+  };
+}
+
+/** Spends from a country's wallet, clamped at zero. Immutable. */
+export function debit(
+  progress: PlayerProgressV2,
+  countryId: CountryId,
+  amount: number,
+): PlayerProgressV2 {
+  const spend = Math.max(0, amount);
+  return {
+    ...progress,
+    walletByCountry: withCountryValue(
+      progress.walletByCountry,
+      countryId,
+      Math.max(0, progress.walletByCountry[countryId] - spend),
+    ),
+    updatedAt: nowIso(),
+  };
+}
+
+/** Burns fuel in a country's tank, clamped at zero. Immutable. */
+export function consumeFuel(
+  progress: PlayerProgressV2,
+  countryId: CountryId,
+  litres: number,
+): PlayerProgressV2 {
+  const used = Math.max(0, litres);
+  return {
+    ...progress,
+    fuelByCountry: withCountryValue(
+      progress.fuelByCountry,
+      countryId,
+      Math.max(0, progress.fuelByCountry[countryId] - used),
+    ),
+    updatedAt: nowIso(),
+  };
+}
+
+/** Sets a country's fuel level, clamped to [0, tank capacity]. Immutable. */
+export function setFuel(
+  progress: PlayerProgressV2,
+  countryId: CountryId,
+  litres: number,
+): PlayerProgressV2 {
+  return {
+    ...progress,
+    fuelByCountry: withCountryValue(
+      progress.fuelByCountry,
+      countryId,
+      Math.min(TANK_CAPACITY_L, Math.max(0, litres)),
+    ),
+    updatedAt: nowIso(),
+  };
 }

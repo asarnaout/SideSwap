@@ -13,7 +13,6 @@ import type {
   LaneNode,
   LaneRole,
   LaneSegment,
-  LessonId,
   MapCheckpoint,
   MapId,
   MapPack,
@@ -854,6 +853,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     trafficSide: "right",
     defaultSteeringSide: "left",
     speedUnit: "mph",
+    currency: { code: "USD", symbol: "$", minorUnits: 2 },
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
@@ -878,6 +878,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     trafficSide: "left",
     defaultSteeringSide: "right",
     speedUnit: "mph",
+    currency: { code: "GBP", symbol: "£", minorUnits: 2 },
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
@@ -902,6 +903,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     trafficSide: "right",
     defaultSteeringSide: "left",
     speedUnit: "kmh",
+    currency: { code: "EUR", symbol: "€", minorUnits: 2 },
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
@@ -926,6 +928,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     trafficSide: "left",
     defaultSteeringSide: "right",
     speedUnit: "kmh",
+    currency: { code: "JPY", symbol: "¥", minorUnits: 0 },
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
@@ -1796,6 +1799,28 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
   },
 ];
 
+/** Fuel-tank capacity in litres (same car everywhere). */
+export const TANK_CAPACITY_L = 40;
+
+/** Starting cash a new (or migrated) player holds in each country's currency. */
+export const STARTING_WALLET_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
+  us: 20,
+  uk: 20,
+  fr: 25,
+  jp: 3000,
+};
+
+/** Formats an amount in a country's own currency, e.g. £1,250 or ¥3,000. */
+export function formatMoney(amount: number, country: CountryProfile): string {
+  const { symbol, minorUnits } = country.currency;
+  const value = Number.isFinite(amount) ? amount : 0;
+  const fixed = Math.abs(value).toFixed(minorUnits);
+  const [whole, fraction] = fixed.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const body = fraction ? `${grouped}.${fraction}` : grouped;
+  return `${value < 0 ? "-" : ""}${symbol}${body}`;
+}
+
 export const SCORING_CONFIG: ScoringConfig = {
   weights: {
     safety: 0.5,
@@ -1932,15 +1957,6 @@ export function getRuleReference(referenceId: string): OfficialRuleReference | u
     }
   }
   return undefined;
-}
-
-/**
- * Vestigial: lessons were removed in the gig overhaul. Kept so the progress
- * migration can still recognise and preserve legacy lesson-id keys as opaque
- * strings until the V2 progress migration retires them.
- */
-export function isLessonId(value: string): value is LessonId {
-  return typeof value === "string" && value.length > 0;
 }
 
 export function isFreeDriveId(value: string): value is FreeDriveId {
