@@ -1009,6 +1009,8 @@ export interface GameCanvasProps {
   visualHonkIndicator?: boolean;
   /** When true (out of fuel), the throttle is held at zero. */
   outOfFuel?: boolean;
+  /** Venue id where a passenger is waiting to be collected, else null. */
+  riderVenueId?: string | null;
   className?: string;
   style?: CSSProperties;
   showBuiltInHud?: boolean;
@@ -1057,6 +1059,7 @@ interface SessionOptions {
   cameraShake: boolean;
   headBob: boolean;
   outOfFuel: boolean;
+  riderVenueId: string | null;
   lesson?: GameCanvasLesson;
   mapPack?: GameCanvasMapPack;
 }
@@ -2505,6 +2508,14 @@ class BabylonGameSession {
   private readyEmitted = false;
   private readonly npcVehicles: NpcVehicle[] = [];
   private readonly pedestrians: Pedestrian[] = [];
+  /** Curbside standing spot (+facing) for each gig venue, keyed by venue id. */
+  private readonly gigVenueCurbside = new Map<
+    string,
+    { x: number; z: number; facing: number }
+  >();
+  private riderVisual: CharacterVisual | null = null;
+  private riderNode: TransformNode | null = null;
+  private riderVenuePlaced: string | null = null;
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -2768,6 +2779,7 @@ class BabylonGameSession {
     this.firstCamera.fov = clampHorizontalFieldOfView(this.options.fieldOfView);
     if (options.cameraMode) this.setCameraMode(options.cameraMode, false);
     if (typeof options.paused === "boolean") this.setPaused(options.paused, false);
+    this.syncRider();
   }
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
@@ -2929,6 +2941,8 @@ class BabylonGameSession {
     }
     this.effectsPipeline?.dispose();
     this.effectsPipeline = null;
+    this.riderVisual?.dispose();
+    this.riderNode?.dispose(false, false);
     disposeModels(this.scene);
     this.scene.dispose();
     this.engine.dispose();
@@ -3045,6 +3059,37 @@ class BabylonGameSession {
         pedestrian.speed,
       );
     }
+  }
+
+  /**
+   * Places (or clears) the single waiting-passenger mesh at the curbside of the
+   * active gig's pickup venue. Driven by `options.riderVenueId`, which is null
+   * for parcel deliveries and once a rider has been collected.
+   */
+  private syncRider() {
+    const target = this.options.riderVenueId ?? null;
+    if (target === this.riderVenuePlaced) return;
+    this.riderVisual?.dispose();
+    this.riderVisual = null;
+    this.riderNode?.dispose(false, false);
+    this.riderNode = null;
+    this.riderVenuePlaced = target;
+    if (!target) return;
+    const spot = this.gigVenueCurbside.get(target);
+    if (!spot) return;
+    const node = new TransformNode(`gig-rider-${target}`, this.scene);
+    node.position.set(spot.x, 0, spot.z);
+    node.rotation.y = spot.facing;
+    this.riderNode = node;
+    // Reuse the pedestrian character pipeline; a low cadence reads as idling.
+    this.riderVisual = this.buildRoadUserVisual(
+      node,
+      `gig-rider-${target}`,
+      false,
+      target.length,
+      new Color3(0.92, 0.55, 0.2),
+      0.6,
+    );
   }
 
   private readonly renderFrame = () => {
@@ -4848,6 +4893,12 @@ class BabylonGameSession {
       if (!pose) continue;
       const px = pose.x + Math.cos(pose.heading) * 8;
       const pz = pose.z - Math.sin(pose.heading) * 8;
+      // A rider waits curbside (nearer the lane than the building) facing the road.
+      this.gigVenueCurbside.set(venue.id, {
+        x: pose.x + Math.cos(pose.heading) * 4.5,
+        z: pose.z - Math.sin(pose.heading) * 4.5,
+        facing: Math.atan2(-Math.cos(pose.heading), Math.sin(pose.heading)),
+      });
       const height = 6;
       createBox(
         scene,
@@ -7899,6 +7950,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       headBob = false,
       visualHonkIndicator = true,
       outOfFuel = false,
+      riderVenueId = null,
       className,
       style,
       showBuiltInHud = true,
@@ -8038,6 +8090,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             cameraShake,
             headBob,
             outOfFuel,
+            riderVenueId,
           },
           {
             onHudUpdate: (snapshot) => callbackRef.current.onHudUpdate?.(snapshot),
@@ -8084,8 +8137,9 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         cameraShake,
         headBob,
         outOfFuel,
+        riderVenueId,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob, outOfFuel]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob, outOfFuel, riderVenueId]);
 
     useImperativeHandle(
       ref,

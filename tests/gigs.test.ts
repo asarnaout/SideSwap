@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { advanceGig, generateGig, gigTarget } from "../app/game/gigs";
+import {
+  advanceGig,
+  generateGig,
+  gigTarget,
+  pickGigKind,
+} from "../app/game/gigs";
 
 const venues = [
   { id: "a", name: "Alpha", kind: "shop", x: 0, z: 0 },
@@ -52,5 +57,33 @@ describe("gig generation + state machine", () => {
     });
     expect(delivered.state).toBe("delivered");
     expect(gigTarget(delivered)).toBeNull();
+  });
+
+  it("labels the gig kind, defaulting to delivery", () => {
+    expect(generateGig(venues, fare, "GBP", 5)!.kind).toBe("delivery");
+    expect(generateGig(venues, fare, "GBP", 5, "passenger")!.kind).toBe(
+      "passenger",
+    );
+  });
+
+  it("runs a passenger fare through the same pickup -> drop-off machine", () => {
+    const gig = generateGig(venues, fare, "GBP", 8, "passenger")!;
+    expect(gig.kind).toBe("passenger");
+    const carrying = advanceGig(gig, { x: gig.pickup.x, z: gig.pickup.z });
+    expect(carrying.state).toBe("carrying");
+    const delivered = advanceGig(carrying, {
+      x: gig.dropoff.x,
+      z: gig.dropoff.z,
+    });
+    expect(delivered.state).toBe("delivered");
+  });
+
+  it("pickGigKind is deterministic and produces both kinds across seeds", () => {
+    expect(pickGigKind(7)).toBe(pickGigKind(7));
+    const kinds = new Set(
+      Array.from({ length: 40 }, (_, index) => pickGigKind(index + 1)),
+    );
+    expect(kinds.has("delivery")).toBe(true);
+    expect(kinds.has("passenger")).toBe(true);
   });
 });

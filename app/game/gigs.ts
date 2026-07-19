@@ -2,7 +2,7 @@
 // Kept free of map/adapter dependencies: callers resolve venue lane-anchors to
 // world positions and pass those in, so this is trivially unit-testable.
 
-export type GigKind = "delivery";
+export type GigKind = "delivery" | "passenger";
 export type GigState = "enroute_pickup" | "carrying" | "delivered";
 
 export interface GigVenuePosition {
@@ -42,16 +42,29 @@ const hashToUnit = (seed: number): number => {
 };
 
 /**
- * Generates one delivery gig from the map's venues (≥2 required). Pickup and
- * drop-off are two distinct venues chosen deterministically from `seed`; the
- * reward is the base fare plus a per-metre rate over the Euclidean distance.
- * Returns null when there aren't enough venues.
+ * Deterministically decides whether `seed` yields a passenger fare or a parcel
+ * delivery. Passengers come up ~40% of the time; the seed is salted so this draw
+ * is independent of the venue-selection draw, keeping the mix from correlating
+ * with which venues get picked.
+ */
+export function pickGigKind(seed: number): GigKind {
+  return hashToUnit(seed * 2 + 0x1f) < 0.4 ? "passenger" : "delivery";
+}
+
+/**
+ * Generates one gig (a parcel delivery or a passenger fare) from the map's
+ * venues (≥2 required). Pickup and drop-off are two distinct venues chosen
+ * deterministically from `seed`; the reward is the base fare plus a per-metre
+ * rate over the Euclidean distance. Returns null when there aren't enough
+ * venues. `kind` only labels the gig — the pickup→drop-off machine is identical
+ * for both — so callers pass the matching fare table for that kind.
  */
 export function generateGig(
   venues: readonly GigVenuePosition[],
   fare: GigFare,
   currencyCode: string,
   seed: number,
+  kind: GigKind = "delivery",
 ): Gig | null {
   if (venues.length < 2) return null;
   const pickupIndex = Math.floor(hashToUnit(seed) * venues.length) % venues.length;
@@ -67,7 +80,7 @@ export function generateGig(
   );
   return {
     id: `gig-${seed}`,
-    kind: "delivery",
+    kind,
     pickup,
     dropoff,
     reward,
