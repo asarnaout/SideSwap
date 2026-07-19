@@ -2443,6 +2443,8 @@ class BabylonGameSession {
   private readonly simulation: SimulationCore;
   private simulationSnapshot: SimulationSnapshot;
   private playerVehicleVisual: VehicleMeshVisual | null = null;
+  private modelsReady = false;
+  private readyEmitted = false;
   private readonly npcVehicles: NpcVehicle[] = [];
   private readonly pedestrians: Pedestrian[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
@@ -2675,14 +2677,24 @@ class BabylonGameSession {
 
     this.lastFrameTime = performance.now();
     this.engine.runRenderLoop(this.renderFrame);
-    queueMicrotask(() => {
-      if (this.disposed) return;
-      this.callbacks.onReady?.();
-      this.emit("ready", "Training yard ready.");
-      this.publishHud(true);
-    });
 
+    // Follow the standard game pattern: keep the loading overlay up until the
+    // vehicle/character models have preloaded, then reveal the scene. `ready`
+    // now fires from preloadVehicleModels (via markReady), not here.
     void this.preloadVehicleModels();
+  }
+
+  /**
+   * Lifts the loading gate: emits `ready` so the React overlay
+   * ("Preparing your training drive…") clears and controls/HUD come up. Called
+   * once, after the model preload settles (or fails — we still proceed).
+   */
+  private markReady() {
+    if (this.disposed || this.readyEmitted) return;
+    this.readyEmitted = true;
+    this.callbacks.onReady?.();
+    this.emit("ready", "Training yard ready.");
+    this.publishHud(true);
   }
 
   updateCallbacks(callbacks: SessionCallbacks) {
@@ -2876,18 +2888,23 @@ class BabylonGameSession {
         ...characterModelUrls(),
       ]);
     } catch {
-      return;
+      // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
+      // gate still lifts; vehicles build from whatever models did load.
     }
     if (this.disposed) return;
+    this.modelsReady = true;
     this.upgradeVehiclesToModels();
     this.upgradeRoadUsersToModels();
+    this.markReady();
   }
 
   /**
-   * Swaps every vehicle from its procedural fallback onto its imported model in
-   * place. Rebuilds the player exterior (the first-person cockpit is a separate
-   * node, so it is untouched) and each pooled NPC visual. Paint/variant keys are
-   * unchanged, so later `ensureNpcVehicleVisual` reconciliation is unaffected.
+   * (Re)builds the player exterior and every pooled NPC visual from its imported
+   * model, once the preload settles and the loading gate lifts. Until then those
+   * visuals are empty placeholders; this replaces them in place. The player's
+   * first-person cockpit is a separate node, so it is untouched. Paint/variant
+   * keys are unchanged, so later `ensureNpcVehicleVisual` reconciliation is
+   * unaffected.
    */
   private upgradeVehiclesToModels() {
     if (this.playerVehicleVisual) {
@@ -2920,8 +2937,8 @@ class BabylonGameSession {
 
   /**
    * Builds a pedestrian/cyclist visual under `node`: the imported character
-   * model when its glbs have loaded, else the procedural cylinder fallback
-   * (shown briefly during preload, or if the models fail to load).
+   * model when its glbs have loaded, else an empty placeholder (shown only
+   * behind the loading gate while the models preload, then replaced).
    */
   private buildRoadUserVisual(
     node: TransformNode,
@@ -2946,28 +2963,17 @@ class BabylonGameSession {
         );
     if (model) return model;
 
-    const root = new TransformNode(`${name}-proc`, scene);
+    // Character models still preloading (or none loaded). Return an empty
+    // placeholder — hidden by the loading gate and replaced the instant the
+    // glbs finish. No procedural cylinder people any more.
+    const root = new TransformNode(`${name}-pending`, scene);
     root.parent = node;
-    const clothing = makeMaterial(scene, `${name}-clothing`, clothingColor);
-    const skin = makeMaterial(scene, `${name}-skin`, new Color3(0.71, 0.49, 0.36));
-    if (isCyclist) {
-      const tire = makeMaterial(scene, `${name}-tire`, new Color3(0.05, 0.05, 0.06));
-      createBox(scene, `${name}-frame`, { width: 0.18, height: 0.48, depth: 1.15 }, new Vector3(0, 0.63, 0), clothing, root);
-      for (const wheelZ of [-0.58, 0.58]) {
-        const wheel = createCylinder(scene, `${name}-wheel-${wheelZ}`, { height: 0.1, diameter: 0.66, tessellation: 12 }, new Vector3(0, 0.38, wheelZ), tire, root);
-        wheel.rotation.z = Math.PI / 2;
-      }
-      createCylinder(scene, `${name}-body`, { height: 0.78, diameterTop: 0.3, diameterBottom: 0.42 }, new Vector3(0, 1.08, 0), clothing, root);
-      createCylinder(scene, `${name}-head`, { height: 0.35, diameter: 0.34 }, new Vector3(0, 1.63, 0), skin, root);
-    } else {
-      createCylinder(scene, `${name}-body`, { height: 1.02, diameterTop: 0.34, diameterBottom: 0.48 }, new Vector3(0, 0.9, 0), clothing, root);
-      createCylinder(scene, `${name}-head`, { height: 0.4, diameter: 0.38 }, new Vector3(0, 1.59, 0), skin, root);
-    }
     return { root, dispose: () => root.dispose(false, false) };
   }
 
-  /** Once the character glbs preload, swap every road user from its procedural
-   * fallback onto its walking/riding model in place (keeps the node + pathing). */
+  /** Once the character glbs preload, (re)build every road user from its
+   * walking/riding model in place (keeps the node + pathing), replacing the
+   * empty placeholder shown behind the loading gate. */
   private upgradeRoadUsersToModels() {
     for (const pedestrian of this.pedestrians) {
       if (pedestrian.variant === undefined || !pedestrian.clothingColor) continue;
