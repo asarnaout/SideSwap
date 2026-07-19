@@ -23,7 +23,11 @@ import type {
 import { SCORING_CONFIG, getCountryProfile } from "./content";
 
 const DEFAULT_LANE_WIDTH_M = 3.5;
-const DEFAULT_MAX_FORWARD_SPEED_MPS = 18;
+// The car's top speed models a real vehicle, not a governor pinned to the
+// posted limit. 31 m/s (~70 mph, the UK national speed limit) leaves clear
+// headroom above every urban route so a driver can physically exceed the
+// limit — going over is scored as speeding, never silently prevented.
+const DEFAULT_MAX_FORWARD_SPEED_MPS = 31;
 const DEFAULT_MAX_REVERSE_SPEED_MPS = 6;
 
 export interface SimulationAdapterOptions {
@@ -895,9 +899,10 @@ export function buildSimulationCoreConfig({
     laneRestrictions: restrictions,
     boxJunctions: buildBoxJunctions(lesson, mapPack),
     npcCount,
-    // The vehicle must be capable of reaching each route's posted limit. A
-    // fixed urban cap below the lead vehicle's pace makes an authored pass
-    // physically impossible.
+    // Top speed is the greater of the car's normal ceiling and the route's
+    // fastest posted limit. The default already sits well above urban limits so
+    // the car never feels governed; the Math.max only lifts it further on rare
+    // routes posting above 70 mph, keeping any authored overtake feasible.
     maxForwardSpeedMps: Math.max(
       DEFAULT_MAX_FORWARD_SPEED_MPS,
       routeSpeedLimitMps,
