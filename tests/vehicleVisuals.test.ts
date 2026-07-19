@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  plateNumberForVehicle,
   resolvePlayerVehicleAppearance,
   resolveTrafficVehicleAppearance,
   type PassengerVehicleStyle,
@@ -95,6 +96,32 @@ describe("modern fleet variety", () => {
         mapId: "nyc-upper-west-side",
       }).plateRegion,
     ).toBe("us");
+  });
+
+  it("gives each vehicle its own registration, in the region's format", () => {
+    // Deterministic per identity, but varied across vehicles.
+    expect(plateNumberForVehicle("uk", "seed|car-1")).toBe(
+      plateNumberForVehicle("uk", "seed|car-1"),
+    );
+    const ukPlates = new Set(
+      Array.from({ length: 20 }, (_, i) => plateNumberForVehicle("uk", `seed|car-${i}`)),
+    );
+    expect(ukPlates.size).toBeGreaterThan(15); // overwhelmingly distinct
+
+    expect(plateNumberForVehicle("uk", "a")).toMatch(/^[A-Z]{2}\d{2} [A-Z]{3}$/);
+    expect(plateNumberForVehicle("us", "a")).toMatch(/^[A-Z]{3} \d{4}$/);
+    expect(plateNumberForVehicle("fr", "a")).toMatch(/^[A-Z]{2}-\d{3}-[A-Z]{2}$/);
+    expect(plateNumberForVehicle("jp", "a")).toMatch(/^\S \d{2}-\d{2}$/u);
+
+    // Two NPCs on the same map get different plates.
+    const npc = (id: string) =>
+      resolveTrafficVehicleAppearance({
+        vehicleId: id,
+        trafficSeed: 7,
+        variant: "car",
+        mapId: "london-south-kensington",
+      }).plateNumber;
+    expect(npc("npc-1")).not.toBe(npc("npc-2"));
   });
 });
 

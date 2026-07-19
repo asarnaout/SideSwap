@@ -1182,42 +1182,35 @@ export function blobShadowMaterial(scene: Scene): StandardMaterial {
   return material;
 }
 
-// --- Per-country number plates ---------------------------------------------
+// --- Per-vehicle number plates ---------------------------------------------
 //
 // The imported models ship without plates, so buildModelVehicle synthesizes
-// them. Rather than a blank rectangle, each country wears its own: the design is
-// drawn once per (region, position) into a DynamicTexture and cached per scene,
-// then shared by the whole fleet on that map. Kept deliberately bold and simple
-// — a plate is only ever a few pixels tall on screen, so colour and layout carry
-// the recognition, not fine text.
+// them. Each vehicle carries its own registration (appearance.plateNumber) in
+// its country's design, drawn into a DynamicTexture that the vehicle owns and
+// disposes with itself — so no two cars read the same plate, and live plate
+// textures stay bounded to the active fleet. Kept bold and simple: a plate is
+// only ever a few pixels tall on screen, so colour and layout carry the
+// recognition, not fine text.
 
 /** Plate silhouette aspect (width : height). Tuned to sit in the models'
  * moulded plate recess while reading as a plate rather than a sticker. */
 const PLATE_ASPECT = 3.6;
 
-const PLATE_MATERIALS_BY_SCENE = new WeakMap<
-  Scene,
-  Map<string, StandardMaterial>
->();
-
-function plateMaterialFor(
+/**
+ * Creates a fresh plate material + texture for one vehicle. NOT cached across
+ * vehicles (every car's number differs); the caller adds it to the instance's
+ * owned materials so it disposes with the car.
+ */
+function createPlateMaterial(
   scene: Scene,
   region: PlateRegion,
   position: "front" | "rear",
+  plateNumber: string,
 ): StandardMaterial {
-  let cache = PLATE_MATERIALS_BY_SCENE.get(scene);
-  if (!cache) {
-    cache = new Map<string, StandardMaterial>();
-    PLATE_MATERIALS_BY_SCENE.set(scene, cache);
-  }
-  const key = `${region}-${position}`;
-  const cached = cache.get(key);
-  if (cached) return cached;
-
-  const height = 160;
+  const height = 128;
   const width = Math.round(height * PLATE_ASPECT);
   const texture = new DynamicTexture(
-    `plate-${key}`,
+    `plate-${region}-${position}`,
     { width, height },
     scene,
     true,
@@ -1262,8 +1255,8 @@ function plateMaterialFor(
     fitFont("UK", band * 0.82, Math.round(height * 0.2), sans);
     ctx.fillText("UK", band / 2, height * 0.76);
     ctx.fillStyle = "#161616";
-    fitFont("AB12 CDE", width - band - width * 0.08, Math.round(height * 0.52), sans);
-    ctx.fillText("AB12 CDE", band + (width - band) / 2, height * 0.54);
+    fitFont(plateNumber, width - band - width * 0.08, Math.round(height * 0.52), sans);
+    ctx.fillText(plateNumber, band + (width - band) / 2, height * 0.54);
   } else if (region === "us") {
     // New York State: white ground, blue legend, gold accent.
     ctx.fillStyle = "#f5f5f1";
@@ -1271,8 +1264,8 @@ function plateMaterialFor(
     ctx.fillStyle = "#123a7a";
     fitFont("NEW YORK", width * 0.66, Math.round(height * 0.2), sans);
     ctx.fillText("NEW YORK", width / 2, height * 0.18);
-    fitFont("ABC 1234", width * 0.86, Math.round(height * 0.46), sans);
-    ctx.fillText("ABC 1234", width / 2, height * 0.55);
+    fitFont(plateNumber, width * 0.86, Math.round(height * 0.46), sans);
+    ctx.fillText(plateNumber, width / 2, height * 0.55);
     ctx.fillStyle = "#c1901c";
     fitFont("EMPIRE STATE", width * 0.5, Math.round(height * 0.12), sans);
     ctx.fillText("EMPIRE STATE", width / 2, height * 0.87);
@@ -1291,18 +1284,19 @@ function plateMaterialFor(
     fitFont("62", band * 0.72, Math.round(height * 0.18), sans);
     ctx.fillText("62", width - band / 2, height * 0.3);
     ctx.fillStyle = "#161616";
-    fitFont("AB-123-CD", width - band * 2 - width * 0.08, Math.round(height * 0.46), sans);
-    ctx.fillText("AB-123-CD", width / 2, height * 0.54);
+    fitFont(plateNumber, width - band * 2 - width * 0.08, Math.round(height * 0.46), sans);
+    ctx.fillText(plateNumber, width / 2, height * 0.54);
   } else {
-    // Japan: white ground, green legend (private car), region kanji + serial.
+    // Japan: white ground, green legend (private car). Area line is fixed for
+    // the map; plateNumber is the lower hiragana + serial line.
     const cjk = "'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif";
     ctx.fillStyle = "#f4f4ee";
     ctx.fillRect(0, 0, width, height);
     ctx.fillStyle = "#0b7a3a";
     fitFont("世田谷 300", width * 0.66, Math.round(height * 0.28), cjk);
     ctx.fillText("世田谷 300", width / 2, height * 0.27);
-    fitFont("さ 12-34", width * 0.78, Math.round(height * 0.42), cjk);
-    ctx.fillText("さ 12-34", width / 2, height * 0.65);
+    fitFont(plateNumber, width * 0.78, Math.round(height * 0.42), cjk);
+    ctx.fillText(plateNumber, width / 2, height * 0.65);
   }
 
   const borderColor =
@@ -1313,7 +1307,7 @@ function plateMaterialFor(
 
   texture.update();
 
-  const material = new StandardMaterial(`plate-${key}-material`, scene);
+  const material = new StandardMaterial(`plate-${region}-${position}-material`, scene);
   material.diffuseTexture = texture;
   // A little self-illumination keeps the plate legible when the car's tail is in
   // shadow (real plates are retroreflective), without tripping the bloom.
@@ -1321,7 +1315,6 @@ function plateMaterialFor(
   material.emissiveColor = new Color3(0.3, 0.3, 0.3);
   material.specularColor = new Color3(0.12, 0.12, 0.12);
   material.specularPower = 48;
-  cache.set(key, material);
   return material;
 }
 
@@ -1415,30 +1408,42 @@ function buildModelVehicle(
   contactShadow.receiveShadows = false;
 
   // Synthesize the front + rear number plates the imported models omit, each
-  // wearing its country's design (see plateMaterialFor). Authored in the model's
-  // own pre-scale space (like the contact shadow) and sized from its bounds, so
-  // the plates land correctly whatever the model's dimensions or config.scale.
-  // Front sits at +Z (every model imports front-first, yawOffset 0). Y is set to
-  // drop the plate into the models' moulded plate recess rather than the very
-  // bottom of the bumper.
+  // wearing this vehicle's own registration in its country's design. Authored in
+  // the model's pre-scale space (like the contact shadow) and sized from its
+  // bounds, so the plates land correctly whatever the model's dimensions or
+  // config.scale. Front sits at +Z (every model imports front-first, yawOffset
+  // 0). The front recess sits lower on these models than the rear, so the front
+  // plate drops below the rear rather than sharing one height.
+  const region = appearance.plateRegion;
+  const rearPlateMaterial = createPlateMaterial(scene, region, "rear", appearance.plateNumber);
+  // Front and rear differ only for the UK (white front / yellow rear); every
+  // other region shares one texture across both plates.
+  const frontPlateMaterial =
+    region === "uk"
+      ? createPlateMaterial(scene, region, "front", appearance.plateNumber)
+      : rearPlateMaterial;
+  const ownedPlateMaterials =
+    frontPlateMaterial === rearPlateMaterial
+      ? [rearPlateMaterial]
+      : [rearPlateMaterial, frontPlateMaterial];
   const bodyWidth = bounds.max.x - bounds.min.x;
+  const bodyHeight = bounds.max.y - bounds.min.y;
   const plateWidth = bodyWidth * 0.28;
   const plateHeight = plateWidth / PLATE_ASPECT;
   const plateThickness = plateWidth * 0.045;
   const plateCenterX = (bounds.min.x + bounds.max.x) / 2;
-  const plateY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.42;
   const plateMeshes = [1, -1].map((frontSign) => {
-    const position = frontSign > 0 ? "front" : "rear";
+    const front = frontSign > 0;
     const plate = MeshBuilder.CreateBox(
-      `${name}-number-plate-${position}`,
+      `${name}-number-plate-${front ? "front" : "rear"}`,
       { width: plateWidth, height: plateHeight, depth: plateThickness },
       scene,
     );
-    plate.material = plateMaterialFor(scene, appearance.plateRegion, position);
+    plate.material = front ? frontPlateMaterial : rearPlateMaterial;
     plate.position.set(
       plateCenterX,
-      plateY,
-      frontSign > 0 ? bounds.max.z : bounds.min.z,
+      bounds.min.y + bodyHeight * (front ? 0.3 : 0.42),
+      front ? bounds.max.z : bounds.min.z,
     );
     plate.parent = root;
     plate.isPickable = false;
@@ -1489,6 +1494,9 @@ function buildModelVehicle(
       // dispose only this instance's geometry and the materials we created.
       root.dispose(false, false);
       for (const material of ownedMaterials) material.dispose(true, false);
+      // The plate materials own per-vehicle DynamicTextures, so dispose those
+      // textures too (unlike the glTF materials, whose textures are shared).
+      for (const material of ownedPlateMaterials) material.dispose(true, true);
     },
   };
 }

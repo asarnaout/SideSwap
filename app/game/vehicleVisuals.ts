@@ -40,6 +40,36 @@ export function plateRegionForMap(mapId: string): PlateRegion {
   return "uk";
 }
 
+// Plate registration characters. Letters drop I/O/Q (ambiguous with 1/0); the
+// kana set is the DVLA-analogue safe subset used on Japanese plates (no お/し/へ/ん).
+const PLATE_LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ";
+const PLATE_DIGITS = "0123456789";
+const PLATE_KANA = "さすせそたちつてとなにぬねのはひふほまみむめもやゆよらりるれろ";
+
+/**
+ * A plausible registration for one vehicle, in its country's format, derived
+ * deterministically from a stable identity so every car reads differently
+ * without ever touching the simulation's seeded random stream (see the module
+ * header). Japanese returns only the lower serial line; the area line is fixed.
+ */
+export function plateNumberForVehicle(region: PlateRegion, identity: string): string {
+  const c = (set: string, salt: number) =>
+    set[hashAppearanceKey(`${identity}|plate|${salt}`) % set.length];
+  const L = PLATE_LETTERS;
+  const D = PLATE_DIGITS;
+  switch (region) {
+    case "us":
+      return `${c(L, 0)}${c(L, 1)}${c(L, 2)} ${c(D, 3)}${c(D, 4)}${c(D, 5)}${c(D, 6)}`;
+    case "fr":
+      return `${c(L, 0)}${c(L, 1)}-${c(D, 2)}${c(D, 3)}${c(D, 4)}-${c(L, 5)}${c(L, 6)}`;
+    case "jp":
+      return `${c(PLATE_KANA, 0)} ${c(D, 1)}${c(D, 2)}-${c(D, 3)}${c(D, 4)}`;
+    case "uk":
+    default:
+      return `${c(L, 0)}${c(L, 1)}${c(D, 2)}${c(D, 3)} ${c(L, 4)}${c(L, 5)}${c(L, 6)}`;
+  }
+}
+
 export interface VehicleDimensions {
   readonly length: number;
   readonly width: number;
@@ -59,6 +89,8 @@ export interface VehicleAppearance {
   readonly accentHex: string;
   readonly dimensions: VehicleDimensions;
   readonly plateRegion: PlateRegion;
+  /** This vehicle's own registration string, in its region's format. */
+  readonly plateNumber: string;
 }
 
 export interface TrafficVehicleAppearanceInput {
@@ -198,7 +230,7 @@ const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
   },
 };
 
-const PLAYER_APPEARANCE: Omit<VehicleAppearance, "plateRegion"> = {
+const PLAYER_APPEARANCE: Omit<VehicleAppearance, "plateRegion" | "plateNumber"> = {
   model: "electric-fastback",
   role: "player",
   // Premium royal-blue flagship — retires the old radioactive cyan.
@@ -232,13 +264,15 @@ function passengerAppearance(
   const model = selectFromKey(PASSENGER_STYLES, `${identity}|model`);
   const paintHex = selectFromKey(PASSENGER_PAINTS, `${identity}|paint`);
   const accentHex = selectFromKey(PASSENGER_ACCENTS, `${identity}|accent`);
+  const region = plateRegionForMap(input.mapId);
   return {
     model,
     role: "car",
     paintHex,
     accentHex,
     dimensions: VEHICLE_DIMENSIONS[model],
-    plateRegion: plateRegionForMap(input.mapId),
+    plateRegion: region,
+    plateNumber: plateNumberForVehicle(region, identity),
   };
 }
 
@@ -261,6 +295,8 @@ export function resolveTrafficVehicleAppearance(
   input: TrafficVehicleAppearanceInput,
 ): VehicleAppearance {
   const plateRegion = plateRegionForMap(input.mapId);
+  const plateIdentity = `${normalizedSeed(input.trafficSeed)}|${input.vehicleId}`;
+  const plateNumber = plateNumberForVehicle(plateRegion, plateIdentity);
 
   if (input.variant === "car") return passengerAppearance(input);
 
@@ -274,6 +310,7 @@ export function resolveTrafficVehicleAppearance(
       accentHex: london ? "#aeb8bf" : newYork ? "#202830" : "#276b78",
       dimensions: VEHICLE_DIMENSIONS["electric-taxi"],
       plateRegion,
+      plateNumber,
     };
   }
 
@@ -286,6 +323,7 @@ export function resolveTrafficVehicleAppearance(
       accentHex: "#16242b",
       dimensions: VEHICLE_DIMENSIONS["delivery-van"],
       plateRegion,
+      plateNumber,
     };
   }
 
@@ -303,11 +341,17 @@ export function resolveTrafficVehicleAppearance(
       ? VEHICLE_DIMENSIONS["london-double-decker"]
       : VEHICLE_DIMENSIONS["city-bus"],
     plateRegion,
+    plateNumber,
   };
 }
 
 /** The player's recognizable, fixed modern flagship silhouette. Wears the
  * plates of whichever country's map is loaded. */
 export function resolvePlayerVehicleAppearance(mapId: string): VehicleAppearance {
-  return { ...PLAYER_APPEARANCE, plateRegion: plateRegionForMap(mapId) };
+  const plateRegion = plateRegionForMap(mapId);
+  return {
+    ...PLAYER_APPEARANCE,
+    plateRegion,
+    plateNumber: plateNumberForVehicle(plateRegion, "player-flagship"),
+  };
 }
