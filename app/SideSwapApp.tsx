@@ -591,24 +591,14 @@ export default function SideSwapApp() {
           onEvent={handleGameEvent}
           onPauseChange={setPaused}
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
+          onExit={exitDrive}
         />
-        <div className="game-brand" aria-hidden="true">
-          <span className="brand-mark small">C</span>
-          <span>CURBSIDE RUSH</span>
-        </div>
-        <div className="game-context">
-          <span>{driveCountry.flagEmoji}</span>
-          <div>
-            <strong>{driveDestination.destinationName}</strong>
-            <small>Keep {runtimeLesson.trafficSide}</small>
-          </div>
-        </div>
         {gig && gig.state !== "delivered" && (
           <div
             style={{
               position: "absolute",
               left: "1rem",
-              top: "5.5rem",
+              top: "1rem",
               maxWidth: "16rem",
               padding: "0.7rem 0.9rem",
               borderRadius: "0.9rem",
@@ -828,9 +818,6 @@ export default function SideSwapApp() {
             </em>
           </div>
         )}
-        <button type="button" className="game-exit" onClick={exitDrive}>
-          Exit
-        </button>
         {hud && (
           <div className="sr-only" aria-live="polite">
             Speed {hud.speed} {hud.speedUnit}, gear {hud.gear}.

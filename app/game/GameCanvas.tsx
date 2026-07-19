@@ -1023,6 +1023,8 @@ export interface GameCanvasProps {
   onEvent?: (event: GameRuntimeEvent) => void;
   onPauseChange?: (paused: boolean) => void;
   onCameraChange?: (mode: CameraMode) => void;
+  /** Called when the player chooses Exit from the pause dialog. */
+  onExit?: () => void;
   onComplete?: (score: SimulationScoreSnapshot) => void;
 }
 
@@ -8061,6 +8063,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       onEvent,
       onPauseChange,
       onCameraChange,
+      onExit,
       onComplete,
     },
     ref,
@@ -8621,9 +8624,16 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
                   {activeInputGuide.details}
                 </span>
               </details>
-              <button autoFocus type="button" style={{ ...actionButtonStyle, width: "auto", paddingInline: 20 }} onClick={() => sessionRef.current?.setPaused(false)}>
-                RESUME
-              </button>
+              <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                <button autoFocus type="button" style={{ ...actionButtonStyle, width: "auto", paddingInline: 20 }} onClick={() => sessionRef.current?.setPaused(false)}>
+                  RESUME
+                </button>
+                {onExit && (
+                  <button type="button" style={{ ...actionButtonStyle, width: "auto", paddingInline: 20 }} onClick={onExit}>
+                    EXIT TO MENU
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
