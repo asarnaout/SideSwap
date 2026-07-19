@@ -13,10 +13,10 @@ export async function generateMetadata(): Promise<Metadata> {
   const imageUrl = new URL("/og.png", origin).toString();
 
   return {
-    title: "Side Gig Simulator",
+    title: "Curbside Rush",
     description:
       "A low-poly open-world 3D driving game — run deliveries and passenger fares across five world cities, each with its own currency and side of the road.",
-    applicationName: "Side Gig Simulator",
+    applicationName: "Curbside Rush",
     icons: {
       icon: "/favicon.svg",
     },
@@ -29,24 +29,24 @@ export async function generateMetadata(): Promise<Metadata> {
       "low poly",
     ],
     openGraph: {
-      title: "Side Gig Simulator",
+      title: "Curbside Rush",
       description:
         "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
       type: "website",
-      siteName: "Side Gig Simulator",
+      siteName: "Curbside Rush",
       url: origin,
       images: [
         {
           url: imageUrl,
           width: 1568,
           height: 1003,
-          alt: "Side Gig Simulator low-poly London driving scene in South Kensington",
+          alt: "Curbside Rush low-poly London driving scene in South Kensington",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Side Gig Simulator",
+      title: "Curbside Rush",
       description:
         "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
       images: [imageUrl],

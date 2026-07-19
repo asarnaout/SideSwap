@@ -1,6 +1,6 @@
 # Third-party asset credits
 
-Side Gig Simulator's imported 3D vehicle models are low-poly glTF (`.glb`) assets, all
+Curbside Rush's imported 3D vehicle models are low-poly glTF (`.glb`) assets, all
 free for commercial use. Files live under `public/models/`.
 
 ## CC0 — public domain (no attribution required)
@@ -47,9 +47,9 @@ provided its licence text travels with the fonts (included alongside them):
   — Claus Eggers Sørensen, © 2017 The Playfair Display Project Authors, Reserved
   Font Name "Playfair Display". Licence: `public/fonts/PlayfairDisplay-OFL.txt`.
 
-## First-party — created for Side Gig Simulator (no third-party rights)
+## First-party — created for Curbside Rush (no third-party rights)
 
-- **favicon.svg** — original Side Gig Simulator mark.
+- **favicon.svg** — original Curbside Rush mark.
 - **og.png** and **`public/landing/*.webp`** (per-city preview illustrations) —
   generated with OpenAI (ChatGPT) by the project owner, who owns the output
   under OpenAI's Terms of Use. Stylised generic city scenes; no third-party

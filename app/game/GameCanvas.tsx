@@ -2638,7 +2638,7 @@ class BabylonGameSession {
     );
     if (this.engine.webGLVersion < 2) {
       this.engine.dispose();
-      throw new Error("Side Gig Simulator requires WebGL 2.");
+      throw new Error("Curbside Rush requires WebGL 2.");
     }
 
     const scale = options.inputCapabilities.touchFirst
@@ -7423,7 +7423,7 @@ class BabylonGameSession {
       event.preventDefault();
       this.contextLost = true;
       this.setPaused(true);
-      this.emit("context-lost", "Graphics context lost. Side Gig Simulator is waiting to recover.", "warning");
+      this.emit("context-lost", "Graphics context lost. Curbside Rush is waiting to recover.", "warning");
       this.callbacks.onContextLost?.();
     };
     const onContextRestored = () => {
@@ -7945,7 +7945,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         }
         sessionRef.current = session;
       } catch (error) {
-        console.error("Unable to start Side Gig Simulator", error);
+        console.error("Unable to start Curbside Rush", error);
         setRuntimeState(error instanceof Error && error.message.includes("WebGL 2") ? "unsupported" : "error");
       }
       return () => {
@@ -8024,7 +8024,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       <div className={className} style={{ ...shellStyle, ...style }}>
         <canvas
           ref={canvasRef}
-          aria-label={`Side Gig Simulator 3D ${trafficSide}-side driving area`}
+          aria-label={`Curbside Rush 3D ${trafficSide}-side driving area`}
           tabIndex={0}
           style={canvasStyle}
         />
@@ -8381,7 +8381,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               </strong>
               <span style={{ opacity: 0.72, fontSize: 14, lineHeight: 1.5 }}>
                 {runtimeState === "unsupported"
-                  ? "Side Gig Simulator needs WebGL 2 with hardware acceleration. Try an up-to-date Chrome, Edge, Firefox, or Safari browser."
+                  ? "Curbside Rush needs WebGL 2 with hardware acceleration. Try an up-to-date Chrome, Edge, Firefox, or Safari browser."
                   : runtimeState === "context-lost"
                     ? "Your position is safe. The lesson is paused while the browser restores graphics."
                     : runtimeState === "error"
