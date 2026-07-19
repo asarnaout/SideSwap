@@ -24,6 +24,22 @@ export type VehicleModel =
 export type TrafficVehicleVariant = "car" | "taxi" | "bus" | "van";
 export type VehicleAppearanceRole = TrafficVehicleVariant | "player";
 
+/** Country whose number-plate design a vehicle wears, derived from the map. */
+export type PlateRegion = "uk" | "us" | "fr" | "jp";
+
+/**
+ * Maps a map id onto the country whose plates its traffic should wear. Uses the
+ * same substring convention as the taxi/bus regional styling below; the UK is
+ * the default (covers London, Milton Keynes and the orientation yard).
+ */
+export function plateRegionForMap(mapId: string): PlateRegion {
+  const id = mapId.toLowerCase();
+  if (id.includes("nyc") || id.includes("new-york")) return "us";
+  if (id.includes("calais")) return "fr";
+  if (id.includes("tokyo")) return "jp";
+  return "uk";
+}
+
 export interface VehicleDimensions {
   readonly length: number;
   readonly width: number;
@@ -42,6 +58,7 @@ export interface VehicleAppearance {
   readonly paintHex: string;
   readonly accentHex: string;
   readonly dimensions: VehicleDimensions;
+  readonly plateRegion: PlateRegion;
 }
 
 export interface TrafficVehicleAppearanceInput {
@@ -181,7 +198,7 @@ const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
   },
 };
 
-const PLAYER_APPEARANCE: VehicleAppearance = {
+const PLAYER_APPEARANCE: Omit<VehicleAppearance, "plateRegion"> = {
   model: "electric-fastback",
   role: "player",
   // Premium royal-blue flagship — retires the old radioactive cyan.
@@ -221,6 +238,7 @@ function passengerAppearance(
     paintHex,
     accentHex,
     dimensions: VEHICLE_DIMENSIONS[model],
+    plateRegion: plateRegionForMap(input.mapId),
   };
 }
 
@@ -242,6 +260,8 @@ function isNewYorkVehicle(input: TrafficVehicleAppearanceInput): boolean {
 export function resolveTrafficVehicleAppearance(
   input: TrafficVehicleAppearanceInput,
 ): VehicleAppearance {
+  const plateRegion = plateRegionForMap(input.mapId);
+
   if (input.variant === "car") return passengerAppearance(input);
 
   if (input.variant === "taxi") {
@@ -253,6 +273,7 @@ export function resolveTrafficVehicleAppearance(
       paintHex: london ? "#20262d" : newYork ? "#f2bb24" : "#e9edef",
       accentHex: london ? "#aeb8bf" : newYork ? "#202830" : "#276b78",
       dimensions: VEHICLE_DIMENSIONS["electric-taxi"],
+      plateRegion,
     };
   }
 
@@ -264,6 +285,7 @@ export function resolveTrafficVehicleAppearance(
       paintHex: selectFromKey(["#edf0f1", "#cdd5d9", "#315d73"], key),
       accentHex: "#16242b",
       dimensions: VEHICLE_DIMENSIONS["delivery-van"],
+      plateRegion,
     };
   }
 
@@ -280,10 +302,12 @@ export function resolveTrafficVehicleAppearance(
     dimensions: london
       ? VEHICLE_DIMENSIONS["london-double-decker"]
       : VEHICLE_DIMENSIONS["city-bus"],
+    plateRegion,
   };
 }
 
-/** The player's recognizable, fixed modern flagship silhouette. */
-export function resolvePlayerVehicleAppearance(): VehicleAppearance {
-  return PLAYER_APPEARANCE;
+/** The player's recognizable, fixed modern flagship silhouette. Wears the
+ * plates of whichever country's map is loaded. */
+export function resolvePlayerVehicleAppearance(mapId: string): VehicleAppearance {
+  return { ...PLAYER_APPEARANCE, plateRegion: plateRegionForMap(mapId) };
 }

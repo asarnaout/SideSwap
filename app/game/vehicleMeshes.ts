@@ -12,6 +12,7 @@ import {
 } from "@babylonjs/core";
 import type { Material } from "@babylonjs/core";
 import type {
+  PlateRegion,
   VehicleAppearance,
   VehicleDimensions,
   VehicleModel,
@@ -1181,6 +1182,149 @@ export function blobShadowMaterial(scene: Scene): StandardMaterial {
   return material;
 }
 
+// --- Per-country number plates ---------------------------------------------
+//
+// The imported models ship without plates, so buildModelVehicle synthesizes
+// them. Rather than a blank rectangle, each country wears its own: the design is
+// drawn once per (region, position) into a DynamicTexture and cached per scene,
+// then shared by the whole fleet on that map. Kept deliberately bold and simple
+// — a plate is only ever a few pixels tall on screen, so colour and layout carry
+// the recognition, not fine text.
+
+/** Plate silhouette aspect (width : height). Tuned to sit in the models'
+ * moulded plate recess while reading as a plate rather than a sticker. */
+const PLATE_ASPECT = 3.6;
+
+const PLATE_MATERIALS_BY_SCENE = new WeakMap<
+  Scene,
+  Map<string, StandardMaterial>
+>();
+
+function plateMaterialFor(
+  scene: Scene,
+  region: PlateRegion,
+  position: "front" | "rear",
+): StandardMaterial {
+  let cache = PLATE_MATERIALS_BY_SCENE.get(scene);
+  if (!cache) {
+    cache = new Map<string, StandardMaterial>();
+    PLATE_MATERIALS_BY_SCENE.set(scene, cache);
+  }
+  const key = `${region}-${position}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const height = 160;
+  const width = Math.round(height * PLATE_ASPECT);
+  const texture = new DynamicTexture(
+    `plate-${key}`,
+    { width, height },
+    scene,
+    true,
+  );
+  // The real backing context is a browser CanvasRenderingContext2D (this runs
+  // only in-browser, since models never instantiate headlessly); Babylon's
+  // narrower ICanvasRenderingContext type omits textAlign/textBaseline.
+  const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
+  const sans = "Arial, 'Helvetica Neue', sans-serif";
+
+  // Shrink the font until the text fits maxWidth, so no plate string overflows.
+  const fitFont = (text: string, maxWidth: number, startPx: number, family: string) => {
+    let size = startPx;
+    ctx.font = `bold ${size}px ${family}`;
+    while (ctx.measureText(text).width > maxWidth && size > 8) {
+      size -= 2;
+      ctx.font = `bold ${size}px ${family}`;
+    }
+  };
+  const starRing = (cx: number, cy: number, radius: number) => {
+    ctx.fillStyle = "#f6cf1c";
+    for (let i = 0; i < 12; i += 1) {
+      const a = (i / 12) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius, Math.max(1.6, radius * 0.18), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  if (region === "uk") {
+    // White front plate, yellow rear plate — the authentic UK pairing.
+    ctx.fillStyle = position === "rear" ? "#f4cb17" : "#eceee9";
+    ctx.fillRect(0, 0, width, height);
+    const band = Math.round(width * 0.13);
+    ctx.fillStyle = "#0b3aa8";
+    ctx.fillRect(0, 0, band, height);
+    starRing(band / 2, height * 0.4, height * 0.14);
+    ctx.fillStyle = "#ffffff";
+    fitFont("UK", band * 0.82, Math.round(height * 0.2), sans);
+    ctx.fillText("UK", band / 2, height * 0.76);
+    ctx.fillStyle = "#161616";
+    fitFont("AB12 CDE", width - band - width * 0.08, Math.round(height * 0.52), sans);
+    ctx.fillText("AB12 CDE", band + (width - band) / 2, height * 0.54);
+  } else if (region === "us") {
+    // New York State: white ground, blue legend, gold accent.
+    ctx.fillStyle = "#f5f5f1";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "#123a7a";
+    fitFont("NEW YORK", width * 0.66, Math.round(height * 0.2), sans);
+    ctx.fillText("NEW YORK", width / 2, height * 0.18);
+    fitFont("ABC 1234", width * 0.86, Math.round(height * 0.46), sans);
+    ctx.fillText("ABC 1234", width / 2, height * 0.55);
+    ctx.fillStyle = "#c1901c";
+    fitFont("EMPIRE STATE", width * 0.5, Math.round(height * 0.12), sans);
+    ctx.fillText("EMPIRE STATE", width / 2, height * 0.87);
+  } else if (region === "fr") {
+    // France: white ground, blue EU band left (F), blue département band right.
+    ctx.fillStyle = "#f1f1ee";
+    ctx.fillRect(0, 0, width, height);
+    const band = Math.round(width * 0.1);
+    ctx.fillStyle = "#0b3aa8";
+    ctx.fillRect(0, 0, band, height);
+    ctx.fillRect(width - band, 0, band, height);
+    starRing(band / 2, height * 0.33, height * 0.12);
+    ctx.fillStyle = "#ffffff";
+    fitFont("F", band * 0.72, Math.round(height * 0.2), sans);
+    ctx.fillText("F", band / 2, height * 0.74);
+    fitFont("62", band * 0.72, Math.round(height * 0.18), sans);
+    ctx.fillText("62", width - band / 2, height * 0.3);
+    ctx.fillStyle = "#161616";
+    fitFont("AB-123-CD", width - band * 2 - width * 0.08, Math.round(height * 0.46), sans);
+    ctx.fillText("AB-123-CD", width / 2, height * 0.54);
+  } else {
+    // Japan: white ground, green legend (private car), region kanji + serial.
+    const cjk = "'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif";
+    ctx.fillStyle = "#f4f4ee";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "#0b7a3a";
+    fitFont("世田谷 300", width * 0.66, Math.round(height * 0.28), cjk);
+    ctx.fillText("世田谷 300", width / 2, height * 0.27);
+    fitFont("さ 12-34", width * 0.78, Math.round(height * 0.42), cjk);
+    ctx.fillText("さ 12-34", width / 2, height * 0.65);
+  }
+
+  const borderColor =
+    region === "jp" ? "#0b7a3a" : region === "us" ? "#123a7a" : "#22262c";
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = Math.max(2, height * 0.045);
+  ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, width - ctx.lineWidth, height - ctx.lineWidth);
+
+  texture.update();
+
+  const material = new StandardMaterial(`plate-${key}-material`, scene);
+  material.diffuseTexture = texture;
+  // A little self-illumination keeps the plate legible when the car's tail is in
+  // shadow (real plates are retroreflective), without tripping the bloom.
+  material.emissiveTexture = texture;
+  material.emissiveColor = new Color3(0.3, 0.3, 0.3);
+  material.specularColor = new Color3(0.12, 0.12, 0.12);
+  material.specularPower = 48;
+  cache.set(key, material);
+  return material;
+}
+
 /**
  * Builds a vehicle from a preloaded glb, honouring the same VehicleMeshVisual
  * contract as the procedural path. Returns null when no model is registered for
@@ -1270,26 +1414,27 @@ function buildModelVehicle(
   contactShadow.isPickable = false;
   contactShadow.receiveShadows = false;
 
-  // Synthesize the front + rear number plates the imported models omit, so a
-  // model car wears the same plates its procedural fallback already does.
-  // Authored in the model's own pre-scale space (like the contact shadow) and
-  // sized from its bounds, so the plates land correctly whatever the model's
-  // dimensions or config.scale. Front sits at +Z (every model imports
-  // front-first, yawOffset 0); both reuse the fleet's shared grey plate
-  // material, so model and fallback cars are visually identical.
-  const plateMaterial = materialsForScene(scene).plate;
-  const plateWidth = (bounds.max.x - bounds.min.x) * 0.26;
-  const plateHeight = plateWidth * 0.3;
-  const plateThickness = plateWidth * 0.05;
+  // Synthesize the front + rear number plates the imported models omit, each
+  // wearing its country's design (see plateMaterialFor). Authored in the model's
+  // own pre-scale space (like the contact shadow) and sized from its bounds, so
+  // the plates land correctly whatever the model's dimensions or config.scale.
+  // Front sits at +Z (every model imports front-first, yawOffset 0). Y is set to
+  // drop the plate into the models' moulded plate recess rather than the very
+  // bottom of the bumper.
+  const bodyWidth = bounds.max.x - bounds.min.x;
+  const plateWidth = bodyWidth * 0.28;
+  const plateHeight = plateWidth / PLATE_ASPECT;
+  const plateThickness = plateWidth * 0.045;
   const plateCenterX = (bounds.min.x + bounds.max.x) / 2;
-  const plateY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.3;
+  const plateY = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.42;
   const plateMeshes = [1, -1].map((frontSign) => {
+    const position = frontSign > 0 ? "front" : "rear";
     const plate = MeshBuilder.CreateBox(
-      `${name}-number-plate-${frontSign > 0 ? "front" : "rear"}`,
+      `${name}-number-plate-${position}`,
       { width: plateWidth, height: plateHeight, depth: plateThickness },
       scene,
     );
-    plate.material = plateMaterial;
+    plate.material = plateMaterialFor(scene, appearance.plateRegion, position);
     plate.position.set(
       plateCenterX,
       plateY,

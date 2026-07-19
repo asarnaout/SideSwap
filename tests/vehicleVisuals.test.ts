@@ -70,12 +70,31 @@ describe("modern fleet variety", () => {
   });
 
   it("gives the player a fixed electric flagship distinct from NPC identity", () => {
-    expect(resolvePlayerVehicleAppearance()).toMatchObject({
+    expect(resolvePlayerVehicleAppearance("london-south-kensington")).toMatchObject({
       model: "electric-fastback",
       role: "player",
       paintHex: "#1b4f8f",
     });
-    expect(resolvePlayerVehicleAppearance()).toEqual(resolvePlayerVehicleAppearance());
+    expect(resolvePlayerVehicleAppearance("london-south-kensington")).toEqual(
+      resolvePlayerVehicleAppearance("london-south-kensington"),
+    );
+  });
+
+  it("wears the plates of whichever country's map is loaded", () => {
+    expect(resolvePlayerVehicleAppearance("london-south-kensington").plateRegion).toBe("uk");
+    expect(resolvePlayerVehicleAppearance("milton-keynes-oldbrook").plateRegion).toBe("uk");
+    expect(resolvePlayerVehicleAppearance("nyc-upper-west-side").plateRegion).toBe("us");
+    expect(resolvePlayerVehicleAppearance("calais-coquelles").plateRegion).toBe("fr");
+    expect(resolvePlayerVehicleAppearance("tokyo-setagaya").plateRegion).toBe("jp");
+    // Traffic inherits the same regional plate as the map it drives on.
+    expect(
+      resolveTrafficVehicleAppearance({
+        vehicleId: "cab",
+        trafficSeed: 3,
+        variant: "taxi",
+        mapId: "nyc-upper-west-side",
+      }).plateRegion,
+    ).toBe("us");
   });
 });
 
@@ -121,7 +140,7 @@ describe("semantic and regional vehicle roles", () => {
 
 describe("vehicle appearance data integrity", () => {
   const appearances: readonly VehicleAppearance[] = [
-    resolvePlayerVehicleAppearance(),
+    resolvePlayerVehicleAppearance("nyc-upper-west-side"),
     ...Array.from({ length: 30 }, (_, index) =>
       resolveTrafficVehicleAppearance(passengerInput(index + 1)),
     ),
