@@ -24,10 +24,13 @@ import { SCORING_CONFIG, getCountryProfile } from "./content";
 
 const DEFAULT_LANE_WIDTH_M = 3.5;
 // The car's top speed models a real vehicle, not a governor pinned to the
-// posted limit. 31 m/s (~70 mph, the UK national speed limit) leaves clear
-// headroom above every urban route so a driver can physically exceed the
-// limit — going over is scored as speeding, never silently prevented.
-const DEFAULT_MAX_FORWARD_SPEED_MPS = 31;
+// posted limit. It tops out at a clean round number in each country's own unit
+// — 90 mph where speeds read in mph, 145 km/h (its equivalent) where they read
+// in km/h — leaving generous headroom above every urban route so a driver can
+// physically exceed the limit. Going over is scored as speeding, never
+// silently prevented.
+const MAX_FORWARD_SPEED_MPS_MPH = 90 / 2.236936; // 90 mph ≈ 40.23 m/s
+const MAX_FORWARD_SPEED_MPS_KMH = 145 / 3.6; // 145 km/h ≈ 40.28 m/s
 const DEFAULT_MAX_REVERSE_SPEED_MPS = 6;
 
 export interface SimulationAdapterOptions {
@@ -769,12 +772,18 @@ export function buildSimulationCoreConfig({
   speedUnit,
   touchFirst = false,
 }: SimulationAdapterOptions): SimulationCoreConfig {
+  const normalizedSpeedUnit = speedUnit === "mph" ? "mph" : "kmh";
+  const baseMaxForwardSpeedMps =
+    normalizedSpeedUnit === "mph"
+      ? MAX_FORWARD_SPEED_MPS_MPH
+      : MAX_FORWARD_SPEED_MPS_KMH;
+
   if (!lesson || !mapPack) {
     return {
       trafficSide,
-      speedUnit: speedUnit === "mph" ? "mph" : "kmh",
+      speedUnit: normalizedSpeedUnit,
       npcCount: touchFirst ? 8 : 10,
-      maxForwardSpeedMps: DEFAULT_MAX_FORWARD_SPEED_MPS,
+      maxForwardSpeedMps: baseMaxForwardSpeedMps,
       maxReverseSpeedMps: DEFAULT_MAX_REVERSE_SPEED_MPS,
     };
   }
@@ -867,7 +876,7 @@ export function buildSimulationCoreConfig({
 
   return {
     trafficSide,
-    speedUnit: speedUnit === "mph" ? "mph" : "kmh",
+    speedUnit: normalizedSpeedUnit,
     seed: lesson.trafficSeed,
     lessonId: lesson.id,
     lanes,
@@ -902,9 +911,9 @@ export function buildSimulationCoreConfig({
     // Top speed is the greater of the car's normal ceiling and the route's
     // fastest posted limit. The default already sits well above urban limits so
     // the car never feels governed; the Math.max only lifts it further on rare
-    // routes posting above 70 mph, keeping any authored overtake feasible.
+    // routes posting above 90 mph, keeping any authored overtake feasible.
     maxForwardSpeedMps: Math.max(
-      DEFAULT_MAX_FORWARD_SPEED_MPS,
+      baseMaxForwardSpeedMps,
       routeSpeedLimitMps,
     ),
     maxReverseSpeedMps: DEFAULT_MAX_REVERSE_SPEED_MPS,
