@@ -393,6 +393,27 @@ describe("SideSwap content", () => {
     expect(count).toBe(5); // one gas station per city
   });
 
+  it("anchors every gig venue to a real lane, with enough per city", () => {
+    let count = 0;
+    for (const pack of MAP_PACKS) {
+      const venues = pack.geometry.gigVenues ?? [];
+      for (const venue of venues) {
+        const lane = pack.laneGraph.lanes.find(
+          (candidate) => candidate.id === venue.anchor.laneId,
+        );
+        expect(
+          lane,
+          `${venue.id}: missing lane ${venue.anchor.laneId} on ${pack.id}`,
+        ).toBeDefined();
+        expect(() => resolveAnchor(lane!, venue.anchor)).not.toThrow();
+        count += 1;
+      }
+      // A gig needs a distinct pickup + drop-off, so every city needs >= 2.
+      expect(venues.length, `${pack.id} gig venues`).toBeGreaterThanOrEqual(2);
+    }
+    expect(count).toBe(20); // four venues per city
+  });
+
   it("keeps traffic side independent from steering-wheel side", () => {
     const us = getCountryProfile("us");
     const uk = getCountryProfile("uk");

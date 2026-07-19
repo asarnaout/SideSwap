@@ -1177,6 +1177,12 @@ export const LONDON_MAP_PACK: MapPack = {
     servicePoints: [
       { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel" },
     ],
+    gigVenues: [
+      { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },
+      { id: "london-v2", kind: "shop", anchor: { laneId: "london-exhibition-shared-1", distanceAlongM: 48 }, footprint: point(14, 10), name: "Exhibition Road Shops" },
+      { id: "london-v3", kind: "residence", anchor: { laneId: "london-queen-gate-south-2", distanceAlongM: 50 }, footprint: point(14, 12), name: "Queen's Gate Flats" },
+      { id: "london-v4", kind: "office", anchor: { laneId: "london-quiet-north", distanceAlongM: 36 }, footprint: point(14, 12), name: "South Ken Office" },
+    ],
     landmarks: [
       {
         id: "london-natural-history-museum",

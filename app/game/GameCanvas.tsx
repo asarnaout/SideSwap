@@ -850,6 +850,16 @@ export interface GameCanvasMapPack {
       readonly footprint: GameCanvasPoint;
       readonly label: string;
     }[];
+    gigVenues?: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly anchor: {
+        readonly laneId: string;
+        readonly distanceAlongM: number;
+      };
+      readonly footprint: GameCanvasPoint;
+      readonly name: string;
+    }[];
   }>;
   readonly laneGraph: Readonly<{
     lanes: readonly GameCanvasLane[];
@@ -4820,6 +4830,47 @@ class BabylonGameSession {
         { width: 1.6, height: 1.6, depth: 0.24 },
         new Vector3(px, 5.4, pz),
         makeMaterial(scene, `${service.id}-sign`, new Color3(0.96, 0.86, 0.16)),
+      );
+    }
+
+    const gigVenueColor: Record<string, Color3> = {
+      restaurant: new Color3(0.85, 0.45, 0.3),
+      shop: new Color3(0.4, 0.6, 0.85),
+      residence: new Color3(0.7, 0.66, 0.5),
+      office: new Color3(0.55, 0.58, 0.62),
+      depot: new Color3(0.5, 0.5, 0.55),
+    };
+    for (const venue of mapPack.geometry.gigVenues ?? []) {
+      const pose = resolveSimulationLaneAnchor(
+        mapPack.laneGraph.lanes,
+        venue.anchor,
+      );
+      if (!pose) continue;
+      const px = pose.x + Math.cos(pose.heading) * 8;
+      const pz = pose.z - Math.sin(pose.heading) * 8;
+      const height = 6;
+      createBox(
+        scene,
+        `${venue.id}-body`,
+        { width: venue.footprint.x, height, depth: venue.footprint.z },
+        new Vector3(px, height / 2, pz),
+        makeMaterial(
+          scene,
+          `${venue.id}-body`,
+          gigVenueColor[venue.kind] ?? new Color3(0.6, 0.6, 0.62),
+        ),
+      );
+      // Bright rooftop marker so venues read on approach.
+      createBox(
+        scene,
+        `${venue.id}-roof`,
+        {
+          width: venue.footprint.x * 0.5,
+          height: 0.6,
+          depth: venue.footprint.z * 0.5,
+        },
+        new Vector3(px, height + 0.3, pz),
+        makeMaterial(scene, `${venue.id}-roof`, new Color3(0.95, 0.82, 0.3)),
       );
     }
 
