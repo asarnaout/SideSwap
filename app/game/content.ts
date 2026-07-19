@@ -1384,6 +1384,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone" },
         { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
       ],
+      servicePoints: [
+        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel" },
+      ],
       landmarks: [
         // Kept clear of the carriageways (a content test enforces this).
         { id: "nyc-verdi-green", kind: "park", center: point(-40, -455), size: point(40, 24), color: "#5c8c4b" },
@@ -1461,6 +1464,9 @@ export const MAP_PACKS: readonly MapPack[] = [
       blocks: [
         { id: "uk-oldbrook", center: point(-78, 72), size: point(90, 72), heightRange: [5, 12], density: 0.55, material: "brick" },
         { id: "uk-retail", center: point(84, -72), size: point(96, 70), heightRange: [6, 14], density: 0.4, material: "concrete" },
+      ],
+      servicePoints: [
+        { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Grafton Fuel" },
       ],
       landmarks: [
         // The island must sit fully inside the roundabout's inner kerb, not
@@ -1559,6 +1565,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         // occupy a driving surface.
         { id: "fr-coquelles", center: point(-88, 104), size: point(56, 20), heightRange: [5, 13], density: 0.45, material: "stucco" },
         { id: "fr-commercial", center: point(118, -104), size: point(28, 28), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
+      ],
+      servicePoints: [
+        { id: "fr-gas", kind: "gas_station", anchor: { laneId: "fr-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Coquelles Carburant" },
       ],
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
@@ -1672,6 +1681,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "jp-block-west-upper", center: point(-186, 47), size: point(136, 44), heightRange: [6, 16], density: 0.72, material: "tile" },
         { id: "jp-block-south-west", center: point(-215, -120), size: point(70, 74), heightRange: [5, 12], density: 0.66, material: "wood-plaster" },
         { id: "jp-block-south-east", center: point(21, -120), size: point(92, 74), heightRange: [6, 14], density: 0.72, material: "plaster" },
+      ],
+      servicePoints: [
+        { id: "jp-gas", kind: "gas_station", anchor: { laneId: "jp-south-east-1", distanceAlongM: 18 }, footprint: point(12, 8), label: "Setagaya Fuel" },
       ],
       landmarks: [
         { id: "jp-gotokuji-station", kind: "station", center: point(-14, 6), size: point(20, 9), color: "#e85e59" },
@@ -1801,6 +1813,20 @@ export const FREE_DRIVES: readonly FreeDriveDefinition[] = [
 
 /** Fuel-tank capacity in litres (same car everywhere). */
 export const TANK_CAPACITY_L = 40;
+
+/** Fuel burned per metre travelled (~2 L/km → ~20 km on a full tank). */
+export const FUEL_CONSUMPTION_L_PER_M = 0.002;
+
+/**
+ * Pump price per litre, in each country's own currency. Tuned so a full refuel
+ * is affordable from the starting wallet before gig income arrives.
+ */
+export const FUEL_PRICE_PER_LITRE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
+  us: 0.4,
+  uk: 0.45,
+  fr: 0.5,
+  jp: 60,
+};
 
 /** Starting cash a new (or migrated) player holds in each country's currency. */
 export const STARTING_WALLET_BY_COUNTRY: Readonly<Record<CountryId, number>> = {

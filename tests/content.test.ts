@@ -375,6 +375,24 @@ describe("SideSwap content", () => {
     expect(formatMoney(1234567.5, getCountryProfile("fr"))).toBe("€1,234,567.50");
   });
 
+  it("anchors every gas station to a real lane within its bounds", () => {
+    let count = 0;
+    for (const pack of MAP_PACKS) {
+      for (const service of pack.geometry.servicePoints ?? []) {
+        const lane = pack.laneGraph.lanes.find(
+          (candidate) => candidate.id === service.anchor.laneId,
+        );
+        expect(
+          lane,
+          `${service.id}: missing lane ${service.anchor.laneId} on ${pack.id}`,
+        ).toBeDefined();
+        expect(() => resolveAnchor(lane!, service.anchor)).not.toThrow();
+        count += 1;
+      }
+    }
+    expect(count).toBe(5); // one gas station per city
+  });
+
   it("keeps traffic side independent from steering-wheel side", () => {
     const us = getCountryProfile("us");
     const uk = getCountryProfile("uk");
