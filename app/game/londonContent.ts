@@ -11,6 +11,7 @@ import type {
   MapPack,
   MapSpawnPoint,
   OfficialRuleReference,
+  ProceduralLandmark,
   RoadMarkingPath,
   RoadMarkingStyle,
   RoadSurface,
@@ -314,6 +315,118 @@ const roadSurface = (
   surfaceType,
   markings,
 });
+
+/**
+ * Points along a circular arc, inclusive of both endpoints. Angles in degrees,
+ * 0deg = +x (east), 90deg = +z (north); a1 < a0 traces the arc clockwise.
+ */
+const arcPoints = (
+  center: WorldPoint,
+  radius: number,
+  a0Deg: number,
+  a1Deg: number,
+  steps = 6,
+): WorldPoint[] => {
+  const points: WorldPoint[] = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = ((a0Deg + ((a1Deg - a0Deg) * index) / steps) * Math.PI) / 180;
+    points.push(
+      point(center.x + radius * Math.cos(angle), center.z + radius * Math.sin(angle)),
+    );
+  }
+  return points;
+};
+
+/**
+ * Turns a dead-end stub into a single-arm turning loop: a one-way ring around a
+ * small central island bulging out from the stub's end node, so cars drive out,
+ * loop once and return instead of hitting a flat dead-end. London traffic is
+ * left-side, so the ring circulates clockwise; it needs no give-way (a single
+ * arm has no conflicting traffic) and runs purely on `successors`. The caller
+ * keeps the dead node as the connection point, repoints the ARRIVING lane's
+ * successor to `${prefix}-a`, and the returning arc `${prefix}-b` feeds
+ * `departLaneId` back into the network.
+ */
+const turningLoop = (opts: {
+  prefix: string;
+  connectNode: LaneNode;
+  bulgeDeg: number;
+  radius: number;
+  speed: number;
+  departLaneId: string;
+  color: string;
+  islandRadius?: number;
+  widthM?: number;
+}): {
+  farNode: LaneNode;
+  firstArcId: string;
+  lanes: readonly LaneSegment[];
+  surface: RoadSurface;
+  island: ProceduralLandmark;
+} => {
+  const {
+    prefix,
+    connectNode,
+    bulgeDeg,
+    radius,
+    speed,
+    departLaneId,
+    color,
+    islandRadius = Math.max(4, radius - 6),
+    widthM = 7.2,
+  } = opts;
+  const bulge = {
+    x: Math.cos((bulgeDeg * Math.PI) / 180),
+    z: Math.sin((bulgeDeg * Math.PI) / 180),
+  };
+  const connect = connectNode.position;
+  const center = point(connect.x + bulge.x * radius, connect.z + bulge.z * radius);
+  const farNode = node(
+    `${prefix}-far`,
+    connect.x + bulge.x * radius * 2,
+    connect.z + bulge.z * radius * 2,
+  );
+  const connectAngle = bulgeDeg + 180;
+  // Clockwise circulation for left-side traffic (decreasing angle).
+  const arcA = arcPoints(center, radius, connectAngle, connectAngle - 180);
+  const arcB = arcPoints(center, radius, connectAngle - 180, connectAngle - 360);
+  const firstArcId = `${prefix}-a`;
+  const secondArcId = `${prefix}-b`;
+  const arcLane = (
+    id: string,
+    from: LaneNode,
+    to: LaneNode,
+    successors: readonly string[],
+    via: readonly WorldPoint[],
+  ): LaneSegment => ({
+    id,
+    roadId: prefix,
+    widthM: 3.2,
+    from: from.id,
+    to: to.id,
+    centerline: [from.position, ...via, to.position],
+    role: "roundabout",
+    trafficSide: "left",
+    speedLimit: speed,
+    successors,
+  });
+  return {
+    farNode,
+    firstArcId,
+    lanes: [
+      arcLane(firstArcId, connectNode, farNode, [secondArcId], arcA.slice(1, -1)),
+      arcLane(secondArcId, farNode, connectNode, [departLaneId], arcB.slice(1, -1)),
+    ],
+    surface: roadSurface(prefix, [...arcA, ...arcB.slice(1)], widthM, [firstArcId, secondArcId], "roundabout"),
+    island: {
+      id: `${prefix}-green`,
+      kind: "park",
+      center,
+      size: point(islandRadius * 2, islandRadius * 2),
+      color,
+    },
+  };
+};
 
 const checkpoint = (
   id: string,
@@ -657,7 +770,7 @@ const londonLanes: readonly LaneSegment[] = [
     londonNodes.cromwellEast,
     londonNodes.cromwellFarEast,
     20,
-    [],
+    ["london-brompton-loop-a"],
     "travel",
     [point(240, -30.3)],
     ["london-cromwell-west-0"],
@@ -705,7 +818,7 @@ const londonLanes: readonly LaneSegment[] = [
   laneTrue("london-gloucester-n-1", londonNodes.gloucesterSouth, londonNodes.gloucesterCromwell, 20, ["london-gloucester-n-2", "london-cromwell-fw-e"], "travel", [point(-301.7, -68)], ["london-gloucester-s-2"], "london-gloucester"),
   laneTrue("london-gloucester-n-2", londonNodes.gloucesterCromwell, londonNodes.gloucesterKensington, 20, ["london-kensington-e-1"], "travel", [point(-301.7, 94)], ["london-gloucester-s-1"], "london-gloucester"),
   laneTrue("london-gloucester-s-1", londonNodes.gloucesterKensington, londonNodes.gloucesterCromwell, 20, ["london-gloucester-s-2", "london-cromwell-fw-e"], "travel", [point(-298.3, 94)], ["london-gloucester-n-2"], "london-gloucester"),
-  laneTrue("london-gloucester-s-2", londonNodes.gloucesterCromwell, londonNodes.gloucesterSouth, 20, [], "travel", [point(-298.3, -68)], ["london-gloucester-n-1"], "london-gloucester"),
+  laneTrue("london-gloucester-s-2", londonNodes.gloucesterCromwell, londonNodes.gloucesterSouth, 20, ["london-gloucester-loop-a"], "travel", [point(-298.3, -68)], ["london-gloucester-n-1"], "london-gloucester"),
   // Kensington Road (two-way, z=220): Gloucester <-> Queen's Gate <-> Exhibition.
   laneTrue("london-kensington-e-1", londonNodes.gloucesterKensington, londonNodes.queenGateFarNorth, 20, ["london-kensington-e-2", "london-queen-gate-south-0"], "travel", [point(-204, 221.7)], ["london-kensington-w-2"], "london-kensington"),
   laneTrue("london-kensington-e-2", londonNodes.queenGateFarNorth, londonNodes.kensingtonExhibition, 20, ["london-exhibition-north-s"], "travel", [point(-33, 221.7)], ["london-kensington-w-1"], "london-kensington"),
@@ -716,9 +829,38 @@ const londonLanes: readonly LaneSegment[] = [
   laneTrue("london-exhibition-north-s", londonNodes.kensingtonExhibition, londonNodes.exhibitionThurloe, 20, ["london-thurloe-west-2"], "travel", [point(43.7, 150)], ["london-exhibition-north-n"], "london-exhibition-north"),
 ];
 
+// Turning loops replacing London's two flat dead-ends (both clockwise, left-side).
+// Cromwell Road's Brompton end bulges east; Gloucester Road's south end bulges south.
+const londonBromptonLoop = turningLoop({
+  prefix: "london-brompton-loop",
+  connectNode: londonNodes.cromwellFarEast,
+  bulgeDeg: 0,
+  radius: 12,
+  speed: 20,
+  departLaneId: "london-cromwell-west-0",
+  color: "#5f9a4e",
+});
+const londonGloucesterLoop = turningLoop({
+  prefix: "london-gloucester-loop",
+  connectNode: londonNodes.gloucesterSouth,
+  bulgeDeg: 270,
+  radius: 12,
+  speed: 20,
+  departLaneId: "london-gloucester-n-1",
+  color: "#5f9a4e",
+});
+const londonLoopLanes: readonly LaneSegment[] = [
+  ...londonBromptonLoop.lanes,
+  ...londonGloucesterLoop.lanes,
+];
+
 const londonLaneGraph: LaneGraph = {
-  nodes: Object.values(londonNodes),
-  lanes: londonLanes,
+  nodes: [
+    ...Object.values(londonNodes),
+    londonBromptonLoop.farNode,
+    londonGloucesterLoop.farNode,
+  ],
+  lanes: [...londonLanes, ...londonLoopLanes],
   controls: [
     control(
       "london-crosswalk-quiet",
@@ -1001,6 +1143,8 @@ export const LONDON_MAP_PACK: MapPack = {
       roadSurface("london-exhibition-north", [londonNodes.exhibitionThurloe.position, londonNodes.kensingtonExhibition.position], 7.2, ["london-exhibition-north-n", "london-exhibition-north-s"], "standard", [
         roadMarking("london-exhibition-north-centre", "centre_dashed", [londonNodes.exhibitionThurloe.position, londonNodes.kensingtonExhibition.position], "white"),
       ]),
+      londonBromptonLoop.surface,
+      londonGloucesterLoop.surface,
     ],
     blocks: [
       {
@@ -1089,6 +1233,8 @@ export const LONDON_MAP_PACK: MapPack = {
         size: point(8, 40),
         color: "#708c66",
       },
+      londonBromptonLoop.island,
+      londonGloucesterLoop.island,
     ],
   },
   laneGraph: londonLaneGraph,
