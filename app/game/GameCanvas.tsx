@@ -56,6 +56,7 @@ import {
   DEFAULT_SERVICE_SETBACK_M,
   resolveServicePointLot,
 } from "./servicePoints";
+import { DriveAudio } from "./audio/DriveAudio";
 import {
   authoredSignalAspectAt,
   authoredSignalRequiresStop,
@@ -1015,7 +1016,6 @@ export interface GameCanvasProps {
   fieldOfView?: number;
   masterVolume?: number;
   effectsVolume?: number;
-  coachVolume?: number;
   cameraShake?: boolean;
   headBob?: boolean;
   visualHonkIndicator?: boolean;
@@ -1069,7 +1069,6 @@ interface SessionOptions {
   fieldOfView: number;
   masterVolume: number;
   effectsVolume: number;
-  coachVolume: number;
   cameraShake: boolean;
   headBob: boolean;
   outOfFuel: boolean;
@@ -2585,7 +2584,8 @@ class BabylonGameSession {
   private checkpointLabel = "Start";
   private activeTrafficSide: TrafficSide;
   private hornUntil = 0;
-  private audioContext: AudioContext | null = null;
+  private audio: DriveAudio | null = null;
+  private hornHeld = false;
   private keyboard: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private touch: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
   private gamepad: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
@@ -2767,6 +2767,13 @@ class BabylonGameSession {
     this.createEffectsPipeline();
     this.setCameraMode(options.cameraMode, false);
     this.installListeners();
+    // Built here rather than lazily on first sound: the wavetables and noise
+    // buffers cost a few milliseconds, and this runs behind the loading overlay
+    // instead of hitching a live frame. Null when Web Audio is unavailable.
+    this.audio = DriveAudio.create(
+      { master: this.options.masterVolume, effects: this.options.effectsVolume },
+      this.options.inputCapabilities.touchFirst,
+    );
     this.updatePlayerVisuals(1);
     this.callbacks.onInputPresentationChange?.(this.inputRouter.getPresentation());
 
@@ -2805,6 +2812,10 @@ class BabylonGameSession {
     this.firstCamera.fov = clampHorizontalFieldOfView(this.options.fieldOfView);
     if (options.cameraMode) this.setCameraMode(options.cameraMode, false);
     if (typeof options.paused === "boolean") this.setPaused(options.paused, false);
+    this.audio?.setVolumes({
+      master: this.options.masterVolume,
+      effects: this.options.effectsVolume,
+    });
     this.syncRider();
   }
 
@@ -2838,6 +2849,7 @@ class BabylonGameSession {
     }
     this.applySimulationSnapshot(this.simulation.getSnapshot());
     this.clearHeldInputs();
+    this.audio?.setPaused(paused);
     if (notify) this.callbacks.onPauseChange?.(paused);
     this.publishHud(true);
   }
@@ -2917,13 +2929,23 @@ class BabylonGameSession {
 
   horn() {
     const now = eventNow();
+    // Guards the simulation side only: the sound now sustains for as long as the
+    // control is held, which is orthogonal to how often we poke the sim.
     if (now < this.hornUntil - 80) return;
     this.hornUntil = now + 650;
+    this.hornHeld = true;
     this.simulation.step(0, { horn: true });
     this.simulationSnapshot = this.simulation.step(0, {});
     this.applySimulationSnapshot(this.simulationSnapshot);
-    this.playHornTone();
+    this.audio?.hornPress();
     this.emit("horn", "Horn sounded.");
+    this.publishHud(true);
+  }
+
+  hornRelease() {
+    if (!this.hornHeld) return;
+    this.hornHeld = false;
+    this.audio?.hornRelease();
     this.publishHud(true);
   }
 
@@ -2961,10 +2983,11 @@ class BabylonGameSession {
     this.inputRouter.dispose();
     this.clearHeldInputs();
     for (const dispose of this.disposers.splice(0)) dispose();
-    if (this.audioContext) {
-      void this.audioContext.close();
-      this.audioContext = null;
-    }
+    // Fades out and tears itself down. The context itself is shared and
+    // deliberately outlives the session — closing one mid-note is a click, and a
+    // closed context can never be reopened for the next drive.
+    this.audio?.dispose();
+    this.audio = null;
     this.effectsPipeline?.dispose();
     this.effectsPipeline = null;
     this.riderVisual?.dispose();
@@ -3140,6 +3163,7 @@ class BabylonGameSession {
     this.updateGuidanceVisuals();
     this.updateCamera(frameSeconds);
     this.updateIndicatorLights(frameSeconds);
+    this.updateAudio(frameSeconds);
     this.shadowRefreshSeconds += frameSeconds;
     if (this.shadowRefreshSeconds >= 0.5) {
       this.shadowRefreshSeconds = 0;
@@ -3148,6 +3172,33 @@ class BabylonGameSession {
     this.scene.render();
     if (now - this.lastHudTime >= 100) this.publishHud();
   };
+
+  /**
+   * Feeds the engine sound once per rendered frame. Deliberately not driven from
+   * fixedUpdate, which runs anywhere from zero to six times per frame — audio
+   * ramps need a steady wall clock, not a variable one.
+   *
+   * The throttle and steer expressions mirror fixedUpdate exactly so that what
+   * you hear is what the simulation is acting on: an engine that revs on an
+   * empty tank, or a squeal that ignores the steering-sensitivity setting, would
+   * be a lie about the car's state.
+   */
+  private updateAudio(frameSeconds: number) {
+    if (!this.audio) return;
+    const input = this.mergedInput();
+    this.audio.update({
+      dtSeconds: frameSeconds,
+      speedMps: this.playerState.speedMps,
+      signedSpeedMps: this.simulationSnapshot.player.signedSpeedMps,
+      gear: this.playerState.gear,
+      throttle: this.options.outOfFuel ? 0 : input.throttle,
+      brake: input.brake,
+      steer: clamp(input.steer * this.options.steeringSensitivity, -1, 1),
+      offRoad: this.simulationSnapshot.road.offRoad,
+      outOfFuel: this.options.outOfFuel,
+      firstPerson: this.cameraMode === "first",
+    });
+  }
 
   private fixedUpdate(dt: number) {
     const input = this.mergedInput();
@@ -3778,7 +3829,6 @@ class BabylonGameSession {
       ruleCode,
       this.ruleElapsedSeconds + (ruleCode === "box_junction" ? 10 : 12),
     );
-    this.playCoachTone();
     this.emit(
       "coaching",
       `${message} ${actionableCorrection}`,
@@ -4451,7 +4501,9 @@ class BabylonGameSession {
     const npcHonkActive = snapshot.honk.active;
     if (npcHonkActive && !this.lastSimulationHonkActive) {
       this.hornUntil = eventNow() + 1_150;
-      this.playHornTone();
+      // Pitched and muffled differently from your own horn, so being honked at
+      // reads as another car rather than a phantom press of your own button.
+      this.audio?.hornBlip(0.6, snapshot.tick);
     }
     this.lastSimulationHonkActive = npcHonkActive;
   }
@@ -4487,7 +4539,10 @@ class BabylonGameSession {
       const correction = prompt?.message ?? event.correction;
       this.instruction = correction;
       this.lastSimulationCoachMessage = correction;
-      this.playCoachTone();
+      if (event.code === "collision") {
+        const impact = event.evidence?.impactSpeedMps;
+        this.audio?.impact(typeof impact === "number" ? impact : 0, eventNow());
+      }
       this.emit(
         event.severity === "critical" ? "incident" : "coaching",
         `${event.message} ${correction}`,
@@ -6639,6 +6694,9 @@ class BabylonGameSession {
         this.touch.brake = clamp(input.brake ?? 0, 0, 1);
         this.touch.steer = clamp(input.steer ?? 0, -1, 1);
       };
+      // Revs, gear and per-voice levels, so QA can assert the engine actually
+      // shifts and the tyres actually squeal without anyone having to listen.
+      debugWindow.__sideswapAudioDebug = () => this.audio?.debugSnapshot() ?? null;
       // World-space AABB inventory: lets WebDriver QA verify placement (e.g.
       // "does the fuel lot overlap the shoulder?") numerically, not by pixel.
       debugWindow.__sideswapMeshes = () =>
@@ -7910,6 +7968,9 @@ class BabylonGameSession {
         case "KeyV":
           this.keyboard.quickLook = 0;
           break;
+        case "KeyH":
+          this.hornRelease();
+          break;
       }
     };
     const onBlur = () => this.clearHeldInputs();
@@ -8022,6 +8083,9 @@ class BabylonGameSession {
     );
     this.gamepad = nextGamepad;
     if (buttonUsed || analogUsed) this.inputRouter.registerMeaningfulInput("gamepad");
+    // Above the paused early-return: letting go of the horn has to register even
+    // if the pause landed while the button was still down.
+    if (!pressed[0] && this.gamepadButtons[0]) this.hornRelease();
     if (this.paused) {
       if (edge(0) || edge(1) || edge(9)) this.setPaused(false);
       this.gamepadButtons = pressed;
@@ -8058,11 +8122,13 @@ class BabylonGameSession {
     this.keyboard = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
     this.touch = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
     this.gamepad = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+    // Covers blur, tab hide, pause and reset: without this a keyup that never
+    // arrives because the window lost focus leaves the horn blaring.
+    this.hornRelease();
   }
 
   private coach(message: string) {
     this.instruction = message;
-    this.playCoachTone();
     this.emit("coaching", message, "warning");
     this.publishHud(true);
   }
@@ -8113,7 +8179,9 @@ class BabylonGameSession {
       objectiveProgress: scenarioProgress,
       instruction: this.instruction,
       paused: this.paused,
-      honking: now < this.hornUntil,
+      // The horn now sustains while held, so the visual cue has to follow the
+      // hold rather than the fixed window the old fire-and-forget blip used.
+      honking: this.hornHeld || now < this.hornUntil,
       rearViewVisible: this.cameraMode === "first",
       scenarioId: this.options.lesson?.id ?? "orientation-yard",
       scenarioTitle: this.options.lesson?.title ?? "Free drive",
@@ -8127,74 +8195,6 @@ class BabylonGameSession {
       heading: this.playerState.heading,
       scenarioClock: this.options.lesson?.scenarioClock?.label,
     });
-  }
-
-  private playHornTone() {
-    if (this.options.masterVolume <= 0 || this.options.effectsVolume <= 0) return;
-    try {
-      const AudioContextClass = window.AudioContext;
-      this.audioContext ??= new AudioContextClass();
-      const context = this.audioContext;
-      if (context.state === "suspended") void context.resume();
-      const oscillatorA = context.createOscillator();
-      const oscillatorB = context.createOscillator();
-      const gain = context.createGain();
-      oscillatorA.type = "square";
-      oscillatorB.type = "square";
-      oscillatorA.frequency.value = 205;
-      oscillatorB.frequency.value = 258;
-      gain.gain.setValueAtTime(0.0001, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(
-        Math.max(
-          0.001,
-          0.075 * this.options.masterVolume * this.options.effectsVolume,
-        ),
-        context.currentTime + 0.012,
-      );
-      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.2);
-      oscillatorA.connect(gain);
-      oscillatorB.connect(gain);
-      gain.connect(context.destination);
-      oscillatorA.start();
-      oscillatorB.start();
-      oscillatorA.stop(context.currentTime + 0.21);
-      oscillatorB.stop(context.currentTime + 0.21);
-    } catch {
-      // Audio is a progressive enhancement; the visual horn indicator remains.
-    }
-  }
-
-  private playCoachTone() {
-    if (this.options.masterVolume <= 0 || this.options.coachVolume <= 0) return;
-    try {
-      const AudioContextClass = window.AudioContext;
-      this.audioContext ??= new AudioContextClass();
-      const context = this.audioContext;
-      if (context.state === "suspended") void context.resume();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(520, context.currentTime);
-      oscillator.frequency.exponentialRampToValueAtTime(
-        690,
-        context.currentTime + 0.12,
-      );
-      gain.gain.setValueAtTime(0.0001, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(
-        Math.max(
-          0.001,
-          0.025 * this.options.masterVolume * this.options.coachVolume,
-        ),
-        context.currentTime + 0.015,
-      );
-      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.18);
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 0.19);
-    } catch {
-      // Text coaching remains available when browser audio cannot start.
-    }
   }
 }
 
@@ -8288,7 +8288,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       fieldOfView = DEFAULT_HORIZONTAL_FOV,
       masterVolume = 0.75,
       effectsVolume = 0.75,
-      coachVolume = 0.8,
       cameraShake = false,
       headBob = false,
       visualHonkIndicator = true,
@@ -8430,7 +8429,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             fieldOfView: clampHorizontalFieldOfView(fieldOfView),
             masterVolume: clamp(masterVolume, 0, 1),
             effectsVolume: clamp(effectsVolume, 0, 1),
-            coachVolume: clamp(coachVolume, 0, 1),
             cameraShake,
             headBob,
             outOfFuel,
@@ -8477,13 +8475,12 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         fieldOfView: clampHorizontalFieldOfView(fieldOfView),
         masterVolume: clamp(masterVolume, 0, 1),
         effectsVolume: clamp(effectsVolume, 0, 1),
-        coachVolume: clamp(coachVolume, 0, 1),
         cameraShake,
         headBob,
         outOfFuel,
         riderVenueId,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, coachVolume, cameraShake, headBob, outOfFuel, riderVenueId]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, riderVenueId]);
 
     useImperativeHandle(
       ref,
@@ -8799,7 +8796,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <button type="button" style={actionButtonStyle} aria-label="Left indicator" onClick={() => sessionRef.current?.setIndicator("left")}>◀</button>
               <button type="button" style={actionButtonStyle} aria-label="Right indicator" onClick={() => sessionRef.current?.setIndicator("right")}>▶</button>
               <button type="button" style={actionButtonStyle} aria-label="Change camera" onClick={() => sessionRef.current?.toggleCamera()}>CAM</button>
-              <button type="button" style={actionButtonStyle} aria-label="Sound horn" onClick={() => sessionRef.current?.horn()}>HORN</button>
+              <button type="button" style={actionButtonStyle} aria-label="Sound horn" onPointerDown={() => sessionRef.current?.horn()} onPointerUp={() => sessionRef.current?.hornRelease()} onPointerCancel={() => sessionRef.current?.hornRelease()} onPointerLeave={() => sessionRef.current?.hornRelease()}>HORN</button>
               <button type="button" style={actionButtonStyle} aria-label="Toggle Drive and Reverse" onClick={() => sessionRef.current?.toggleGear()}>{hud.gear}</button>
               <button type="button" style={actionButtonStyle} aria-label="Pause" onClick={() => sessionRef.current?.togglePause()}>Ⅱ</button>
             </div>
