@@ -4235,33 +4235,7 @@ class BabylonGameSession {
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
     root.scaling.setAll(config.scale);
-    if (kind === "gas_station") this.dressGasStationForecourt(root);
     return true;
-  }
-
-  /**
-   * The gas-station glb ships as a diorama: its base slab carries baked-on
-   * ground clutter — painted parking/crossing stripes, planter strips and dirt
-   * paths. Recolouring those plates reads as smears on the lot, so hide every
-   * thin ground-level plate outright. Geometry-driven because the glb's mesh
-   * names are cryptic: the ~23 m base slab survives via the footprint ceiling,
-   * and every tall part (pumps, store, canopy, poles) via the height floor.
-   */
-  private dressGasStationForecourt(root: TransformNode): void {
-    root.computeWorldMatrix(true);
-    for (const mesh of root.getChildMeshes()) {
-      mesh.computeWorldMatrix(true);
-      const box = mesh.getBoundingInfo().boundingBox;
-      const height = box.maximumWorld.y - box.minimumWorld.y;
-      const footprint = Math.max(
-        box.maximumWorld.x - box.minimumWorld.x,
-        box.maximumWorld.z - box.minimumWorld.z,
-      );
-      const centreY = (box.maximumWorld.y + box.minimumWorld.y) / 2;
-      if (height < 0.7 && centreY < 0.6 && footprint > 1 && footprint < 16) {
-        mesh.setEnabled(false);
-      }
-    }
   }
 
   /**
