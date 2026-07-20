@@ -4985,10 +4985,31 @@ class BabylonGameSession {
         service.anchor,
       );
       if (!pose) continue;
-      // Set the forecourt well back from the lane so the (large) station model
-      // clears the road instead of swallowing it.
-      const px = pose.x + Math.cos(pose.heading) * 15;
-      const pz = pose.z - Math.sin(pose.heading) * 15;
+      // Set the forecourt back from the lane so its lot clears the road + shoulder
+      // with a grass gap, then bridge that gap with a single driveway entrance.
+      const px = pose.x + Math.cos(pose.heading) * 19;
+      const pz = pose.z - Math.sin(pose.heading) * 19;
+      // A paved driveway from the kerb across the shoulder to the forecourt — a
+      // break in the shoulder that reads as "pull in here". Oriented to the lane
+      // (its depth runs kerb→forecourt) so it works whatever way the road faces.
+      const driveway = new TransformNode(`${service.id}-drive`, scene);
+      driveway.position.set(
+        pose.x + Math.cos(pose.heading) * 7,
+        0.08,
+        pose.z - Math.sin(pose.heading) * 7,
+      );
+      driveway.rotation.y = Math.atan2(
+        Math.cos(pose.heading),
+        -Math.sin(pose.heading),
+      );
+      createBox(
+        scene,
+        `${service.id}-drive`,
+        { width: 9, height: 0.12, depth: 14 },
+        Vector3.Zero(),
+        makeMaterial(scene, `${service.id}-drive`, new Color3(0.34, 0.35, 0.37)),
+        driveway,
+      );
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
