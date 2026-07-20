@@ -21,7 +21,9 @@ import {
 import {
   buildEngineHarmonics,
   buildHornHarmonics,
+  fillPinkNoise,
   fillValueNoise,
+  fillWhiteNoise,
 } from "../app/game/audio/waveTables";
 
 const telemetry = (patch: Partial<DriveAudioTelemetry> = {}): DriveAudioTelemetry => ({
@@ -242,6 +244,25 @@ describe("wind, road and tyres", () => {
     expect(fast / slow).toBeGreaterThan(6);
   });
 
+  it("keeps wind inside a band at every speed", () => {
+    // A highpass with nothing above it passes every frequency up to Nyquist,
+    // which is white noise by definition — this is what made it sound like
+    // static rather than moving air.
+    for (let speedMps = 0; speedMps <= MAX_SPEED_MPS; speedMps += 0.5) {
+      const { out } = run({ speedMps, throttle: 1 }, 0.5);
+      expect(out.windTopHz, `${speedMps} m/s`).toBeGreaterThan(out.windHz * 2);
+      expect(out.windTopHz, `${speedMps} m/s`).toBeLessThan(6000);
+    }
+  });
+
+  it("never lets wind drown the engine", () => {
+    // Wind conveys speed; the car is still the subject.
+    for (const speedMps of [10, 20, 30, 40.4]) {
+      const { out } = run({ speedMps, throttle: 1 }, 3);
+      expect(out.windGain, `${speedMps} m/s`).toBeLessThan(out.engineGain);
+    }
+  });
+
   it("gets louder and muddier off the tarmac", () => {
     const paved = run({ speedMps: 20 }, 1).out;
     const rough = run({ speedMps: 20, offRoad: true }, 1).out;
@@ -318,6 +339,7 @@ describe("parameter safety", () => {
       "inductionHz",
       "reverseWhineHz",
       "windHz",
+      "windTopHz",
       "roadHz",
       "squealHz",
       "discHz",
@@ -394,6 +416,25 @@ describe("wave tables", () => {
     expect(horn[2]).toBeGreaterThan(0.5);
     expect(horn[4]).toBeGreaterThan(horn[3]);
     expect(horn[horn.length - 1]).toBeLessThan(horn[1]);
+  });
+
+  it("makes pink noise substantially darker than white", () => {
+    // The mean step between adjacent samples is a cheap proxy for
+    // high-frequency energy. White noise carries half its power in the top
+    // octave, which is exactly the bright electronic hiss that reads as static;
+    // pink spreads energy per octave the way real air does.
+    const step = (fill: (out: Float32Array, random: () => number) => void) => {
+      const buffer = new Float32Array(48_000);
+      let seed = 3;
+      fill(buffer, () => {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        return seed / 2147483648;
+      });
+      let total = 0;
+      for (let i = 1; i < buffer.length; i += 1) total += Math.abs(buffer[i] - buffer[i - 1]);
+      return total / (buffer.length - 1);
+    };
+    expect(step(fillPinkNoise)).toBeLessThan(step(fillWhiteNoise) * 0.5);
   });
 
   it("generates value noise that is bounded, centred and genuinely slow", () => {

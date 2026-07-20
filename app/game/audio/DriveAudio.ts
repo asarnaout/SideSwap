@@ -23,6 +23,7 @@ import { HornVoice } from "./voices/hornVoice";
 import { ImpactVoice } from "./voices/impactVoice";
 import { TyreVoice } from "./voices/tyreVoice";
 import {
+  createAmbienceBuffer,
   createJitterSource,
   createNoiseBuffer,
   type VoiceContext,
@@ -51,6 +52,7 @@ export class DriveAudio {
       context,
       destination: this.bus.input,
       noiseBuffer: createNoiseBuffer(context),
+      ambienceBuffer: createAmbienceBuffer(context),
       jitter: this.jitterSource,
       lowPower,
     };

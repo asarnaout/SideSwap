@@ -82,6 +82,45 @@ export function fillWhiteNoise(out: Float32Array, random: () => number): void {
   for (let i = 0; i < out.length; i += 1) out[i] = random() * 2 - 1;
 }
 
+const normalise = (out: Float32Array): void => {
+  let peak = 0;
+  for (let i = 0; i < out.length; i += 1) peak = Math.max(peak, Math.abs(out[i]));
+  if (peak <= 0) return;
+  const scale = 1 / peak;
+  for (let i = 0; i < out.length; i += 1) out[i] *= scale;
+};
+
+/**
+ * Pink noise — energy falling at 3dB per octave, via Paul Kellet's filter bank.
+ *
+ * This matters more than it sounds. White noise carries equal energy per hertz,
+ * but hearing is roughly logarithmic, so half of a white signal's power sits in
+ * its top octave and it reads as bright electronic hiss. Pink spreads energy
+ * evenly per octave, which is what wind, rain and surf actually do — and it is
+ * the difference between "air rushing past the car" and "untuned television".
+ */
+export function fillPinkNoise(out: Float32Array, random: () => number): void {
+  let b0 = 0;
+  let b1 = 0;
+  let b2 = 0;
+  let b3 = 0;
+  let b4 = 0;
+  let b5 = 0;
+  let b6 = 0;
+  for (let i = 0; i < out.length; i += 1) {
+    const white = random() * 2 - 1;
+    b0 = 0.99886 * b0 + white * 0.0555179;
+    b1 = 0.99332 * b1 + white * 0.0750759;
+    b2 = 0.969 * b2 + white * 0.153852;
+    b3 = 0.8665 * b3 + white * 0.3104856;
+    b4 = 0.55 * b4 + white * 0.5329522;
+    b5 = -0.7616 * b5 - white * 0.016898;
+    out[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+    b6 = white * 0.115926;
+  }
+  normalise(out);
+}
+
 const addValueNoiseOctave = (
   out: Float32Array,
   sampleRate: number,
@@ -123,10 +162,5 @@ export function fillValueNoise(
   out.fill(0);
   addValueNoiseOctave(out, sampleRate, hz, 1, random);
   addValueNoiseOctave(out, sampleRate, hz * 3.2, 0.35, random);
-  let peak = 0;
-  for (let i = 0; i < out.length; i += 1) peak = Math.max(peak, Math.abs(out[i]));
-  if (peak > 0) {
-    const scale = 1 / peak;
-    for (let i = 0; i < out.length; i += 1) out[i] *= scale;
-  }
+  normalise(out);
 }

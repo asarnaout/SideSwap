@@ -3,14 +3,23 @@
  * one noise buffer, and the modulation source that keeps the engine and tyres
  * from sounding mechanically perfect.
  */
-import { fillValueNoise, fillWhiteNoise } from "../waveTables";
+import { fillPinkNoise, fillValueNoise, fillWhiteNoise } from "../waveTables";
 import { seededUnit } from "../../visuals";
 
 export interface VoiceContext {
   readonly context: AudioContext;
   /** Voices connect here, never to `destination` — see masterBus. */
   readonly destination: AudioNode;
+  /**
+   * White. Only ever heard through narrow bandpasses (squeal, disc, induction),
+   * where the source spectrum barely survives the filter anyway.
+   */
   readonly noiseBuffer: AudioBuffer;
+  /**
+   * Pink, for the broadband wind and road layers. Those are heard wide open, and
+   * white noise there sounds like static rather than moving air.
+   */
+  readonly ambienceBuffer: AudioBuffer;
   /**
    * A looping buffer of slow fractal noise, running whether anything listens or
    * not. Voices tap it through their own depth gains into AudioParams, so the
@@ -40,6 +49,16 @@ export function createNoiseBuffer(context: AudioContext, seed = 90210): AudioBuf
   return buffer;
 }
 
+export function createAmbienceBuffer(context: AudioContext, seed = 31337): AudioBuffer {
+  const buffer = context.createBuffer(
+    1,
+    Math.floor(context.sampleRate * NOISE_SECONDS),
+    context.sampleRate,
+  );
+  fillPinkNoise(buffer.getChannelData(0), seededUnit(seed));
+  return buffer;
+}
+
 export function createJitterSource(context: AudioContext, seed = 4711): AudioBufferSourceNode {
   const buffer = context.createBuffer(
     1,
@@ -55,13 +74,14 @@ export function createJitterSource(context: AudioContext, seed = 4711): AudioBuf
   return source;
 }
 
-/** A looping noise source tapped off the shared buffer. */
+/** A looping noise source tapped off one of the shared buffers. */
 export function createNoiseSource(
   voice: VoiceContext,
   playbackRate: number,
+  flavour: "white" | "pink" = "white",
 ): AudioBufferSourceNode {
   const source = voice.context.createBufferSource();
-  source.buffer = voice.noiseBuffer;
+  source.buffer = flavour === "pink" ? voice.ambienceBuffer : voice.noiseBuffer;
   source.loop = true;
   source.playbackRate.value = playbackRate;
   return source;
