@@ -4990,11 +4990,13 @@ class BabylonGameSession {
       const px = pose.x + Math.cos(pose.heading) * 15;
       const pz = pose.z - Math.sin(pose.heading) * 15;
       // A concrete apron under the station so it sits on paving, not grass.
+      // Kept modest + set back on the kerb side so it reads as a forecourt, not a
+      // plaza, and never overlaps the carriageway or its markings.
       createBox(
         scene,
         `${service.id}-forecourt`,
-        { width: 26, height: 0.16, depth: 26 },
-        new Vector3(px, 0.09, pz),
+        { width: 19, height: 0.14, depth: 19 },
+        new Vector3(px, 0.08, pz),
         makeMaterial(scene, `${service.id}-forecourt`, new Color3(0.34, 0.35, 0.37)),
       );
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
