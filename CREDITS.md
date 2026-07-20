@@ -77,3 +77,31 @@ provided its licence text travels with the fonts (included alongside them):
   generated with OpenAI (ChatGPT) by the project owner, who owns the output
   under OpenAI's Terms of Use. Stylised generic city scenes; no third-party
   assets, logos, or branding.
+- **All sound effects** — engine, wind and road noise, tyre and brake squeal,
+  horn, and collision impacts are **synthesised at runtime in Web Audio**
+  (`app/game/audio/`). No sample, recording, or third-party audio asset is used
+  or shipped, so there is nothing here to license.
+- **`public/audio/music/*.mp3`** (8 background tracks) — generated with
+  [Suno](https://suno.com) on 2026-07-19 by the project owner while subscribed
+  to a paid (Pro/Premier) plan. Suno assigns the subscriber all of its right,
+  title and interest in output generated during the subscription term, including
+  commercial use, and that grant survives the subscription ending. See Suno's
+  [Terms of Service](https://suno.com/terms-of-service) and
+  [rights FAQ](https://help.suno.com/en/articles/9601665). Note that rights are
+  **not** granted retroactively for anything made on the free tier, which is why
+  the generation date is recorded here.
+
+  Tracks are matched to the city they were written for; Milton Keynes has no
+  piece of its own and draws from the full set. Original download names are kept
+  here so the files can be traced back to the Suno account:
+
+  | File | Title | City | Source |
+  |---|---|---|---|
+  | `nyc-upper-west-glide.mp3` | Upper West Glide | NYC | track1 |
+  | `nyc-midnight-manhattan.mp3` | Midnight Manhattan | NYC | track7 |
+  | `london-exhibition-road-glide-1.mp3` | Exhibition Road Glide | London | track2 |
+  | `london-exhibition-road-glide-2.mp3` | Exhibition Road Glide | London | track3 |
+  | `calais-coast-run-1.mp3` | Calais Coast Run | Calais | track4 |
+  | `calais-coast-run-2.mp3` | Calais Coast Run | Calais | track5 |
+  | `tokyo-setagaya-glide.mp3` | Setagaya Glide | Tokyo | track6 |
+  | `tokyo-setagaya-morning.mp3` | Setagaya Morning | Tokyo | track8 |
