@@ -7413,8 +7413,16 @@ class BabylonGameSession {
     const fogRange = resolveFogRange(worldSize);
     scene.fogMode = Scene.FOGMODE_LINEAR;
     scene.fogColor = Color3.FromHexString(palette.fogColor);
-    scene.fogStart = fogRange.start;
-    scene.fogEnd = fogRange.end;
+    if (palette.night) {
+      // Tighter fog at night: fades the far end of long avenues so a corner
+      // turn onto a canyon draws far fewer buildings (the worst-case spike),
+      // and it deepens the night mood.
+      scene.fogStart = Math.min(fogRange.start, 100);
+      scene.fogEnd = Math.min(fogRange.end, 440);
+    } else {
+      scene.fogStart = fogRange.start;
+      scene.fogEnd = fogRange.end;
+    }
 
     const skyMaterial = new StandardMaterial("sky-dome-material", scene);
     skyMaterial.emissiveTexture = createSkyGradientTexture(scene, palette);
