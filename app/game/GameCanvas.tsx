@@ -4235,7 +4235,44 @@ class BabylonGameSession {
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
     root.scaling.setAll(config.scale);
+    if (kind === "gas_station") this.dressGasStationForecourt(root);
     return true;
+  }
+
+  /**
+   * The gas-station glb ships as a diorama sat on a big pale base slab, with
+   * baked-in grass strips and a parked car. Left alone the slab reads as an alien
+   * grey platform that clashes with the surrounding asphalt. So, geometry-first
+   * (its mesh names are cryptic), recolour every flat ground-level plate — the
+   * slab top and the grass strips — to road-matching asphalt so the whole lot
+   * reads as one paved forecourt continuous with the carriageway, and hide the
+   * baked car. Tall parts (pumps, store, canopy) and the elevated canopy roof are
+   * untouched.
+   */
+  private dressGasStationForecourt(root: TransformNode): void {
+    const asphalt = makeMaterial(
+      this.scene,
+      "forecourt-asphalt",
+      new Color3(0.22, 0.25, 0.27),
+    );
+    root.computeWorldMatrix(true);
+    for (const mesh of root.getChildMeshes()) {
+      if (/NormalCar/i.test(mesh.name)) {
+        mesh.setEnabled(false);
+        continue;
+      }
+      mesh.computeWorldMatrix(true);
+      const box = mesh.getBoundingInfo().boundingBox;
+      const height = box.maximumWorld.y - box.minimumWorld.y;
+      const footprint = Math.max(
+        box.maximumWorld.x - box.minimumWorld.x,
+        box.maximumWorld.z - box.minimumWorld.z,
+      );
+      const centreY = (box.maximumWorld.y + box.minimumWorld.y) / 2;
+      if (height < 0.7 && footprint > 2 && centreY < 0.6) {
+        mesh.material = asphalt;
+      }
+    }
   }
 
   /**
@@ -5591,6 +5628,34 @@ class BabylonGameSession {
     const kinds = roadsidePropKindsForMap(key);
     if (!kinds.length || !roadSurfaces.length) return;
 
+    // Keep scattered trees / street furniture off the gas-station forecourts and
+    // venue lots — those models already fill that ground, and a tree sprouting on
+    // a forecourt reads as a bug. Treated as extra avoid-rectangles at each POI's
+    // set-back model centre.
+    const poiExclusions: { center: GameCanvasPoint; size: GameCanvasPoint }[] = [
+      ...(mapPack.geometry.servicePoints ?? []).map((sp) => ({
+        anchor: sp.anchor,
+        setback: sp.setbackM ?? 16,
+        span: 22,
+      })),
+      ...(mapPack.geometry.gigVenues ?? []).map((venue) => ({
+        anchor: venue.anchor,
+        setback: venue.setbackM ?? 13,
+        span: 13,
+      })),
+    ].flatMap((poi) => {
+      const pose = resolveSimulationLaneAnchor(mapPack.laneGraph.lanes, poi.anchor);
+      if (!pose) return [];
+      return [
+        {
+          center: {
+            x: pose.x + Math.cos(pose.heading) * poi.setback,
+            z: pose.z - Math.sin(pose.heading) * poi.setback,
+          },
+          size: { x: poi.span, z: poi.span },
+        },
+      ];
+    });
     const placements = generateRoadsidePropPlacements({
       roadSurfaces: roadSurfaces.map((surface) => ({
         id: surface.id,
@@ -5601,10 +5666,13 @@ class BabylonGameSession {
         center: block.center,
         size: block.size,
       })),
-      landmarks: mapPack.geometry.landmarks.map((landmark) => ({
-        center: landmark.center,
-        size: landmark.size,
-      })),
+      landmarks: [
+        ...mapPack.geometry.landmarks.map((landmark) => ({
+          center: landmark.center,
+          size: landmark.size,
+        })),
+        ...poiExclusions,
+      ],
       worldSize: mapPack.geometry.worldSize,
       shoulderWidthM: Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2),
       seed: hashStringToSeed(`${mapId}-props`),
