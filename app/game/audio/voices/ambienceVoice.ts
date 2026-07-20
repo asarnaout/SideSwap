@@ -6,8 +6,19 @@
  * scales superlinearly for the same reason it does in a real car — drag goes as
  * the square of velocity. Scaling it linearly is what makes 20mph and 60mph
  * sound like the same journey.
+ *
+ * Three details separate "moving air" from "untuned television", and the first
+ * version of this voice got all three wrong:
+ *
+ *   - The source is **pink**, not white. White noise has equal energy per hertz,
+ *     so half its power sits in the top octave and it reads as electronic hiss.
+ *   - Wind is a **band**. Highpassing and leaving the top open passes everything
+ *     up to Nyquist, which is the definition of white noise; real wind rolls off
+ *     hard above a couple of kilohertz.
+ *   - It **gusts**. Perfectly steady broadband noise is what the ear labels
+ *     static, and no amount of filtering fixes that — only fluctuation does.
  */
-import type { DriveAudioParams } from "../audioMath";
+import { WIND_GUST_DEPTH, type DriveAudioParams } from "../audioMath";
 import {
   CONTINUOUS_LOOKAHEAD,
   EPSILON_GAIN,
@@ -26,27 +37,48 @@ export class AmbienceVoice {
   private readonly context: AudioContext;
   private readonly nodes: AudioNode[] = [];
   private readonly sources: AudioBufferSourceNode[] = [];
-  private readonly windFilter: BiquadFilterNode;
+  private readonly windHighpass: BiquadFilterNode;
+  private readonly windLowpass: BiquadFilterNode;
   private readonly windGain: GainNode;
+  private readonly gustDepth: GainNode;
   private readonly roadFilter: BiquadFilterNode;
   private readonly roadGain: GainNode;
-  private previous = { windHz: 0, windGain: -1, roadHz: 0, roadQ: 0, roadGain: -1 };
+  private previous = {
+    windHz: 0,
+    windTopHz: 0,
+    windGain: -1,
+    gust: -1,
+    roadHz: 0,
+    roadQ: 0,
+    roadGain: -1,
+  };
 
   constructor(voice: VoiceContext) {
     const context = voice.context;
     this.context = context;
 
-    // Two taps on the shared buffer at incommensurate rates. Running both
-    // filters off identical noise would sound phasey and hollow.
-    const windSource = createNoiseSource(voice, 1);
-    const roadSource = createNoiseSource(voice, 0.7413);
+    // Two taps on the pink buffer at incommensurate rates. Running both filters
+    // off identical noise would sound phasey and hollow.
+    const windSource = createNoiseSource(voice, 1, "pink");
+    const roadSource = createNoiseSource(voice, 0.7413, "pink");
 
-    this.windFilter = context.createBiquadFilter();
-    this.windFilter.type = "highpass";
-    this.windFilter.frequency.value = 260;
-    this.windFilter.Q.value = 0.5;
+    this.windHighpass = context.createBiquadFilter();
+    this.windHighpass.type = "highpass";
+    this.windHighpass.frequency.value = 180;
+    this.windHighpass.Q.value = 0.5;
+    this.windLowpass = context.createBiquadFilter();
+    this.windLowpass.type = "lowpass";
+    this.windLowpass.frequency.value = 900;
+    this.windLowpass.Q.value = 0.7;
     this.windGain = context.createGain();
     this.windGain.gain.value = 0;
+
+    // Summed into the gain parameter, so the level wanders around whatever the
+    // model asks for instead of sitting flat. Runs on the audio thread.
+    this.gustDepth = context.createGain();
+    this.gustDepth.gain.value = 0;
+    voice.jitter.connect(this.gustDepth);
+    this.gustDepth.connect(this.windGain.gain);
 
     this.roadFilter = context.createBiquadFilter();
     this.roadFilter.type = "bandpass";
@@ -55,10 +87,21 @@ export class AmbienceVoice {
     this.roadGain = context.createGain();
     this.roadGain.gain.value = 0;
 
-    windSource.connect(this.windFilter).connect(this.windGain).connect(voice.destination);
+    windSource
+      .connect(this.windHighpass)
+      .connect(this.windLowpass)
+      .connect(this.windGain)
+      .connect(voice.destination);
     roadSource.connect(this.roadFilter).connect(this.roadGain).connect(voice.destination);
 
-    this.nodes.push(this.windFilter, this.windGain, this.roadFilter, this.roadGain);
+    this.nodes.push(
+      this.windHighpass,
+      this.windLowpass,
+      this.windGain,
+      this.gustDepth,
+      this.roadFilter,
+      this.roadGain,
+    );
     this.sources.push(windSource, roadSource);
     for (const source of this.sources) source.start();
   }
@@ -66,11 +109,20 @@ export class AmbienceVoice {
   update(params: DriveAudioParams): void {
     const when = this.context.currentTime + CONTINUOUS_LOOKAHEAD;
     const previous = this.previous;
-    if (writeIfChanged(this.windFilter.frequency, params.windHz, previous.windHz, EPSILON_HZ, when, TAU_WIND_HZ)) {
+    if (writeIfChanged(this.windHighpass.frequency, params.windHz, previous.windHz, EPSILON_HZ, when, TAU_WIND_HZ)) {
       previous.windHz = params.windHz;
+    }
+    if (writeIfChanged(this.windLowpass.frequency, params.windTopHz, previous.windTopHz, EPSILON_HZ, when, TAU_WIND_HZ)) {
+      previous.windTopHz = params.windTopHz;
     }
     if (writeIfChanged(this.windGain.gain, params.windGain, previous.windGain, EPSILON_GAIN, when, TAU_WIND_GAIN)) {
       previous.windGain = params.windGain;
+    }
+    // Gust swing scales with the level, so it stays proportional rather than
+    // swamping a quiet layer at low speed.
+    const gust = params.windGain * WIND_GUST_DEPTH;
+    if (writeIfChanged(this.gustDepth.gain, gust, previous.gust, EPSILON_GAIN, when, TAU_WIND_GAIN)) {
+      previous.gust = gust;
     }
     if (writeIfChanged(this.roadFilter.frequency, params.roadHz, previous.roadHz, EPSILON_HZ, when, TAU_ROAD)) {
       previous.roadHz = params.roadHz;

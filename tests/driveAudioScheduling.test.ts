@@ -171,6 +171,7 @@ const makeVoiceContext = (context: FakeContext, lowPower = false): VoiceContext 
     destination: new FakeNode("bus") as unknown as AudioNode,
     // Short buffers keep the noise fill from dominating the test runtime.
     noiseBuffer: context.createBuffer(1, 4096, 48_000) as unknown as AudioBuffer,
+    ambienceBuffer: context.createBuffer(1, 4096, 48_000) as unknown as AudioBuffer,
     jitter: new FakeNode("jitter") as unknown as AudioNode,
     lowPower,
   }) as VoiceContext;
@@ -246,9 +247,11 @@ describe("scheduling discipline", () => {
 
   it("keeps the per-frame scheduling load low", () => {
     driveAll();
-    // Epsilon-diffing is what stops ~20 parameters queueing 1200 events a
-    // second, nearly all of them inaudible no-ops.
-    expect(scheduled.length / 400).toBeLessThan(12);
+    // Epsilon-diffing is what stops the ~23 live parameters queueing an event
+    // each per frame, nearly all of them inaudible no-ops. The ceiling sits
+    // between what diffing achieves and what losing it would cost, so it fails
+    // if the diff stops biting rather than merely drifting a little.
+    expect(scheduled.length / 400).toBeLessThan(16);
   });
 
   it("starts every continuous source exactly once and stops none of them", () => {

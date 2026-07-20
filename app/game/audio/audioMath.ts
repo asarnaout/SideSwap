@@ -70,6 +70,20 @@ export const ENGINE_PITCH_MULTIPLIER = 1;
 /** Four cylinders, four-stroke: two firing events per crank revolution. */
 export const ENGINE_CYLINDERS = 4;
 
+/**
+ * Peak level of the wind layer, before the speed curve and camera trim. Set this
+ * to 0 to remove wind noise entirely — nothing else depends on it, and the road
+ * layer alone still conveys speed, just less vividly.
+ */
+export const WIND_LEVEL = 0.15;
+
+/**
+ * How much the wind level wanders, as a fraction of itself. Steady broadband
+ * noise is what the ear labels "static"; real wind gusts, and this fluctuation
+ * does more to sell it as air than any amount of filtering.
+ */
+export const WIND_GUST_DEPTH = 0.38;
+
 // Pinned to simulation.ts:1887-1889. If the sim's handling model changes, the
 // squeal must move with it, and the test suite asserts these still match.
 export const LATERAL_ACCEL_DIVISOR = 3.1;
@@ -149,6 +163,8 @@ export interface DriveAudioParams {
   reverseWhineGain: number;
   windGain: number;
   windHz: number;
+  /** Upper corner of the wind band. Without it the layer is white noise. */
+  windTopHz: number;
   roadGain: number;
   roadHz: number;
   roadQ: number;
@@ -191,7 +207,8 @@ export function createAudioParams(): DriveAudioParams {
     reverseWhineHz: 355,
     reverseWhineGain: 0,
     windGain: 0,
-    windHz: 260,
+    windHz: 180,
+    windTopHz: 900,
     roadGain: 0,
     roadHz: 120,
     roadQ: 0.9,
@@ -378,14 +395,21 @@ export function updateAudioModel(
     : 0;
 
   // --- Wind and road --------------------------------------------------------
-  // The superlinear curve is the point: 0.029 at 10 m/s against 0.30 at 40 m/s.
-  // Scaling wind linearly is what makes 20mph and 60mph sound the same.
-  out.windHz = 260 + 900 * speedNorm;
-  out.windGain = 0.3 * Math.pow(speedNorm, 1.7) * (telemetry.firstPerson ? 0.8 : 1.25);
+  // Wind is a *band*, not a shelf. Highpassing noise and leaving the top open
+  // runs every frequency up to Nyquist straight through, which is the textbook
+  // recipe for static; real air rushing past a car has a pronounced rolloff
+  // above a couple of kilohertz. Both corners open with speed so it brightens
+  // rather than merely getting louder.
+  out.windHz = 180 + 420 * speedNorm;
+  out.windTopHz = 900 + 2400 * speedNorm;
+  // The superlinear curve is the point: barely there in town, dominant near the
+  // top end. Scaling it linearly makes 20mph and 60mph sound the same.
+  out.windGain =
+    WIND_LEVEL * Math.pow(speedNorm, 1.9) * (telemetry.firstPerson ? 0.85 : 1.1);
 
   out.roadHz = telemetry.offRoad ? 90 + 220 * speedNorm : 120 + 380 * speedNorm;
   out.roadQ = telemetry.offRoad ? 0.4 : 0.9;
-  out.roadGain = 0.22 * Math.pow(speedNorm, 1.2) * (telemetry.offRoad ? 1.9 : 1);
+  out.roadGain = 0.14 * Math.pow(speedNorm, 1.3) * (telemetry.offRoad ? 1.9 : 1);
 
   // --- Tyres ----------------------------------------------------------------
   // Same formula the simulation scores against, so the warning arrives before
