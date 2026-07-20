@@ -161,6 +161,9 @@ export function slotBlockBuildings(
   size: VisualPoint,
   setId: BuildingSetId,
   seed: number,
+  /** Fraction of the street wall to keep (1 = full). Weak devices thin it for
+   * frame rate; deterministic so the same buildings survive each load. */
+  keepFraction = 1,
 ): PlacedBuilding[] {
   const models = SETS[setId]
     .map((id) => ({ id, url: URL_BY_ID.get(id), cfg: PLACEMENTS[id] }))
@@ -185,6 +188,7 @@ export function slotBlockBuildings(
   ];
 
   const placed: PlacedBuilding[] = [];
+  let slot = 0;
   for (const edge of edges) {
     let cursor = edge.runStart;
     // Guard against absurd loops on degenerate blocks.
@@ -194,13 +198,21 @@ export function slotBlockBuildings(
       const foot = model.cfg.footprintM;
       const along = cursor + foot / 2;
       if (along + foot / 2 > edge.runEnd + 0.01) break;
-      const inset = foot / 2;
-      const x = edge.runAxis === "x" ? along : edge.fixed + edge.inX * inset;
-      const z = edge.runAxis === "z" ? along : edge.fixed + edge.inZ * inset;
-      // Front is on local -Z (glTF-loader flip); front world dir = yaw+π, so to
-      // face outward `edge.outward` set yaw = outward - π (+ per-model offset).
-      const yaw = edge.outward - Math.PI + model.cfg.frontOffset;
-      placed.push({ modelId: model.id, url: model.url, x, z, yaw, scale: model.cfg.scale, groundY: model.cfg.groundY });
+      // Thin the wall on weak devices: advance the cursor regardless so spacing
+      // stays stable, but skip this slot when it falls outside keepFraction.
+      const keep =
+        keepFraction >= 1 ||
+        ((slot * 2654435761) >>> 0) / 4294967296 < keepFraction;
+      slot += 1;
+      if (keep) {
+        const inset = foot / 2;
+        const x = edge.runAxis === "x" ? along : edge.fixed + edge.inX * inset;
+        const z = edge.runAxis === "z" ? along : edge.fixed + edge.inZ * inset;
+        // Front is on local -Z (glTF-loader flip); front world dir = yaw+π, so to
+        // face outward `edge.outward` set yaw = outward - π (+ per-model offset).
+        const yaw = edge.outward - Math.PI + model.cfg.frontOffset;
+        placed.push({ modelId: model.id, url: model.url, x, z, yaw, scale: model.cfg.scale, groundY: model.cfg.groundY });
+      }
       cursor = along + foot / 2 + GAP_M;
     }
   }

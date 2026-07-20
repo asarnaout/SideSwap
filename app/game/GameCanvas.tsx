@@ -2563,6 +2563,14 @@ class BabylonGameSession {
     setId: BuildingSetId;
     buildFallback: () => void;
   }[] = [];
+  /** Static scenery (instanced buildings + roadside props) whose world matrices
+   * are frozen once after the first render, so the dense city stops paying a
+   * per-frame matrix + bounding-sync cost across ~9k meshes. Parents precede
+   * children so the freeze pass computes the chain in order. */
+  private readonly staticSceneryFreeze: TransformNode[] = [];
+  /** Fraction of each block's building wall to build. 1 on desktop; thinned on
+   * touch / low-core devices so phones stay playable. */
+  private buildingKeepFraction = 1;
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -2730,6 +2738,12 @@ class BabylonGameSession {
       ? Math.max(1, Math.min(1.65, window.devicePixelRatio / 1.2))
       : Math.max(1, Math.min(1.4, window.devicePixelRatio / 1.6));
     this.engine.setHardwareScalingLevel(scale);
+    // Weak devices (touch, or few CPU cores) build a thinner building wall so
+    // the dense city stays playable on phones.
+    const cores =
+      (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 8;
+    const lowSpec = options.inputCapabilities.touchFirst || cores <= 4;
+    this.buildingKeepFraction = lowSpec ? 0.5 : 1;
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.68, 0.84, 0.9, 1);
     // Low, faintly warm ambient: the directional sun and hemisphere fill do
@@ -3042,6 +3056,8 @@ class BabylonGameSession {
     this.upgradeRoadUsersToModels();
     this.upgradePropsToModels();
     this.buildInstancedBuildings();
+    // Freeze the dense scenery once the first frame has computed its matrices.
+    this.scene.onAfterRenderObservable.addOnce(() => this.freezeStaticScenery());
     this.markReady();
   }
 
@@ -4510,6 +4526,7 @@ class BabylonGameSession {
         block.size,
         setId,
         hashStringToSeed(`${block.id}-buildings`),
+        this.buildingKeepFraction,
       );
       let placed = 0;
       for (const b of placements) {
@@ -4521,14 +4538,38 @@ class BabylonGameSession {
         holder.rotation.y = b.yaw;
         root.parent = holder;
         root.scaling.setAll(b.scale);
+        this.staticSceneryFreeze.push(holder);
         for (const mesh of root.getChildMeshes(false)) {
           mesh.isPickable = false;
+          this.staticSceneryFreeze.push(mesh);
         }
         placed += 1;
       }
       if (placed === 0) buildFallback();
     }
     this.pendingBuildingBlocks.length = 0;
+  }
+
+  /**
+   * Freeze the dense static scenery so the render loop stops recomputing world
+   * matrices and bounding info for ~9k instanced meshes every frame (the cause
+   * of the driving stutter), and build a selection octree so frustum culling of
+   * that many meshes is spatial rather than linear. Runs once after the first
+   * render, when every world matrix is already correct — freezing earlier (mid
+   * construction) cached identity matrices and dropped buildings at the origin.
+   */
+  private freezeStaticScenery() {
+    // Parents-before-children order (as pushed) means each freeze reads an
+    // already-frozen parent matrix.
+    for (const node of this.staticSceneryFreeze) {
+      node.computeWorldMatrix(true);
+    }
+    for (const node of this.staticSceneryFreeze) {
+      node.freezeWorldMatrix();
+      const mesh = node as unknown as { doNotSyncBoundingInfo?: boolean };
+      if ("doNotSyncBoundingInfo" in mesh) mesh.doNotSyncBoundingInfo = true;
+    }
+    this.staticSceneryFreeze.length = 0;
   }
 
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
@@ -6298,6 +6339,7 @@ class BabylonGameSession {
         instance.rotation.y = placement.rotationY;
         instance.scaling.setAll(placement.scale);
         instance.isPickable = false;
+        this.staticSceneryFreeze.push(instance);
         if (part.castShadow !== false) {
           this.registerShadowCaster(instance, placement.x, placement.z);
         }
@@ -6874,6 +6916,14 @@ class BabylonGameSession {
               maxz: r(hi.z),
             };
           });
+      // Frame rate + mesh/draw-call counts, so QA can measure the cost of the
+      // dense city and confirm the static-scenery freeze keeps it smooth.
+      debugWindow.__sideswapPerfDebug = () => ({
+        fps: Math.round(this.engine.getFps()),
+        totalMeshes: this.scene.meshes.length,
+        activeMeshes: this.scene.getActiveMeshes().length,
+        materials: this.scene.materials.length,
+      });
     }
   }
 

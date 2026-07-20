@@ -54,4 +54,18 @@ describe("building sets", () => {
     const seedB = slotBlockBuildings(center, size, "nyc-brownstone", 2);
     expect(seedA).not.toEqual(seedB);
   });
+
+  it("thins the wall deterministically for weak devices (keepFraction)", () => {
+    const center = { x: 0, z: 0 };
+    const size = { x: 200, z: 200 };
+    const full = slotBlockBuildings(center, size, "nyc-midrise", 7, 1);
+    const half = slotBlockBuildings(center, size, "nyc-midrise", 7, 0.5);
+    const halfAgain = slotBlockBuildings(center, size, "nyc-midrise", 7, 0.5);
+    expect(half).toEqual(halfAgain); // deterministic
+    expect(half.length).toBeLessThan(full.length);
+    expect(half.length).toBeGreaterThan(full.length * 0.3);
+    // survivors keep their full-wall positions (cursor advances regardless)
+    const fullKeys = new Set(full.map((p) => `${p.x},${p.z}`));
+    for (const p of half) expect(fullKeys.has(`${p.x},${p.z}`)).toBe(true);
+  });
 });
