@@ -1375,14 +1375,16 @@ export const MAP_PACKS: readonly MapPack[] = [
       ],
       blocks: [
         // One building cluster per grid cell, fitted between the avenues so none
-        // sits on Amsterdam or Columbus.
-        { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(150, 420), heightRange: [18, 42], density: 0.8, material: "brick" },
-        { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(150, 420), heightRange: [20, 46], density: 0.82, material: "sandstone" },
-        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(120, 420), heightRange: [16, 40], density: 0.78, material: "stone" },
-        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(120, 420), heightRange: [20, 44], density: 0.8, material: "brick" },
-        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(100, 420), heightRange: [18, 46], density: 0.82, material: "sandstone" },
-        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone" },
-        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
+        // sits on Amsterdam or Columbus. `buildingSet` picks the instanced glb
+        // street wall (Phase 2/3); the mix here clusters towers on the Broadway/
+        // Amsterdam core, a brownstone belt on the west side, and a house pocket.
+        { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(150, 420), heightRange: [18, 42], density: 0.8, material: "brick", buildingSet: "nyc-brownstone" },
+        { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(150, 420), heightRange: [20, 46], density: 0.82, material: "sandstone", buildingSet: "nyc-brownstone" },
+        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(120, 420), heightRange: [16, 40], density: 0.78, material: "stone", buildingSet: "nyc-downtown" },
+        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(120, 420), heightRange: [20, 44], density: 0.8, material: "brick", buildingSet: "nyc-downtown" },
+        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(100, 420), heightRange: [18, 46], density: 0.82, material: "sandstone", buildingSet: "nyc-midrise" },
+        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone", buildingSet: "nyc-midrise" },
+        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick", buildingSet: "nyc-house" },
       ],
       servicePoints: [
         // West 72nd is a wide two-way, so the lot has to clear 3.5 m of lane

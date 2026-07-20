@@ -89,12 +89,19 @@ import {
 import {
   disposeModels,
   instantiateModel,
+  instantiateModelInstanced,
   isModelReady,
   PROP_MODEL_REGISTRY,
   preloadModels,
   propModelUrls,
   vehicleModelUrls,
 } from "./modelLibrary";
+import {
+  buildingSetUrls,
+  isBuildingSetId,
+  slotBlockBuildings,
+  type BuildingSetId,
+} from "./buildingSets";
 import {
   buildCyclistVisual,
   buildPedestrianVisual,
@@ -847,6 +854,7 @@ export interface GameCanvasMapPack {
       readonly heightRange: readonly [number, number];
       readonly density: number;
       readonly material: string;
+      readonly buildingSet?: string;
     }[];
     landmarks: readonly {
       readonly id: string;
@@ -2545,6 +2553,15 @@ class BabylonGameSession {
     fallback: TransformNode;
     label?: string;
   }[] = [];
+  /** glb URLs of the current map's building sets, preloaded off the critical path. */
+  private buildingModelUrls: string[] = [];
+  /** Blocks that dress with instanced glb building sets once their models load;
+   * `buildFallback` builds procedural facade boxes if the models never arrive. */
+  private readonly pendingBuildingBlocks: {
+    block: GameCanvasMapPack["geometry"]["blocks"][number];
+    setId: BuildingSetId;
+    buildFallback: () => void;
+  }[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -3012,6 +3029,7 @@ class BabylonGameSession {
         ...vehicleModelUrls(),
         ...characterModelUrls(),
         ...propModelUrls(),
+        ...this.buildingModelUrls,
       ]);
     } catch {
       // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
@@ -3022,6 +3040,7 @@ class BabylonGameSession {
     this.upgradeVehiclesToModels();
     this.upgradeRoadUsersToModels();
     this.upgradePropsToModels();
+    this.buildInstancedBuildings();
     this.markReady();
   }
 
@@ -4445,6 +4464,41 @@ class BabylonGameSession {
     this.deferredProps.push(...stillProcedural);
   }
 
+  /**
+   * After preload, dress each building-set block with a street wall of instanced
+   * glb buildings. Every placement of a given model shares one uploaded geometry
+   * (instantiateModelInstanced), so hundreds of buildings cost a handful of draw
+   * calls rather than hundreds. A block whose set never loaded (offline) falls
+   * back to its procedural facade-box grid so it is never left empty.
+   */
+  private buildInstancedBuildings() {
+    for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
+      const placements = slotBlockBuildings(
+        block.center,
+        block.size,
+        setId,
+        hashStringToSeed(`${block.id}-buildings`),
+      );
+      let placed = 0;
+      for (const b of placements) {
+        const instance = instantiateModelInstanced(this.scene, b.url);
+        const root = instance?.rootNodes[0] as TransformNode | undefined;
+        if (!root) continue;
+        const holder = new TransformNode(`bldg-${block.id}-${placed}`, this.scene);
+        holder.position.set(b.x, b.groundY, b.z);
+        holder.rotation.y = b.yaw;
+        root.parent = holder;
+        root.scaling.setAll(b.scale);
+        for (const mesh of root.getChildMeshes(false)) {
+          mesh.isPickable = false;
+        }
+        placed += 1;
+      }
+      if (placed === 0) buildFallback();
+    }
+    this.pendingBuildingBlocks.length = 0;
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
@@ -5128,29 +5182,12 @@ class BabylonGameSession {
       facadeMaterials.set(materialKey, created);
       return created;
     };
-    for (const block of mapPack.geometry.blocks) {
-      const material = facadeMaterialFor(block.material);
-      const isLondonMuseumBlock =
-        mapId.includes("london") && block.material.endsWith("-museum");
-      if (isLondonMuseumBlock) {
-        const wingWidth = Math.max(12, block.size.x * 0.23);
-        const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
-        for (const side of [-1, 1]) {
-          const wingX = block.center.x + side * block.size.x * 0.37;
-          this.registerShadowCaster(
-            createFacadeBox(
-              scene,
-              `building-${block.id}-wing-${side}`,
-              { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
-              new Vector3(wingX, wingHeight / 2, block.center.z),
-              material,
-            ),
-            wingX,
-            block.center.z,
-          );
-        }
-        continue;
-      }
+    // The procedural windowed-facade-box grid: the classic filler, and the
+    // fallback for any block whose building-set glbs never load.
+    const placeFacadeGrid = (
+      block: GameCanvasMapPack["geometry"]["blocks"][number],
+      material: StandardMaterial,
+    ) => {
       const count = Math.max(1, Math.round(3 + block.density * 7));
       for (let index = 0; index < count; index += 1) {
         const columns = Math.ceil(Math.sqrt(count));
@@ -5176,7 +5213,50 @@ class BabylonGameSession {
           z,
         );
       }
+    };
+    for (const block of mapPack.geometry.blocks) {
+      const material = facadeMaterialFor(block.material);
+      const isLondonMuseumBlock =
+        mapId.includes("london") && block.material.endsWith("-museum");
+      if (isLondonMuseumBlock) {
+        const wingWidth = Math.max(12, block.size.x * 0.23);
+        const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
+        for (const side of [-1, 1]) {
+          const wingX = block.center.x + side * block.size.x * 0.37;
+          this.registerShadowCaster(
+            createFacadeBox(
+              scene,
+              `building-${block.id}-wing-${side}`,
+              { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
+              new Vector3(wingX, wingHeight / 2, block.center.z),
+              material,
+            ),
+            wingX,
+            block.center.z,
+          );
+        }
+        continue;
+      }
+      // Building-set blocks are dressed with instanced glb street walls after
+      // preload (buildInstancedBuildings); box grid is the offline fallback.
+      if (block.buildingSet && isBuildingSetId(block.buildingSet)) {
+        const setId = block.buildingSet;
+        this.pendingBuildingBlocks.push({
+          block,
+          setId,
+          buildFallback: () => placeFacadeGrid(block, facadeMaterialFor(block.material)),
+        });
+        continue;
+      }
+      placeFacadeGrid(block, material);
     }
+    // Preload just this map's building-set glbs (not every map's) off the
+    // critical path; buildInstancedBuildings consumes them once ready.
+    this.buildingModelUrls = buildingSetUrls([
+      ...new Set(
+        this.pendingBuildingBlocks.map((entry) => entry.setId),
+      ),
+    ]);
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(

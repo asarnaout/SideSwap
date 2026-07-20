@@ -368,6 +368,13 @@ export interface ProceduralBlock {
   readonly heightRange: readonly [number, number];
   readonly density: number;
   readonly material: string;
+  /**
+   * Optional building-set id (see buildingSets.ts). When set, the block is
+   * dressed with a street wall of instanced glb buildings from that set instead
+   * of the procedural windowed facade boxes; unknown/absent falls back to boxes.
+   * The mechanism for clustering towers vs brownstones vs houses per neighborhood.
+   */
+  readonly buildingSet?: string;
 }
 
 export interface ProceduralLandmark {
