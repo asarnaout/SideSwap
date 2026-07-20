@@ -184,13 +184,23 @@ export interface PropModelConfig {
 export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // Scales derived from each glb's measured bounding box (native sizes vary
   // wildly — the diner is authored at ~300 units, the shop at ~2) then set to a
-  // sensible real-world footprint per building type. yawOffset 0: the buildings
-  // read from any side; exact facing/height is a playtest tweak.
+  // sensible real-world footprint per building type.
+  //
+  // yawOffset makes the entrance face the road. The venue loop rotates the
+  // holder by the lane heading `h` (the tangent, atan2(dx,dz)) plus this offset,
+  // and sets the building back along `(cos h, -sin h)` — so the carriageway sits
+  // at world yaw `h - π/2` from the building. All four building glbs import with
+  // their front on local -Z (the glTF loader adds a 180° Y flip for handedness),
+  // i.e. a native door facing of `h + π` at offset 0. Solving
+  // `h + yawOffset + π ≡ h - π/2` gives yawOffset = π/2, which turns every
+  // door/storefront to look across its verge at the road. The gas station lands
+  // at the same offset independently (its diorama forecourt faces the pumps to
+  // the lot's road edge).
   gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: -1.63 },
-  restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: 0 },
-  shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: 0 },
-  residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: 0 },
-  office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: 0 },
+  restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: Math.PI / 2 },
+  shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: Math.PI / 2 },
+  residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: Math.PI / 2 },
+  office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: Math.PI / 2 },
 };
 
 /** De-duplicated list of every prop glb URL the registry references, for preload. */
