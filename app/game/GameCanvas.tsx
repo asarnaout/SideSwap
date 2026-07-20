@@ -2576,6 +2576,9 @@ class BabylonGameSession {
   /** Fraction of each block's building wall to build. 1 on desktop; thinned on
    * touch / low-core devices so phones stay playable. */
   private buildingKeepFraction = 1;
+  /** Keep-out circles (gas station + gig-venue lots) so the block street wall
+   * never drops a scenery building on top of an interactive POI. */
+  private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -4598,6 +4601,11 @@ class BabylonGameSession {
         setId,
         hashStringToSeed(`${block.id}-buildings`),
         this.buildingKeepFraction,
+      ).filter(
+        (b) =>
+          !this.buildingExclusions.some(
+            (ex) => Math.hypot(b.x - ex.x, b.z - ex.z) < ex.radius,
+          ),
       );
       let placed = 0;
       for (const b of placements) {
@@ -5472,6 +5480,13 @@ class BabylonGameSession {
       if (!lot) continue;
       const px = lot.x;
       const pz = lot.z;
+      // Keep the dense street wall off the forecourt (the glb lot is bigger than
+      // the fallback footprint, so a generous clearance leaves an open lot).
+      this.buildingExclusions.push({
+        x: px,
+        z: pz,
+        radius: Math.max(service.footprint.x, service.footprint.z) + 16,
+      });
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
@@ -5532,6 +5547,12 @@ class BabylonGameSession {
       const setback = venue.setbackM ?? 13;
       const px = pose.x + Math.cos(pose.heading) * setback;
       const pz = pose.z - Math.sin(pose.heading) * setback;
+      // Keep scenery buildings off the gig venue's own lot.
+      this.buildingExclusions.push({
+        x: px,
+        z: pz,
+        radius: Math.max(venue.footprint.x, venue.footprint.z) / 2 + 12,
+      });
       // A rider waits curbside (nearer the lane than the building) facing the road.
       this.gigVenueCurbside.set(venue.id, {
         x: pose.x + Math.cos(pose.heading) * 4.5,
