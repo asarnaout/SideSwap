@@ -37,38 +37,68 @@ export const approach = (
 // Engine constants
 // ---------------------------------------------------------------------------
 
-export const IDLE_RPM = 820;
-/** Where an upshift happens under load — deliberately short of the redline. */
-export const SHIFT_RPM = 6200;
-export const REDLINE_RPM = 6500;
-
 /** Upper speed bound of each forward gear, m/s. Fifth ends at the sim's cap. */
 export const GEAR_TOP_MPS = [8.5, 15.5, 23.5, 31.5, 40.4] as const;
-
-/**
- * RPM gained per m/s in each gear, `(SHIFT_RPM - IDLE_RPM) / GEAR_TOP_MPS`.
- * Because every gear shares the idle intercept, the rpm drop after each shift
- * falls out of the ratios rather than being tuned: 2422, 1815, 1361, 1159. Drops
- * narrowing as you go up is what a real gearset does.
- */
-export const GEAR_RPM_PER_MPS = [633, 347, 229, 171, 133] as const;
-
-/** Reverse is geared short and screams: 6 m/s lands near 5220 rpm. */
-export const REVERSE_RPM_PER_MPS = 733;
 
 export const MAX_SPEED_MPS = 40.4;
 export const MAX_REVERSE_MPS = 6;
 
-/**
- * Multiplies the engine's pitch without touching the gearbox. At 1.0 the note
- * is physically honest — idle firing lands at 27Hz — but laptop speakers roll
- * off below ~150Hz, so the low end is carried entirely by upper harmonics and
- * the `growl` filter. Raise toward 1.6 if it sounds thin on real hardware.
- */
-export const ENGINE_PITCH_MULTIPLIER = 1;
-
 /** Four cylinders, four-stroke: two firing events per crank revolution. */
 export const ENGINE_CYLINDERS = 4;
+
+/**
+ * The engine's acoustic character — a small economy hatchback.
+ *
+ * Three things decide whether an engine reads as "road car" or "race car", and
+ * every value below leans road-car, hard:
+ *
+ *   1. **Where it shifts.** A car that pulls to 6000rpm in every gear sounds
+ *      like it is being driven on a track, whatever its timbre. This one
+ *      upshifts at 2900rpm and spends its life near idle — by far the biggest
+ *      lever, and the one an earlier version got wrong.
+ *   2. **How far the lowpass opens.** A cutoff climbing to 5kHz under load is
+ *      what makes an engine bright and hard; this one stays under ~1.4kHz.
+ *   3. **Resonance and intake howl.** A resonant peak riding the cutoff plus a
+ *      bright saw layer at the firing frequency is the aggressive induction bark
+ *      of a performance engine. Both are off here (`topGain` 0, low `toneQ`).
+ *
+ * Grouped in one object so the character is legible and tunable in one place,
+ * not because more than one is shipped — the game has a single engine sound.
+ */
+export const ENGINE = {
+  idleRpm: 780,
+  /** Upshift point under full load. The single strongest character cue. */
+  shiftRpm: 2900,
+  redlineRpm: 4200,
+  /** Lowpass: base + rpmNorm·rpmSpan + load·(loadBase + rpmNorm·loadRpmSpan). */
+  toneBase: 180,
+  toneRpmSpan: 380,
+  toneLoadBase: 320,
+  toneLoadRpmSpan: 1100,
+  toneQ: 0.7,
+  toneQLoad: 0.15,
+  /** Bright saw at the firing frequency — the performance bark. Off here. */
+  topGain: 0,
+  inductionLevel: 0.05,
+  /** Firing-harmonic rolloff exponent; higher is softer. */
+  harmonicRolloff: 1.2,
+  /** Spectral tilt denominator; smaller is darker. */
+  harmonicTilt: 95,
+  pitchMultiplier: 1,
+  level: 1,
+} as const;
+
+/**
+ * RPM gained per m/s in each gear. Every gear shares the idle intercept, so the
+ * rpm drop after each shift falls out of the ratios rather than being tuned, and
+ * the drops narrow as the gears close up — which is what a real gearset does.
+ */
+export const GEAR_RPM_PER_MPS: readonly number[] = GEAR_TOP_MPS.map(
+  (top) => (ENGINE.shiftRpm - ENGINE.idleRpm) / top,
+);
+
+/** Reverse is geared short, so it climbs quickly over its 6 m/s range. */
+export const REVERSE_RPM_PER_MPS = ((ENGINE.shiftRpm - ENGINE.idleRpm) * 0.95) / MAX_REVERSE_MPS;
 
 /**
  * Peak level of the wind layer, before the speed curve and camera trim. Set this
@@ -181,7 +211,7 @@ export interface DriveAudioParams {
 
 export function createAudioState(seed = 20260719): DriveAudioState {
   return {
-    rpm: IDLE_RPM,
+    rpm: ENGINE.idleRpm,
     load: 0,
     gear: 1,
     secondsInGear: 0,
@@ -194,9 +224,10 @@ export function createAudioState(seed = 20260719): DriveAudioState {
 }
 
 export function createAudioParams(): DriveAudioParams {
+  const idle = ENGINE.idleRpm;
   return {
-    engineFundamentalHz: IDLE_RPM / 120,
-    engineFiringHz: IDLE_RPM / 30,
+    engineFundamentalHz: idle / 120,
+    engineFiringHz: idle / 30,
     engineGain: 0,
     engineToneHz: 220,
     engineToneQ: 0.9,
@@ -217,7 +248,7 @@ export function createAudioParams(): DriveAudioParams {
     discGain: 0,
     discHz: 2200,
     shifted: false,
-    rpm: IDLE_RPM,
+    rpm: idle,
     gear: 1,
     load: 0,
   };
@@ -285,19 +316,17 @@ export function selectGear(
  * car slips its clutch off the line so revs lead road speed, and below 6 m/s is
  * where city driving actually happens.
  */
-export function targetRpm(
-  gear: number,
-  speedMps: number,
-  load: number,
-  reverse: boolean,
-): number {
+export function targetRpm(gear: number, speedMps: number, load: number, reverse: boolean): number {
+  const span = ENGINE.shiftRpm - ENGINE.idleRpm;
   const geared = reverse
-    ? IDLE_RPM + speedMps * REVERSE_RPM_PER_MPS
-    : IDLE_RPM + speedMps * GEAR_RPM_PER_MPS[gear - 1];
-  const flare = 900 * load * clamp(1 - speedMps / 6, 0, 1);
+    ? ENGINE.idleRpm + speedMps * REVERSE_RPM_PER_MPS
+    : ENGINE.idleRpm + speedMps * GEAR_RPM_PER_MPS[gear - 1];
+  // Scaled to the rev range so the flare stays proportional rather than jumping
+  // most of the way to the shift point off the line.
+  const flare = span * 0.17 * load * clamp(1 - speedMps / 6, 0, 1);
   // Deceleration fuel cut-off pulls the revs slightly under the geared value.
-  const overrun = 130 * (1 - load);
-  return clamp(geared + flare - overrun, IDLE_RPM * 0.94, REDLINE_RPM);
+  const overrun = span * 0.024 * (1 - load);
+  return clamp(geared + flare - overrun, ENGINE.idleRpm * 0.94, ENGINE.redlineRpm);
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +387,7 @@ export function updateAudioModel(
     state.rpm = approach(state.rpm, 0, dt, 0.5);
   }
 
-  const rpmNorm = clamp((state.rpm - IDLE_RPM) / (REDLINE_RPM - IDLE_RPM), 0, 1);
+  const rpmNorm = clamp((state.rpm - ENGINE.idleRpm) / (ENGINE.redlineRpm - ENGINE.idleRpm), 0, 1);
   const speedNorm = clamp(speed / MAX_SPEED_MPS, 0, 1);
 
   // --- Engine voice ---------------------------------------------------------
@@ -366,23 +395,30 @@ export function updateAudioModel(
   // revolutions), which makes partial k correspond to engine order k/2 — so the
   // half-orders that give a piston engine its lumpiness are simply the odd
   // partials of the wavetable.
-  const cycleHz = (state.rpm / 120) * ENGINE_PITCH_MULTIPLIER;
+  const cycleHz = (state.rpm / 120) * ENGINE.pitchMultiplier;
   out.engineFundamentalHz = Math.max(1, cycleHz);
   out.engineFiringHz = Math.max(1, cycleHz * ENGINE_CYLINDERS);
-  out.engineGain = (0.16 + 0.34 * rpmNorm) * (0.42 + 0.58 * load) * alive;
+  out.engineGain = (0.16 + 0.34 * rpmNorm) * (0.42 + 0.58 * load) * alive * ENGINE.level;
 
   // The cutoff tracking load is what makes accelerating and coasting sound
   // different at the same road speed — closed throttle means low cylinder
-  // pressure and a slow-rising, spectrally poor pulse, so it goes muffled.
-  out.engineToneHz = 220 + rpmNorm * 900 + load * (600 + rpmNorm * 3400);
-  out.engineToneQ = 0.9 + load * 0.7;
-  // Intake howl only appears when the engine is genuinely working.
-  out.engineTopGain = 0.11 * rampFrom(rpmNorm, 0.45) * rampFrom(load, 0.35) * alive;
+  // pressure and a slow-rising, spectrally poor pulse, so it goes muffled. How
+  // far it opens is the difference between a road car and a race car, and it is
+  // deliberately held low here.
+  out.engineToneHz =
+    ENGINE.toneBase +
+    rpmNorm * ENGINE.toneRpmSpan +
+    load * (ENGINE.toneLoadBase + rpmNorm * ENGINE.toneLoadRpmSpan);
+  out.engineToneQ = ENGINE.toneQ + load * ENGINE.toneQLoad;
+  // Intake howl only appears when the engine is genuinely working — and this
+  // road car keeps it off entirely (topGain 0).
+  out.engineTopGain = ENGINE.topGain * rampFrom(rpmNorm, 0.45) * rampFrom(load, 0.35) * alive;
 
   // Broadband air: intake rush and exhaust turbulence. Without this the engine
   // stays recognisably synthetic however good the harmonic table is.
   out.inductionHz = 180 + rpmNorm * 1500;
-  out.inductionGain = 0.055 * (0.3 + 0.7 * load) * (0.25 + 0.75 * rpmNorm) * alive;
+  out.inductionGain =
+    ENGINE.inductionLevel * (0.3 + 0.7 * load) * (0.25 + 0.75 * rpmNorm) * alive;
 
   // Idle hunts; a revving engine is steady.
   out.jitterCents = 35 - 29 * rpmNorm;

@@ -1,13 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  ENGINE,
   ENGINE_CYLINDERS,
   GEAR_TOP_MPS,
-  IDLE_RPM,
   LATERAL_ACCEL_DIVISOR,
   LATERAL_UNSTABLE_MPS2,
   MAX_SPEED_MPS,
-  REDLINE_RPM,
   SHIFT_BANDS,
   approach,
   createAudioParams,
@@ -142,8 +141,8 @@ describe("rpm", () => {
       let previous = -Infinity;
       for (let speed = floor; speed <= GEAR_TOP_MPS[gear - 1]; speed += 0.25) {
         const rpm = targetRpm(gear, speed, 1, false);
-        expect(rpm).toBeGreaterThanOrEqual(IDLE_RPM * 0.94);
-        expect(rpm).toBeLessThanOrEqual(REDLINE_RPM);
+        expect(rpm).toBeGreaterThanOrEqual(ENGINE.idleRpm * 0.94);
+        expect(rpm).toBeLessThanOrEqual(ENGINE.redlineRpm);
         // The launch flare deliberately leads road speed below 6 m/s, so
         // monotonicity is only claimed once it has decayed.
         if (speed > 6) {
@@ -159,17 +158,18 @@ describe("rpm", () => {
     // the raw map, so it catches gearbox bugs that boundary tests walk past.
     const state = createAudioState();
     const out = createAudioParams();
-    let previous = IDLE_RPM;
+    let previous: number = ENGINE.idleRpm;
     let worst = 0;
     for (let speed = 0; speed <= MAX_SPEED_MPS; speed += 0.05) {
       updateAudioModel(state, telemetry({ speedMps: speed, throttle: 1 }), out);
       worst = Math.max(worst, Math.abs(out.rpm - previous));
       previous = out.rpm;
     }
-    // The 1→2 shift drops 2422rpm, and the 32ms shift time constant completes
-    // ~40% of that in one 60Hz frame — so ~1000 is the designed worst case. A
-    // gap in the gear ladder would teleport the revs well past this.
-    expect(worst).toBeLessThan(1100);
+    // The largest designed shift drop is bounded by the rev range, and the 32ms
+    // shift time constant completes ~40% of it in one 60Hz frame. A gap in the
+    // gear ladder would teleport the revs well past that.
+    const span = ENGINE.shiftRpm - ENGINE.idleRpm;
+    expect(worst).toBeLessThan(span * 0.55);
   });
 
   it("behaves identically at 30fps and 60fps", () => {
@@ -233,6 +233,57 @@ describe("engine character", () => {
   it("whines only in reverse", () => {
     expect(run({ speedMps: 4, gear: "R", throttle: 1 }, 2).out.reverseWhineGain).toBeGreaterThan(0);
     expect(run({ speedMps: 4, gear: "D", throttle: 1 }, 2).out.reverseWhineGain).toBe(0);
+  });
+});
+
+describe("engine character", () => {
+  /** Runs the engine up to speed under a fixed load and returns the params. */
+  const settle = (speedMps: number, throttle: number) => {
+    const state = createAudioState();
+    const out = createAudioParams();
+    for (let i = 0; i < 240; i += 1) {
+      updateAudioModel(state, telemetry({ speedMps, throttle }), out);
+    }
+    return out;
+  };
+
+  it("shifts like a road car, not a race car", () => {
+    // A car that pulls to 6000rpm in every gear sounds like it is on a track,
+    // whatever its timbre — this is the strongest character cue, and it is the
+    // one the previous version got wrong.
+    expect(ENGINE.shiftRpm).toBeLessThan(3400);
+    expect(ENGINE.redlineRpm).toBeLessThan(4800);
+  });
+
+  it("keeps the cutoff dark even at full load", () => {
+    // How far the lowpass opens is the "sharpness" that was reported. A race
+    // engine runs to ~5kHz; this stays well under 2.
+    for (const speedMps of [8, 16, 24, 32, 40.4]) {
+      expect(settle(speedMps, 1).engineToneHz, `${speedMps} m/s`).toBeLessThan(2000);
+    }
+  });
+
+  it("has no performance intake howl", () => {
+    // The bright saw layer at the firing frequency is the aggressive bark; a
+    // small hatchback has none.
+    expect(ENGINE.topGain).toBe(0);
+    expect(settle(30, 1).engineTopGain).toBe(0);
+  });
+
+  it("still sounds different accelerating and coasting", () => {
+    // Softening the engine must not cost the load-vs-coast distinction.
+    const loaded = settle(22, 1);
+    const coasting = settle(22, 0);
+    expect(loaded.engineToneHz).toBeGreaterThan(coasting.engineToneHz * 1.6);
+    expect(loaded.engineGain).toBeGreaterThan(coasting.engineGain);
+  });
+
+  it("stays inside its rev range at every speed", () => {
+    for (const speedMps of [0, 5, 12, 22, 33, 40.4]) {
+      const rpm = settle(speedMps, 1).rpm;
+      expect(rpm, `${speedMps} m/s`).toBeGreaterThanOrEqual(ENGINE.idleRpm * 0.9);
+      expect(rpm, `${speedMps} m/s`).toBeLessThanOrEqual(ENGINE.redlineRpm);
+    }
   });
 });
 
@@ -491,8 +542,8 @@ describe("gear ratios", () => {
   it("tops every gear out at the same shift speed", () => {
     for (let gear = 1; gear <= GEAR_TOP_MPS.length; gear += 1) {
       const atTop = targetRpm(gear, GEAR_TOP_MPS[gear - 1], 1, false);
-      expect(atTop).toBeGreaterThan(6000);
-      expect(atTop).toBeLessThanOrEqual(REDLINE_RPM);
+      expect(atTop).toBeGreaterThan(ENGINE.shiftRpm * 0.94);
+      expect(atTop).toBeLessThanOrEqual(ENGINE.redlineRpm);
     }
   });
 
