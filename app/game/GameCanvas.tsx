@@ -1705,6 +1705,22 @@ const PROP_SIGN: PropKindConfig = {
   faceRoad: true,
 };
 
+// The background sidewalk crowd. Each is a character glb baked to a static
+// bind-pose mesh (via the building merged-master path) and drawn as one cheap
+// instance — no skeleton/animation cost — so the count can be high. A small
+// number of animated walkers (buildScenarioTraffic) supplies the motion up close.
+const CROWD_CHARACTER_SCALE = 0.374;
+const CROWD_CHARACTER_YAW = Math.PI;
+const CROWD_CHARACTER_URLS: readonly string[] = [
+  "/models/characters/person-a.glb",
+  "/models/characters/person-b.glb",
+  "/models/characters/person-c.glb",
+  "/models/characters/person-woman-a.glb",
+  "/models/characters/person-woman-b.glb",
+];
+/** Cap the instanced crowd so a dense grid can't run away; thinned on low-spec. */
+const CROWD_MAX = 150;
+
 /** Per-map roadside dressing: shared basics plus locally recognisable extras. */
 function roadsidePropKindsForMap(
   key: ReturnType<typeof resolveMapVisualKey>,
@@ -1736,6 +1752,17 @@ function roadsidePropKindsForMap(
           alternateSides: true,
           variants: Math.max(1, NYC_VENDORS.length),
           faceRoad: true,
+        },
+        // Background pedestrian crowd on both sidewalks (routed to pendingCrowd,
+        // built as instanced static characters).
+        {
+          kind: "crowd",
+          spacingM: 12,
+          jitterM: 4,
+          lateralMarginM: 2.6,
+          bothSides: true,
+          variants: CROWD_CHARACTER_URLS.length,
+          faceRoad: false,
         },
       ];
     case "london":
@@ -2597,12 +2624,20 @@ class BabylonGameSession {
   private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
   /** Sidewalk vendor carts to instantiate once their glbs preload. */
   private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
+  /** Background sidewalk crowd (instanced static characters) to build post-preload. */
+  private readonly pendingCrowd: { url: string; x: number; z: number; yaw: number }[] = [];
+  /** Character glbs the instanced crowd needs preloaded (city maps only). */
+  private crowdModelUrls: string[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
    * instead of ~15 — the fix for the culling spike on fast/turning driving.
    * null = merge failed for that url (falls back to the multi-mesh path). */
   private readonly buildingMasters = new Map<string, Mesh | null>();
+  /** Per-url crowd master: a character glb with its bind pose baked into static
+   * vertices (applySkeleton) then merged to one mesh, so each background person
+   * is a single cheap instance with no skeleton. null = build failed. */
+  private readonly crowdMasters = new Map<string, Mesh | null>();
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -3077,6 +3112,7 @@ class BabylonGameSession {
         ...characterModelUrls(),
         ...propModelUrls(),
         ...this.buildingModelUrls,
+        ...this.crowdModelUrls,
       ]);
     } catch {
       // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
@@ -4610,6 +4646,48 @@ class BabylonGameSession {
     return master;
   }
 
+  /**
+   * Like getBuildingMaster but for a rigged character: bake the skeleton's bind
+   * pose into each mesh's vertices (applySkeleton) before merging, so the
+   * multi-part rig doesn't scatter when the skeleton is dropped. The result is a
+   * static posed person, drawn as one instance with zero skeleton/animation
+   * cost — the whole point of the cheap background crowd.
+   */
+  private getCrowdMaster(url: string): Mesh | null {
+    const cached = this.crowdMasters.get(url);
+    if (cached !== undefined) return cached;
+    let master: Mesh | null = null;
+    const instance = instantiateModel(this.scene, url);
+    const root = instance?.rootNodes[0] as TransformNode | undefined;
+    if (instance && root) {
+      root.computeWorldMatrix(true);
+      const skeleton = instance.skeletons[0];
+      skeleton?.prepare();
+      const meshes = root
+        .getChildMeshes(false)
+        .filter((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
+      for (const mesh of meshes) {
+        mesh.computeWorldMatrix(true);
+        if (skeleton && mesh.skeleton) {
+          mesh.applySkeleton(skeleton); // bake bind pose into the vertex buffer
+          mesh.skeleton = null;
+        }
+      }
+      master = meshes.length
+        ? Mesh.MergeMeshes(meshes, true, true, undefined, false, true)
+        : null;
+      for (const group of instance.animationGroups) group.dispose();
+      root.dispose(false, false);
+      skeleton?.dispose();
+      if (master) {
+        master.isVisible = false;
+        master.isPickable = false;
+      }
+    }
+    this.crowdMasters.set(url, master);
+    return master;
+  }
+
   private buildInstancedBuildings() {
     if (this.visualPalette?.night) this.applyBuildingNightGlow();
     for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
@@ -4675,6 +4753,25 @@ class BabylonGameSession {
       this.staticSceneryFreeze.push(inst);
     }
     this.pendingVendors.length = 0;
+
+    // Background crowd: each character glb baked to a static bind-pose mesh
+    // (merged master) and drawn as one instance — no skeleton/animation cost.
+    // Thinned by the same low-spec keep-fraction as buildings.
+    const crowdBudget = Math.floor(this.pendingCrowd.length * this.buildingKeepFraction);
+    let crowdIndex = 0;
+    for (const person of this.pendingCrowd) {
+      if (crowdIndex >= crowdBudget) break;
+      const master = this.getCrowdMaster(person.url);
+      if (!master) continue;
+      const inst = master.createInstance(`crowd-${crowdIndex}`);
+      inst.position.set(person.x, 0.05, person.z);
+      inst.rotation.y = person.yaw + CROWD_CHARACTER_YAW;
+      inst.scaling.setAll(CROWD_CHARACTER_SCALE);
+      inst.isPickable = false;
+      this.staticSceneryFreeze.push(inst);
+      crowdIndex += 1;
+    }
+    this.pendingCrowd.length = 0;
   }
 
   /**
@@ -5501,6 +5598,9 @@ class BabylonGameSession {
       ...buildingSetUrls(setIds),
       ...(setIds.length ? nycVendorUrls() : []),
     ];
+    // The instanced crowd's character glbs (kept out of buildingModelUrls so the
+    // night-glow pass never tints people).
+    this.crowdModelUrls = setIds.length ? [...CROWD_CHARACTER_URLS] : [];
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(
@@ -6545,6 +6645,13 @@ class BabylonGameSession {
         const config = NYC_VENDORS[placement.variant % NYC_VENDORS.length];
         if (config) {
           this.pendingVendors.push({ config, x: placement.x, z: placement.z, yaw: placement.rotationY });
+        }
+        continue;
+      }
+      if (placement.kind === "crowd") {
+        if (this.pendingCrowd.length < CROWD_MAX) {
+          const url = CROWD_CHARACTER_URLS[placement.variant % CROWD_CHARACTER_URLS.length];
+          this.pendingCrowd.push({ url, x: placement.x, z: placement.z, yaw: placement.rotationY });
         }
         continue;
       }
