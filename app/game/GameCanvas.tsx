@@ -13,6 +13,7 @@ import {
   Engine,
   HemisphericLight,
   ImageProcessingConfiguration,
+  Matrix,
   Mesh,
   MeshBuilder,
   Scene,
@@ -2535,6 +2536,7 @@ class BabylonGameSession {
     z: number;
     heading: number;
     fallback: TransformNode;
+    label?: string;
   }[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
@@ -4221,6 +4223,7 @@ class BabylonGameSession {
     x: number,
     z: number,
     heading: number,
+    label?: string,
   ): boolean {
     const config = PROP_MODEL_REGISTRY[kind];
     if (!config || !isModelReady(this.scene, config.url)) return false;
@@ -4235,7 +4238,113 @@ class BabylonGameSession {
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
     root.scaling.setAll(config.scale);
+    if (kind === "gas_station" && label) {
+      this.addGasStationSign(holder, root, label);
+    }
     return true;
+  }
+
+  /**
+   * Draws the station's name onto the model's blank roof billboard (its
+   * authored "QUICK STOP" lettering was mirrored and got stripped from the
+   * glb). The board is found geometrically — the largest elevated thin plate —
+   * in holder space so the search works at any yaw, then a text plane is laid
+   * over each of its two big faces.
+   */
+  private addGasStationSign(
+    holder: TransformNode,
+    root: TransformNode,
+    label: string,
+  ): void {
+    holder.computeWorldMatrix(true);
+    const toHolder = Matrix.Invert(holder.getWorldMatrix());
+    let board: { area: number; min: Vector3; max: Vector3 } | null = null;
+    for (const mesh of root.getChildMeshes()) {
+      mesh.computeWorldMatrix(true);
+      const corners = mesh.getBoundingInfo().boundingBox.vectorsWorld;
+      const min = new Vector3(Infinity, Infinity, Infinity);
+      const max = new Vector3(-Infinity, -Infinity, -Infinity);
+      for (const corner of corners) {
+        const local = Vector3.TransformCoordinates(corner, toHolder);
+        min.minimizeInPlace(local);
+        max.maximizeInPlace(local);
+      }
+      const spanX = max.x - min.x;
+      const spanY = max.y - min.y;
+      const spanZ = max.z - min.z;
+      const thin = Math.min(spanX, spanZ);
+      const wide = Math.max(spanX, spanZ);
+      const centreY = (min.y + max.y) / 2;
+      if (centreY > 4 && spanY > 1.4 && thin < 1.3 && wide > 3) {
+        const area = wide * spanY;
+        if (!board || area > board.area) board = { area, min, max };
+      }
+    }
+    if (!board) return;
+
+    const texture = new DynamicTexture(
+      `${holder.name}-sign-texture`,
+      { width: 1024, height: 384 },
+      this.scene,
+      true,
+    );
+    const context = texture.getContext();
+    const text = label.toUpperCase();
+    let fontSize = 170;
+    context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    while (fontSize > 40 && context.measureText(text).width > 1024 * 0.84) {
+      fontSize -= 10;
+      context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    }
+    texture.drawText(
+      text,
+      null,
+      null,
+      `bold ${fontSize}px Figtree, Arial, sans-serif`,
+      "#a63527",
+      "#ece7da",
+      true,
+    );
+    context.strokeStyle = "#a63527";
+    context.lineWidth = 14;
+    context.strokeRect(20, 20, 1024 - 40, 384 - 40);
+    texture.update();
+
+    const material = new StandardMaterial(
+      `${holder.name}-sign-material`,
+      this.scene,
+    );
+    material.diffuseTexture = texture;
+    material.emissiveColor = new Color3(0.55, 0.55, 0.55);
+    material.specularColor = Color3.Black();
+    // Each face gets its own plane sitting proud of the opaque board, so
+    // rendering both sides costs nothing and sidesteps winding-order surprises.
+    material.backFaceCulling = false;
+
+    const spanX = board.max.x - board.min.x;
+    const spanZ = board.max.z - board.min.z;
+    const alongX = spanX >= spanZ;
+    const width = (alongX ? spanX : spanZ) * 0.94;
+    const height = (board.max.y - board.min.y) * 0.86;
+    const centre = board.min.add(board.max).scale(0.5);
+    const faceOffset = (alongX ? spanZ : spanX) / 2 + 0.05;
+    for (const side of [1, -1]) {
+      const plane = MeshBuilder.CreatePlane(
+        `${holder.name}-sign-${side}`,
+        { width, height },
+        this.scene,
+      );
+      plane.parent = holder;
+      // Babylon planes face -z natively, so the +side face needs the π flip.
+      if (alongX) {
+        plane.position.set(centre.x, centre.y, centre.z + faceOffset * side);
+        plane.rotation.y = side === 1 ? Math.PI : 0;
+      } else {
+        plane.position.set(centre.x + faceOffset * side, centre.y, centre.z);
+        plane.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+      }
+      plane.material = material;
+    }
   }
 
   /**
@@ -4252,11 +4361,12 @@ class BabylonGameSession {
     heading: number,
     id: string,
     buildFallback: (parent: TransformNode) => void,
+    label?: string,
   ) {
-    if (this.instantiateProp(kind, x, z, heading)) return;
+    if (this.instantiateProp(kind, x, z, heading, label)) return;
     const fallback = new TransformNode(`prop-fallback-${id}`, this.scene);
     buildFallback(fallback);
-    this.deferredProps.push({ kind, x, z, heading, fallback });
+    this.deferredProps.push({ kind, x, z, heading, fallback, label });
   }
 
   /** Once the prop glbs preload, replace each procedural venue/station box with
@@ -4265,7 +4375,9 @@ class BabylonGameSession {
   private upgradePropsToModels() {
     const stillProcedural: typeof this.deferredProps = [];
     for (const prop of this.deferredProps) {
-      if (this.instantiateProp(prop.kind, prop.x, prop.z, prop.heading)) {
+      if (
+        this.instantiateProp(prop.kind, prop.x, prop.z, prop.heading, prop.label)
+      ) {
         prop.fallback.dispose(false, false);
       } else {
         stillProcedural.push(prop);
@@ -5031,7 +5143,7 @@ class BabylonGameSession {
           makeMaterial(scene, `${service.id}-sign`, new Color3(0.96, 0.86, 0.16)),
           parent,
         );
-      });
+      }, service.label);
     }
 
     const gigVenueColor: Record<string, Color3> = {
