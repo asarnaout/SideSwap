@@ -89,12 +89,20 @@ import {
 import {
   disposeModels,
   instantiateModel,
+  instantiateModelInstanced,
   isModelReady,
+  modelMaterials,
   PROP_MODEL_REGISTRY,
   preloadModels,
   propModelUrls,
   vehicleModelUrls,
 } from "./modelLibrary";
+import {
+  buildingSetUrls,
+  isBuildingSetId,
+  slotBlockBuildings,
+  type BuildingSetId,
+} from "./buildingSets";
 import {
   buildCyclistVisual,
   buildPedestrianVisual,
@@ -155,6 +163,15 @@ const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y + 0.0016;
 const ROAD_SHOULDER_Y = 0.045;
 const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
+// On paved ("city") maps the shoulder band becomes a concrete sidewalk: wider
+// than the dirt shoulder so pedestrians, vendors and streetlights have a curb to
+// sit on. It rides the same band + junction-fill machinery as the dirt shoulder.
+const PAVED_SIDEWALK_WIDTH = 3.4;
+// Lift instanced buildings a few cm so a model's flat base plate never sits
+// exactly coplanar with the ground/sidewalk — otherwise the two surfaces
+// z-fight and flicker as the camera moves. Above the sidewalk band (0.045),
+// small enough to read as flush.
+const BUILDING_GROUND_LIFT = 0.08;
 const MAX_ROAD_MITER_RATIO = 3.25;
 
 export interface RoadSurfaceStripGeometry {
@@ -843,6 +860,7 @@ export interface GameCanvasMapPack {
       readonly heightRange: readonly [number, number];
       readonly density: number;
       readonly material: string;
+      readonly buildingSet?: string;
     }[];
     landmarks: readonly {
       readonly id: string;
@@ -2541,6 +2559,32 @@ class BabylonGameSession {
     fallback: TransformNode;
     label?: string;
   }[] = [];
+  /** glb URLs of the current map's building sets, preloaded off the critical path. */
+  private buildingModelUrls: string[] = [];
+  /** Blocks that dress with instanced glb building sets once their models load;
+   * `buildFallback` builds procedural facade boxes if the models never arrive. */
+  private readonly pendingBuildingBlocks: {
+    block: GameCanvasMapPack["geometry"]["blocks"][number];
+    setId: BuildingSetId;
+    buildFallback: () => void;
+  }[] = [];
+  /** Static scenery (instanced buildings + roadside props) whose world matrices
+   * are frozen once after the first render, so the dense city stops paying a
+   * per-frame matrix + bounding-sync cost across ~9k meshes. Parents precede
+   * children so the freeze pass computes the chain in order. */
+  private readonly staticSceneryFreeze: TransformNode[] = [];
+  /** Fraction of each block's building wall to build. 1 on desktop; thinned on
+   * touch / low-core devices so phones stay playable. */
+  private buildingKeepFraction = 1;
+  /** Keep-out circles (gas station + gig-venue lots) so the block street wall
+   * never drops a scenery building on top of an interactive POI. */
+  private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
+  /** Per-url merged building master mesh (all submeshes baked into one, keeping
+   * a MultiMaterial), built lazily and hidden. Every placement is a single
+   * `createInstance` of it, so a building costs one scene mesh (one cull check)
+   * instead of ~15 — the fix for the culling spike on fast/turning driving.
+   * null = merge failed for that url (falls back to the multi-mesh path). */
+  private readonly buildingMasters = new Map<string, Mesh | null>();
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -2708,6 +2752,12 @@ class BabylonGameSession {
       ? Math.max(1, Math.min(1.65, window.devicePixelRatio / 1.2))
       : Math.max(1, Math.min(1.4, window.devicePixelRatio / 1.6));
     this.engine.setHardwareScalingLevel(scale);
+    // Weak devices (touch, or few CPU cores) build a thinner building wall so
+    // the dense city stays playable on phones.
+    const cores =
+      (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 8;
+    const lowSpec = options.inputCapabilities.touchFirst || cores <= 4;
+    this.buildingKeepFraction = lowSpec ? 0.5 : 1;
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.68, 0.84, 0.9, 1);
     // Low, faintly warm ambient: the directional sun and hemisphere fill do
@@ -3008,6 +3058,7 @@ class BabylonGameSession {
         ...vehicleModelUrls(),
         ...characterModelUrls(),
         ...propModelUrls(),
+        ...this.buildingModelUrls,
       ]);
     } catch {
       // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
@@ -3018,6 +3069,12 @@ class BabylonGameSession {
     this.upgradeVehiclesToModels();
     this.upgradeRoadUsersToModels();
     this.upgradePropsToModels();
+    this.buildInstancedBuildings();
+    // Freeze the dense scenery once the first frame has computed its matrices.
+    this.scene.onAfterRenderObservable.addOnce(() => this.freezeStaticScenery());
+    // Compile every shader + upload every buffer now, while the loading gate is
+    // still up, so the first corner of the drive doesn't stall.
+    this.warmUpPipeline();
     this.markReady();
   }
 
@@ -4441,6 +4498,202 @@ class BabylonGameSession {
     this.deferredProps.push(...stillProcedural);
   }
 
+  /**
+   * After preload, dress each building-set block with a street wall of instanced
+   * glb buildings. Every placement of a given model shares one uploaded geometry
+   * (instantiateModelInstanced), so hundreds of buildings cost a handful of draw
+   * calls rather than hundreds. A block whose set never loaded (offline) falls
+   * back to its procedural facade-box grid so it is never left empty.
+   */
+  /**
+   * Night city: make every building material glow its own albedo/texture, so
+   * facades and painted windows read as lit-from-within under the dim moonlight
+   * (the low-poly glbs have no emissive of their own). Bloom does the rest.
+   * Mutates the shared container materials once — all instances light up.
+   */
+  private applyBuildingNightGlow() {
+    // Warm sodium/incandescent colour for lit windows (blue-hour amber). Kept
+    // below pure white so bloom softens it to a glow instead of blowing it out.
+    const WARM = new Color3(0.95, 0.6, 0.29);
+    for (const url of this.buildingModelUrls) {
+      const mats = modelMaterials(this.scene, url);
+      // Models with a dedicated window material get the realistic treatment:
+      // light only the windows, keep the walls dark (lit by moonlight +
+      // streetlights). Single-texture models (windows baked into one texture)
+      // can't isolate windows, so they get a dim warm self-glow — enough to read
+      // as lit without blowing the whole facade out to white.
+      const hasWindowMat = mats.some((mm) =>
+        /window|glass/.test((mm.name ?? "").toLowerCase()),
+      );
+      for (const mat of mats) {
+        const name = (mat.name ?? "").toLowerCase();
+        const m = mat as unknown as {
+          albedoColor?: Color3;
+          diffuseColor?: Color3;
+          albedoTexture?: unknown;
+          diffuseTexture?: unknown;
+          emissiveColor?: Color3;
+          emissiveTexture?: unknown;
+          emissiveIntensity?: number;
+        };
+        if (hasWindowMat) {
+          const isWindow = /window|glass|trim/.test(name);
+          if (isWindow) {
+            // A lit window is a dark pane that only glows warm — otherwise the
+            // pane's own (light) albedo, lit by the sky, washes it out to white.
+            const dark = new Color3(0.05, 0.045, 0.04);
+            if (m.albedoColor) m.albedoColor = dark;
+            if (m.diffuseColor) m.diffuseColor = dark;
+            m.emissiveColor = WARM.clone();
+            if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.72;
+          } else {
+            m.emissiveColor = new Color3(0, 0, 0);
+            if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0;
+          }
+        } else {
+          const tex = m.albedoTexture ?? m.diffuseTexture;
+          m.emissiveColor = new Color3(0.42, 0.32, 0.19);
+          if (tex) m.emissiveTexture = tex;
+          if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.32;
+        }
+      }
+    }
+  }
+
+  /**
+   * The merged single-mesh master for a building url (built once, hidden). All
+   * of the glb's submeshes are baked into one mesh with a MultiMaterial, folding
+   * in the loader's 180° flip, so a placement is a single createInstance. Returns
+   * null (cached) if the glb can't be merged, so the caller uses the multi-mesh
+   * path for that url.
+   */
+  private getBuildingMaster(url: string): Mesh | null {
+    const cached = this.buildingMasters.get(url);
+    if (cached !== undefined) return cached;
+    let master: Mesh | null = null;
+    const instance = instantiateModel(this.scene, url); // real clones, mergeable
+    const root = instance?.rootNodes[0] as TransformNode | undefined;
+    if (root) {
+      root.computeWorldMatrix(true);
+      const meshes = root
+        .getChildMeshes(false)
+        .filter((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
+      for (const mesh of meshes) mesh.computeWorldMatrix(true);
+      master = meshes.length
+        ? Mesh.MergeMeshes(meshes, true, true, undefined, false, true)
+        : null;
+      root.dispose(false, false);
+      if (master) {
+        master.isVisible = false;
+        master.isPickable = false;
+      }
+    }
+    this.buildingMasters.set(url, master);
+    return master;
+  }
+
+  private buildInstancedBuildings() {
+    if (this.visualPalette?.night) this.applyBuildingNightGlow();
+    for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
+      const placements = slotBlockBuildings(
+        block.center,
+        block.size,
+        setId,
+        hashStringToSeed(`${block.id}-buildings`),
+        this.buildingKeepFraction,
+      ).filter(
+        (b) =>
+          !this.buildingExclusions.some(
+            (ex) => Math.hypot(b.x - ex.x, b.z - ex.z) < ex.radius,
+          ),
+      );
+      let placed = 0;
+      for (const b of placements) {
+        const master = this.getBuildingMaster(b.url);
+        if (master) {
+          // Fast path: one instance = one scene mesh = one cull check.
+          const inst = master.createInstance(`bldg-${block.id}-${placed}`);
+          inst.position.set(b.x, b.groundY + BUILDING_GROUND_LIFT, b.z);
+          inst.rotation.y = b.yaw;
+          inst.scaling.setAll(b.scale);
+          inst.isPickable = false;
+          this.staticSceneryFreeze.push(inst);
+          placed += 1;
+          continue;
+        }
+        // Fallback: the glb wouldn't merge — place it as a multi-mesh instance.
+        const instance = instantiateModelInstanced(this.scene, b.url);
+        const root = instance?.rootNodes[0] as TransformNode | undefined;
+        if (!root) continue;
+        const holder = new TransformNode(`bldg-${block.id}-${placed}`, this.scene);
+        holder.position.set(b.x, b.groundY + BUILDING_GROUND_LIFT, b.z);
+        holder.rotation.y = b.yaw;
+        root.parent = holder;
+        root.scaling.setAll(b.scale);
+        this.staticSceneryFreeze.push(holder);
+        for (const mesh of root.getChildMeshes(false)) {
+          mesh.isPickable = false;
+          this.staticSceneryFreeze.push(mesh);
+        }
+        placed += 1;
+      }
+      if (placed === 0) buildFallback();
+    }
+    this.pendingBuildingBlocks.length = 0;
+  }
+
+  /**
+   * Freeze the dense static scenery so the render loop stops recomputing world
+   * matrices and bounding info for ~9k instanced meshes every frame (the cause
+   * of the driving stutter), and build a selection octree so frustum culling of
+   * that many meshes is spatial rather than linear. Runs once after the first
+   * render, when every world matrix is already correct — freezing earlier (mid
+   * construction) cached identity matrices and dropped buildings at the origin.
+   */
+  private freezeStaticScenery() {
+    // Parents-before-children order (as pushed) means each freeze reads an
+    // already-frozen parent matrix.
+    for (const node of this.staticSceneryFreeze) {
+      node.computeWorldMatrix(true);
+    }
+    for (const node of this.staticSceneryFreeze) {
+      node.freezeWorldMatrix();
+      const mesh = node as unknown as { doNotSyncBoundingInfo?: boolean };
+      if ("doNotSyncBoundingInfo" in mesh) mesh.doNotSyncBoundingInfo = true;
+    }
+    this.staticSceneryFreeze.length = 0;
+  }
+
+  /**
+   * Pre-warm the render pipeline before the drive starts, so the first corner
+   * doesn't stall. WebGL compiles a material's shader — and uploads its
+   * geometry, textures and instance buffers — lazily on first render; driving
+   * straight only pays for what's on that street, so turning to reveal new
+   * geometry hitches until it's all been rendered once. Here we force every
+   * mesh active (bypassing frustum culling) and render a couple of frames while
+   * the loading gate is still up, paying every first-render cost upfront. The
+   * first render also fires the static-scenery freeze (registered just before).
+   */
+  private warmUpPipeline() {
+    if (!this.scene.activeCamera && !(this.scene.activeCameras?.length)) return;
+    // Populate the shadow map's caster list so the shadow-depth shaders compile
+    // during warm-up too, not on the first corner.
+    this.refreshShadowCasters();
+    const renderable = this.scene.meshes.filter((m) => m.getTotalVertices() > 0);
+    const previous = renderable.map((m) => m.alwaysSelectAsActiveMesh);
+    for (const mesh of renderable) mesh.alwaysSelectAsActiveMesh = true;
+    try {
+      // Two frames: the first compiles/uploads, the second confirms a clean pass.
+      this.scene.render();
+      this.scene.render();
+    } catch {
+      // Warm-up is best-effort — never block the drive from starting.
+    }
+    renderable.forEach((mesh, index) => {
+      mesh.alwaysSelectAsActiveMesh = previous[index];
+    });
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
@@ -4861,6 +5114,10 @@ class BabylonGameSession {
     this.visualPalette = palette;
     this.createSkyAndHorizon(palette, mapId, mapPack.geometry.worldSize);
 
+    // Paved cities (NYC) render the base ground as concrete and the road shoulder
+    // as a wider concrete sidewalk; everywhere else keeps grass + a dirt shoulder.
+    const paved = palette.paved ?? false;
+
     const grass = makeMaterial(scene, "scenario-ground", new Color3(0.24, 0.39, 0.25));
     const asphalt = makeMaterial(scene, "scenario-asphalt", Color3.White());
     asphalt.diffuseTexture = createAsphaltTexture(
@@ -4889,11 +5146,19 @@ class BabylonGameSession {
       "#25292b",
       hashStringToSeed(`${mapId}-terminal`),
     );
-    const dirtShoulder = makeMaterial(
-      scene,
-      "scenario-dirt-shoulder",
-      Color3.FromHexString(palette.dirtShoulder),
-    );
+    // On paved maps this band is the concrete sidewalk (textured like the road
+    // but lighter); elsewhere it stays a flat dirt shoulder.
+    const dirtShoulder = makeMaterial(scene, "scenario-dirt-shoulder", Color3.White());
+    if (paved) {
+      dirtShoulder.diffuseTexture = createAsphaltTexture(
+        scene,
+        "scenario-sidewalk-texture",
+        palette.pavement ?? "#6a6e71",
+        hashStringToSeed(`${mapId}-sidewalk`),
+      );
+    } else {
+      dirtShoulder.diffuseColor = Color3.FromHexString(palette.dirtShoulder);
+    }
     const routeMaterial = makeMaterial(
       scene,
       "scenario-route",
@@ -4917,26 +5182,47 @@ class BabylonGameSession {
       new Color3(0.025, 0.16, 0.13),
     );
 
+    // Night cities dim to a cool moonlight so the city's own emissive glow
+    // (lit building facades, streetlights, signage) carries the scene.
+    const night = palette.night ?? false;
     const hemi = new HemisphericLight("scenario-sky-light", new Vector3(0.1, 1, 0.15), scene);
-    hemi.intensity = 0.5;
-    hemi.diffuse = new Color3(0.82, 0.88, 0.98);
-    hemi.groundColor = new Color3(0.34, 0.3, 0.24);
+    // Dusk / blue hour: a cool blue sky fill from above (twilight) plus a warm
+    // low "sun" (set to palette.sunTint in createSkyAndHorizon) and a warm
+    // ground bounce, so building faces + the street pick up sodium warmth
+    // against the cool sky — the classic blue-hour warm/cool split. Bright
+    // enough that the road + car stay clearly readable.
+    hemi.intensity = night ? 0.64 : 0.5;
+    hemi.diffuse = night
+      ? new Color3(0.44, 0.54, 0.76)
+      : new Color3(0.82, 0.88, 0.98);
+    hemi.groundColor = night
+      ? new Color3(0.38, 0.29, 0.18)
+      : new Color3(0.34, 0.3, 0.24);
     const sun = new DirectionalLight("scenario-sun", new Vector3(-0.42, -1, 0.48), scene);
-    sun.intensity = 1.3;
+    sun.intensity = night ? 0.6 : 1.3;
+    if (night) scene.ambientColor = new Color3(0.23, 0.22, 0.26);
     this.createSunShadows(sun);
 
     const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
     const groundHeight = Math.max(90, mapPack.geometry.worldSize.z + 36);
-    const grassTexture = createGrassTexture(
-      scene,
-      "scenario-ground-texture",
-      palette,
-      hashStringToSeed(`${mapId}-grass`),
-    );
-    grassTexture.uScale = groundWidth / 16;
-    grassTexture.vScale = groundHeight / 16;
+    const groundTexture = paved
+      ? createAsphaltTexture(
+          scene,
+          "scenario-ground-texture",
+          palette.groundBase ?? "#4c5053",
+          hashStringToSeed(`${mapId}-ground`),
+        )
+      : createGrassTexture(
+          scene,
+          "scenario-ground-texture",
+          palette,
+          hashStringToSeed(`${mapId}-grass`),
+        );
+    const groundTile = paved ? 10 : 16;
+    groundTexture.uScale = groundWidth / groundTile;
+    groundTexture.vScale = groundHeight / groundTile;
     grass.diffuseColor = Color3.White();
-    grass.diffuseTexture = grassTexture;
+    grass.diffuseTexture = groundTexture;
     const ground = MeshBuilder.CreateGround(
       "scenario-world",
       { width: groundWidth, height: groundHeight, subdivisions: 1 },
@@ -4967,7 +5253,9 @@ class BabylonGameSession {
     const roadSurfaces = connectedRoadSurfaces.length
       ? connectedRoadSurfaces
       : authoredRoadSurfaces;
-    const shoulderWidth = Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+    const shoulderWidth = paved
+      ? PAVED_SIDEWALK_WIDTH
+      : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     for (const surface of roadSurfaces) {
       const surfaceMaterial =
         surface.surfaceType === "shared_space"
@@ -5102,29 +5390,12 @@ class BabylonGameSession {
       facadeMaterials.set(materialKey, created);
       return created;
     };
-    for (const block of mapPack.geometry.blocks) {
-      const material = facadeMaterialFor(block.material);
-      const isLondonMuseumBlock =
-        mapId.includes("london") && block.material.endsWith("-museum");
-      if (isLondonMuseumBlock) {
-        const wingWidth = Math.max(12, block.size.x * 0.23);
-        const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
-        for (const side of [-1, 1]) {
-          const wingX = block.center.x + side * block.size.x * 0.37;
-          this.registerShadowCaster(
-            createFacadeBox(
-              scene,
-              `building-${block.id}-wing-${side}`,
-              { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
-              new Vector3(wingX, wingHeight / 2, block.center.z),
-              material,
-            ),
-            wingX,
-            block.center.z,
-          );
-        }
-        continue;
-      }
+    // The procedural windowed-facade-box grid: the classic filler, and the
+    // fallback for any block whose building-set glbs never load.
+    const placeFacadeGrid = (
+      block: GameCanvasMapPack["geometry"]["blocks"][number],
+      material: StandardMaterial,
+    ) => {
       const count = Math.max(1, Math.round(3 + block.density * 7));
       for (let index = 0; index < count; index += 1) {
         const columns = Math.ceil(Math.sqrt(count));
@@ -5150,7 +5421,50 @@ class BabylonGameSession {
           z,
         );
       }
+    };
+    for (const block of mapPack.geometry.blocks) {
+      const material = facadeMaterialFor(block.material);
+      const isLondonMuseumBlock =
+        mapId.includes("london") && block.material.endsWith("-museum");
+      if (isLondonMuseumBlock) {
+        const wingWidth = Math.max(12, block.size.x * 0.23);
+        const wingHeight = Math.max(11, block.heightRange[0] * 0.72);
+        for (const side of [-1, 1]) {
+          const wingX = block.center.x + side * block.size.x * 0.37;
+          this.registerShadowCaster(
+            createFacadeBox(
+              scene,
+              `building-${block.id}-wing-${side}`,
+              { width: wingWidth, height: wingHeight, depth: block.size.z * 0.82 },
+              new Vector3(wingX, wingHeight / 2, block.center.z),
+              material,
+            ),
+            wingX,
+            block.center.z,
+          );
+        }
+        continue;
+      }
+      // Building-set blocks are dressed with instanced glb street walls after
+      // preload (buildInstancedBuildings); box grid is the offline fallback.
+      if (block.buildingSet && isBuildingSetId(block.buildingSet)) {
+        const setId = block.buildingSet;
+        this.pendingBuildingBlocks.push({
+          block,
+          setId,
+          buildFallback: () => placeFacadeGrid(block, facadeMaterialFor(block.material)),
+        });
+        continue;
+      }
+      placeFacadeGrid(block, material);
     }
+    // Preload just this map's building-set glbs (not every map's) off the
+    // critical path; buildInstancedBuildings consumes them once ready.
+    this.buildingModelUrls = buildingSetUrls([
+      ...new Set(
+        this.pendingBuildingBlocks.map((entry) => entry.setId),
+      ),
+    ]);
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(
@@ -5166,6 +5480,13 @@ class BabylonGameSession {
       if (!lot) continue;
       const px = lot.x;
       const pz = lot.z;
+      // Keep the dense street wall off the forecourt (the glb lot is bigger than
+      // the fallback footprint, so a generous clearance leaves an open lot).
+      this.buildingExclusions.push({
+        x: px,
+        z: pz,
+        radius: Math.max(service.footprint.x, service.footprint.z) + 16,
+      });
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
@@ -5226,6 +5547,12 @@ class BabylonGameSession {
       const setback = venue.setbackM ?? 13;
       const px = pose.x + Math.cos(pose.heading) * setback;
       const pz = pose.z - Math.sin(pose.heading) * setback;
+      // Keep scenery buildings off the gig venue's own lot.
+      this.buildingExclusions.push({
+        x: px,
+        z: pz,
+        radius: Math.max(venue.footprint.x, venue.footprint.z) / 2 + 12,
+      });
       // A rider waits curbside (nearer the lane than the building) facing the road.
       this.gigVenueCurbside.set(venue.id, {
         x: pose.x + Math.cos(pose.heading) * 4.5,
@@ -5826,15 +6153,50 @@ class BabylonGameSession {
       material("leaves-2", new Color3(0.13, 0.3, 0.17)),
     ];
     const iron = material("iron", new Color3(0.09, 0.1, 0.11));
+    // Streetlights blaze warm at night (bloom turns them into glowing points);
+    // by day they carry only a faint warm cast.
+    const night = palette.night ?? false;
     const lampHead = material(
       "lamp-head",
-      new Color3(0.75, 0.7, 0.5),
-      new Color3(0.3, 0.26, 0.12),
+      new Color3(0.85, 0.66, 0.4),
+      // Warm sodium-vapour orange at night (blooms into a soft glow); a faint
+      // warm cast by day.
+      night ? new Color3(1.5, 0.86, 0.34) : new Color3(0.3, 0.26, 0.12),
     );
+    // At night each streetlight drops a soft warm pool of light on the pavement
+    // (a radial-gradient decal) — the signature "sodium spill" of a dusk street.
+    let lampPool: StandardMaterial | null = null;
+    if (night) {
+      const poolTex = new DynamicTexture(
+        "lamp-pool-tex",
+        { width: 128, height: 128 },
+        scene,
+        true,
+      );
+      const pctx = textureContext(poolTex);
+      const grad = pctx.createRadialGradient(64, 64, 3, 64, 64, 62);
+      grad.addColorStop(0, "rgba(255,190,110,0.85)");
+      grad.addColorStop(0.4, "rgba(255,155,80,0.42)");
+      grad.addColorStop(1, "rgba(255,140,60,0)");
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, 128, 128);
+      poolTex.update();
+      poolTex.hasAlpha = true;
+      lampPool = new StandardMaterial("lamp-pool", scene);
+      // Dim warm tint (not white) so the pool reads as a soft sodium spill and
+      // its centre stays below the bloom threshold instead of blowing out.
+      lampPool.emissiveColor = new Color3(0.72, 0.44, 0.19);
+      lampPool.emissiveTexture = poolTex;
+      lampPool.opacityTexture = poolTex;
+      lampPool.diffuseColor = Color3.Black();
+      lampPool.specularColor = Color3.Black();
+      lampPool.disableLighting = true;
+      lampPool.disableDepthWrite = true;
+    }
     const signPost = material("sign-post", new Color3(0.45, 0.47, 0.48));
     const signPanels = [
-      material("sign-panel-blue", new Color3(0.1, 0.28, 0.5)),
-      material("sign-panel-green", new Color3(0.1, 0.35, 0.2)),
+      material("sign-panel-blue", new Color3(0.1, 0.28, 0.5), night ? new Color3(0.14, 0.38, 0.72) : undefined),
+      material("sign-panel-green", new Color3(0.1, 0.35, 0.2), night ? new Color3(0.14, 0.5, 0.26) : undefined),
     ];
     const hydrantRed = material("hydrant", new Color3(0.62, 0.1, 0.07));
     const hedgeGreen = material("hedge", new Color3(0.15, 0.32, 0.15));
@@ -6010,6 +6372,19 @@ class BabylonGameSession {
               ),
               offset: new Vector3(0, 5.08, 1.25),
             },
+            ...(lampPool
+              ? [
+                  {
+                    master: masterBox(
+                      `${cacheKey}-pool`,
+                      { width: 7, height: 0.02, depth: 7 },
+                      lampPool,
+                    ),
+                    offset: new Vector3(0, 0.07, 1.1),
+                    castShadow: false,
+                  },
+                ]
+              : []),
           ];
           break;
         case "sign":
@@ -6146,6 +6521,7 @@ class BabylonGameSession {
         instance.rotation.y = placement.rotationY;
         instance.scaling.setAll(placement.scale);
         instance.isPickable = false;
+        this.staticSceneryFreeze.push(instance);
         if (part.castShadow !== false) {
           this.registerShadowCaster(instance, placement.x, placement.z);
         }
@@ -6722,6 +7098,14 @@ class BabylonGameSession {
               maxz: r(hi.z),
             };
           });
+      // Frame rate + mesh/draw-call counts, so QA can measure the cost of the
+      // dense city and confirm the static-scenery freeze keeps it smooth.
+      debugWindow.__sideswapPerfDebug = () => ({
+        fps: Math.round(this.engine.getFps()),
+        totalMeshes: this.scene.meshes.length,
+        activeMeshes: this.scene.getActiveMeshes().length,
+        materials: this.scene.materials.length,
+      });
     }
   }
 
@@ -7160,8 +7544,16 @@ class BabylonGameSession {
     const fogRange = resolveFogRange(worldSize);
     scene.fogMode = Scene.FOGMODE_LINEAR;
     scene.fogColor = Color3.FromHexString(palette.fogColor);
-    scene.fogStart = fogRange.start;
-    scene.fogEnd = fogRange.end;
+    if (palette.night) {
+      // Tighter fog at night: fades the far end of long avenues so a corner
+      // turn onto a canyon draws far fewer buildings (the worst-case spike),
+      // and it deepens the night mood.
+      scene.fogStart = Math.min(fogRange.start, 100);
+      scene.fogEnd = Math.min(fogRange.end, 440);
+    } else {
+      scene.fogStart = fogRange.start;
+      scene.fogEnd = fogRange.end;
+    }
 
     const skyMaterial = new StandardMaterial("sky-dome-material", scene);
     skyMaterial.emissiveTexture = createSkyGradientTexture(scene, palette);
@@ -7219,7 +7611,10 @@ class BabylonGameSession {
     sun.position = sun.direction.scale(-260);
     sun.autoUpdateExtends = true;
     sun.autoCalcShadowZBounds = true;
-    const generator = new ShadowGenerator(2048, sun);
+    // 1024 (was 2048): the dense city re-renders this shadow map every frame,
+    // so quartering its pixels frees real per-frame budget; night shadows are
+    // soft + dim enough that the lower resolution isn't noticeable.
+    const generator = new ShadowGenerator(1024, sun);
     generator.usePercentageCloserFiltering = true;
     generator.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
     generator.bias = 0.015;
@@ -7286,11 +7681,16 @@ class BabylonGameSession {
     pipeline.bloomEnabled = true;
     // Bloom stays keyed to bright emissives (lamps, brake lights); the
     // threshold is lifted alongside tone mapping so the newly warm, brighter
-    // sky and sunlit surfaces don't bloom into a haze.
-    pipeline.bloomThreshold = 0.9;
-    pipeline.bloomWeight = 0.18;
+    // sky and sunlit surfaces don't bloom into a haze. A night city leans on
+    // bloom harder — lower threshold + more weight so lit windows, streetlights
+    // and signage bloom into a glowing skyline.
+    const night = this.visualPalette?.night ?? false;
+    // Softer night bloom (higher threshold, lower weight): the warm lights glow
+    // rather than blowing out to white.
+    pipeline.bloomThreshold = night ? 0.72 : 0.9;
+    pipeline.bloomWeight = night ? 0.3 : 0.18;
     pipeline.bloomScale = 0.5;
-    pipeline.bloomKernel = 48;
+    pipeline.bloomKernel = night ? 64 : 48;
     pipeline.imageProcessingEnabled = true;
     const imageProcessing = pipeline.imageProcessing;
     // ACES filmic tone mapping is the core of the "cinematic" look: it
@@ -7301,7 +7701,8 @@ class BabylonGameSession {
     imageProcessing.toneMappingType =
       ImageProcessingConfiguration.TONEMAPPING_ACES;
     imageProcessing.contrast = 1.12;
-    imageProcessing.exposure = 1.2;
+    // Lift night exposure so the road + car read clearly under the dark sky.
+    imageProcessing.exposure = night ? 1.55 : 1.2;
     imageProcessing.vignetteEnabled = true;
     imageProcessing.vignetteWeight = 0.9;
     imageProcessing.vignetteColor = new Color4(0.03, 0.02, 0, 0);

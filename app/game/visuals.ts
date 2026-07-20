@@ -29,6 +29,22 @@ export interface MapVisualPalette {
   readonly silhouetteNear: string;
   readonly silhouetteFar: string;
   readonly sunTint: string;
+  /**
+   * Paved-city option. When `paved` is set, the base ground renders as concrete
+   * (`groundBase`) instead of grass, and the road shoulder band becomes a
+   * concrete sidewalk (`pavement`). Parks still paint their own green on top.
+   * Omitted on rural/suburban maps, which keep the grass ground + dirt shoulder.
+   */
+  readonly paved?: boolean;
+  readonly groundBase?: string;
+  readonly pavement?: string;
+  /**
+   * Night city. When set, the scene lights dim to a cool moonlight, building
+   * materials gain a warm emissive so windows/facades glow, streetlights and
+   * signage light up, and bloom is nudged — a night drive lit by the city
+   * itself. The sky/fog/silhouette colours above are authored dark to match.
+   */
+  readonly night?: boolean;
 }
 
 export type MapVisualKey =
@@ -48,15 +64,23 @@ export type MapVisualKey =
 // Tokyo soft warm residential.
 const MAP_VISUAL_PALETTES: Record<MapVisualKey, MapVisualPalette> = {
   nyc: {
-    skyTop: "#2f7fc8",
-    skyHorizon: "#f3d9ac",
-    fogColor: "#ecd2b2",
+    // Blue-hour NYC: a luminous deep-blue dusk zenith warming to a soft amber
+    // sunset glow down the avenue (horizon + fog), so the warm sodium
+    // streetlights/windows read against a cool sky — the classic dusk contrast.
+    skyTop: "#3b4e74",
+    skyHorizon: "#a78868",
+    fogColor: "#6a5a4c",
     grassBase: "#3f6a3c",
     grassAlt: "#4d7c44",
     dirtShoulder: "#6b5a3f",
-    silhouetteNear: "#a8a499",
-    silhouetteFar: "#d2c9b2",
-    sunTint: "#ffe9c4",
+    silhouetteNear: "#3a3742",
+    silhouetteFar: "#6a5d55",
+    sunTint: "#ffddab",
+    // NYC is a paved city: concrete lots + sidewalks instead of the grass plane.
+    paved: true,
+    groundBase: "#34363b",
+    pavement: "#45474c",
+    night: true,
   },
   london: {
     skyTop: "#3f7fb8",

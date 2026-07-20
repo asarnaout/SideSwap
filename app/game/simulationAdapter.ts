@@ -29,8 +29,8 @@ const DEFAULT_LANE_WIDTH_M = 3.5;
 // in km/h — leaving generous headroom above every urban route so a driver can
 // physically exceed the limit. Going over is scored as speeding, never
 // silently prevented.
-const MAX_FORWARD_SPEED_MPS_MPH = 90 / 2.236936; // 90 mph ≈ 40.23 m/s
-const MAX_FORWARD_SPEED_MPS_KMH = 145 / 3.6; // 145 km/h ≈ 40.28 m/s
+const MAX_FORWARD_SPEED_MPS_MPH = 70 / 2.236936; // 70 mph ≈ 31.29 m/s
+const MAX_FORWARD_SPEED_MPS_KMH = 113 / 3.6; // 113 km/h ≈ 31.39 m/s (~70 mph)
 const DEFAULT_MAX_REVERSE_SPEED_MPS = 6;
 
 export interface SimulationAdapterOptions {

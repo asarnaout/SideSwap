@@ -1374,15 +1374,29 @@ export const MAP_PACKS: readonly MapPack[] = [
         ]),
       ],
       blocks: [
-        // One building cluster per grid cell, fitted between the avenues so none
-        // sits on Amsterdam or Columbus.
-        { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(150, 420), heightRange: [18, 42], density: 0.8, material: "brick" },
-        { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(150, 420), heightRange: [20, 46], density: 0.82, material: "sandstone" },
-        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(120, 420), heightRange: [16, 40], density: 0.78, material: "stone" },
-        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(120, 420), heightRange: [20, 44], density: 0.8, material: "brick" },
-        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(100, 420), heightRange: [18, 46], density: 0.82, material: "sandstone" },
-        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(100, 420), heightRange: [22, 50], density: 0.84, material: "stone" },
-        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
+        // Dense street-wall blocks tightly filling every grid cell (avenues at
+        // x=-320/-120/40/180/320, cross-streets at z=-480/0/480), inset ~13 m
+        // for the road + sidewalk. `buildingSet` picks the instanced glb wall
+        // that hugs each block's road frontage. Zoning clusters the tall towers
+        // on the Broadway/Amsterdam core and keeps the low-rise residential belt
+        // (brownstones) + the detached-house pocket over on the West End side,
+        // well clear of the skyscrapers. Mid-rise fills the rest + the margins.
+        //
+        // West End ↔ Broadway column (residential belt, kept away from towers)
+        { id: "nyc-block-we-bway-s", center: point(-220, -240), size: point(174, 454), heightRange: [14, 24], density: 0.9, material: "brick", buildingSet: "nyc-brownstone" },
+        { id: "nyc-block-we-bway-n", center: point(-220, 240), size: point(174, 454), heightRange: [8, 14], density: 0.9, material: "brick", buildingSet: "nyc-house" },
+        // Broadway ↔ Amsterdam column (downtown towers)
+        { id: "nyc-block-bway-amst-s", center: point(-40, -240), size: point(134, 454), heightRange: [40, 60], density: 0.95, material: "stone", buildingSet: "nyc-downtown" },
+        { id: "nyc-block-bway-amst-n", center: point(-40, 240), size: point(134, 454), heightRange: [40, 60], density: 0.95, material: "stone", buildingSet: "nyc-downtown" },
+        // Amsterdam ↔ Columbus column (towers south, mid-rise north)
+        { id: "nyc-block-amst-col-s", center: point(110, -240), size: point(114, 454), heightRange: [36, 54], density: 0.95, material: "stone", buildingSet: "nyc-downtown" },
+        { id: "nyc-block-amst-col-n", center: point(110, 240), size: point(114, 454), heightRange: [18, 30], density: 0.92, material: "sandstone", buildingSet: "nyc-midrise" },
+        // Columbus ↔ Central Park West column (mid-rise; NE cell is the museum)
+        { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(114, 454), heightRange: [18, 30], density: 0.92, material: "sandstone", buildingSet: "nyc-midrise" },
+        // Margin fill so the outer avenues/streets have buildings on both sides
+        { id: "nyc-block-west-margin", center: point(-352, 0), size: point(44, 934), heightRange: [12, 20], density: 0.9, material: "brick", buildingSet: "nyc-brownstone" },
+        { id: "nyc-block-south-margin", center: point(0, -512), size: point(628, 44), heightRange: [16, 28], density: 0.9, material: "sandstone", buildingSet: "nyc-midrise" },
+        { id: "nyc-block-north-margin", center: point(0, 512), size: point(628, 44), heightRange: [16, 28], density: 0.9, material: "sandstone", buildingSet: "nyc-midrise" },
       ],
       servicePoints: [
         // West 72nd is a wide two-way, so the lot has to clear 3.5 m of lane

@@ -19,6 +19,28 @@ stations) live under `public/models/props/`.
   (<https://poly.pizza/m/EL3ePInr1N>), released **CC0 1.0**. Low-poly corner
   shop, used for shop gig venues.
 
+### NYC Nightfall environment kit (CC0)
+
+Added to dress the NYC map with dense, clustered buildings + street life. Every
+per-model Poly Pizza source URL is recorded in `app/game/buildingCatalog.ts`
+(the catalogue is the single source of truth for these assets).
+
+- **props/nyc-tower-a.glb, nyc-tower-b.glb, nyc-tower-c.glb, nyc-midrise-a.glb,
+  nyc-midrise-b.glb, nyc-midrise-low.glb** — low-poly skyscrapers + mid-rise
+  buildings by **Kenney** (<https://kenney.nl>) via Poly Pizza, released
+  **CC0 1.0**. Downtown-tower cluster and mid-rise fill.
+- **props/nyc-brownstone-a.glb, nyc-brownstone-b.glb, nyc-brownstone-c.glb,
+  nyc-brownstone-d.glb** — low-poly rowhouses by **Kay Lousberg** via Poly Pizza,
+  released **CC0 1.0**. The Upper West Side brownstone belt (same author as
+  `shop.glb`, so the style matches).
+- **props/vendor-stand.glb** ("Market Stand"), **props/vendor-cart.glb** ("Cart"),
+  **props/market-stalls.glb** ("Market Stalls Compact") — by **Quaternius**
+  (<https://quaternius.com>) via Poly Pizza, released **CC0 1.0**. Street vendors.
+- **characters/person-woman-a.glb** ("Woman Casual"), **person-woman-b.glb**
+  ("Woman in Dress"), **person-punk.glb** ("Punk") — rigged pedestrians by
+  **Quaternius** via Poly Pizza, released **CC0 1.0**. Sidewalk-crowd variety
+  alongside the existing person-a/b/c.
+
 ## CC-BY — attribution required
 
 - **bus.glb** (single-deck city bus) — by **"jeremy"** via Poly Pizza
@@ -45,6 +67,28 @@ stations) live under `public/models/props/`.
   (<https://poly.pizza/m/4Xlqz9IfdrV>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
   Diner used for restaurant gig venues.
+
+### NYC Nightfall environment kit (CC-BY 3.0)
+
+A few NYC-character pieces added alongside the CC0 kit above. All are **CC-BY 3.0**
+(<https://creativecommons.org/licenses/by/3.0/>); per-model Poly Pizza source URLs
+are in `app/game/buildingCatalog.ts`, and each model's required credit also travels
+in that catalogue's `attribution` field.
+
+- **props/nyc-tower-artdeco.glb** ("Skyscraper") — **Poly by Google**. Credit:
+  "Skyscraper by Poly by Google". Art-deco setback tower.
+- **props/nyc-tower-spire.glb** ("Skyscraper") — **Jarlan Perez**. Credit:
+  "Skyscraper by Jarlan Perez". Spired skyline landmark.
+- **props/nyc-tenement.glb** ("Apartment building") — **Poly by Google**. Credit:
+  "Apartment building by Poly by Google". Fire-escape tenement.
+- **props/nyc-house-a.glb** ("House") — **Poly by Google**. Credit: "House by Poly
+  by Google". Detached house for the residential pocket.
+- **props/nyc-house-b.glb** ("Farm house") — **Poly by Google**. Credit: "Farm
+  house by Poly by Google". Detached house for the residential pocket.
+- **props/nyc-shop-corner.glb** ("Pizza Corner") — **J-Toastie**. Credit: "Pizza
+  Corner by J-Toastie". Corner bodega / ground-floor retail.
+- **props/vendor-food.glb** ("Street Vendor Cart") — **Alan Zimmerman**. Credit:
+  "Street Vendor Cart by Alan Zimmerman". Street vendor.
 
 ## Purchased — used under licence, NOT redistributed in this repo
 

@@ -17,6 +17,7 @@ import {
   AssetContainer,
   InstantiatedEntries,
   LoadAssetContainerAsync,
+  type Material,
   Scene,
 } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
@@ -96,6 +97,37 @@ export function instantiateModel(
   return container.instantiateModelsToScene(undefined, false, {
     doNotInstantiate: true,
   });
+}
+
+/**
+ * Instantiates a preloaded model as GPU **instances** that share the source
+ * geometry (`doNotInstantiate: false`), for static scenery placed many times
+ * over (buildings, vendors). Unlike {@link instantiateModel}, this keeps the
+ * container's own materials (no per-unit recolour) and lets Babylon batch every
+ * placement of a given model into one draw call per submesh regardless of count
+ * — the only way "buildings everywhere" stays within a web draw-call budget.
+ * The first call for a URL creates the source meshes; later calls create
+ * `InstancedMesh`es pointing at them. Returns null when the model isn't loaded.
+ */
+export function instantiateModelInstanced(
+  scene: Scene,
+  url: string,
+): InstantiatedEntries | null {
+  const container = CONTAINERS_BY_SCENE.get(scene)?.get(url);
+  if (!container) return null;
+  return container.instantiateModelsToScene(undefined, false, {
+    doNotInstantiate: false,
+  });
+}
+
+/**
+ * The (shared) materials of a preloaded model, so callers can retune them once —
+ * e.g. add a night-time emissive glow to every building of a type. Empty when
+ * the url hasn't loaded. Mutating these affects all instances of the model,
+ * which is exactly what a per-model retune wants.
+ */
+export function modelMaterials(scene: Scene, url: string): Material[] {
+  return CONTAINERS_BY_SCENE.get(scene)?.get(url)?.materials ?? [];
 }
 
 export function disposeModels(scene: Scene): void {

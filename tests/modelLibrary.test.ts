@@ -4,6 +4,7 @@ import path from "node:path";
 import { NullEngine, Scene, LoadAssetContainerAsync } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
 import { PROP_MODEL_REGISTRY } from "../app/game/modelLibrary";
+import { NYC_ENV_MODELS } from "../app/game/buildingCatalog";
 
 // Guards the Babylon 9 loader-registration path that modelLibrary.preloadModels
 // depends on. The old `import "@babylonjs/loaders/glTF/2.0"` side effect did NOT
@@ -150,4 +151,44 @@ describe("prop (environment building) model assets", () => {
     scene.dispose();
     engine.dispose();
   });
+});
+
+// The NYC Nightfall overhaul adds a catalogue of CC0/CC-BY environment models
+// (towers, brownstones, houses, bodega, vendors, extra pedestrians) that later
+// phases place via the instanced building-set system. Guard the catalogue here:
+// every committed glb must exist and parse, and every CC-BY entry must ship its
+// required attribution string (else a licence obligation silently goes unmet).
+describe("NYC environment model catalogue", () => {
+  registerBuiltInLoaders();
+
+  const load = async (url: string) => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const buf = fs.readFileSync(path.join(process.cwd(), "public", url));
+    const dataUrl = "data:model/gltf-binary;base64," + buf.toString("base64");
+    const container = await LoadAssetContainerAsync(dataUrl, scene, {
+      pluginExtension: ".glb",
+    });
+    return { container, scene, engine };
+  };
+
+  it("gives every CC-BY model a required attribution string (and CC0 none)", () => {
+    for (const model of NYC_ENV_MODELS) {
+      if (model.license === "CC-BY 3.0") {
+        expect(model.attribution, model.id).toBeTruthy();
+      } else {
+        expect(model.attribution, model.id).toBeUndefined();
+      }
+    }
+  });
+
+  it.each(NYC_ENV_MODELS.map((m) => [m.id, m.url] as const))(
+    "ships a parseable glb for %s",
+    async (_id, url) => {
+      const { container, scene, engine } = await load(url);
+      expect(container.meshes.length).toBeGreaterThan(0);
+      scene.dispose();
+      engine.dispose();
+    },
+  );
 });

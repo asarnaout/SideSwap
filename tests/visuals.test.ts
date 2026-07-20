@@ -80,6 +80,8 @@ describe("map visual palettes", () => {
     ]) {
       const palette = resolveMapVisualPalette(mapId);
       for (const value of Object.values(palette)) {
+        // Palettes are all hex colours except the optional `paved` boolean flag.
+        if (typeof value !== "string") continue;
         expect(value).toMatch(HEX_PATTERN);
       }
       const stops = skyGradientStops(palette);

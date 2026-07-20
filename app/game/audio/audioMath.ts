@@ -105,7 +105,7 @@ export const REVERSE_RPM_PER_MPS = ((ENGINE.shiftRpm - ENGINE.idleRpm) * 0.95) /
  * to 0 to remove wind noise entirely — nothing else depends on it, and the road
  * layer alone still conveys speed, just less vividly.
  */
-export const WIND_LEVEL = 0.15;
+export const WIND_LEVEL = 0.09;
 
 /**
  * How much the wind level wanders, as a fraction of itself. Steady broadband

@@ -360,6 +360,37 @@ describe("SideSwap content", () => {
     expect(MAP_PACKS).toHaveLength(5);
   });
 
+  it("zones NYC so towers cluster clear of the residential house pocket", () => {
+    const nyc = MAP_PACKS.find((m) => m.id === "nyc-upper-west-side");
+    expect(nyc).toBeDefined();
+    const blocks = nyc!.geometry.blocks;
+    const VALID = new Set([
+      "nyc-downtown", "nyc-midrise", "nyc-brownstone", "nyc-house", "nyc-shop",
+    ]);
+    for (const b of blocks) {
+      if (b.buildingSet) expect(VALID.has(b.buildingSet), `${b.id}:${b.buildingSet}`).toBe(true);
+    }
+    const houses = blocks.filter((b) => b.buildingSet === "nyc-house");
+    const towers = blocks.filter((b) => b.buildingSet === "nyc-downtown");
+    expect(houses.length).toBeGreaterThan(0);
+    expect(towers.length).toBeGreaterThan(0);
+    // No detached-house block may abut a skyscraper block: their footprints must
+    // stay a road's width apart, so "no Empire State next to a random house".
+    const footprintGapM = (
+      a: (typeof blocks)[number],
+      b: (typeof blocks)[number],
+    ) => {
+      const dx = Math.abs(a.center.x - b.center.x) - (a.size.x + b.size.x) / 2;
+      const dz = Math.abs(a.center.z - b.center.z) - (a.size.z + b.size.z) / 2;
+      return Math.max(dx, dz);
+    };
+    for (const house of houses) {
+      for (const tower of towers) {
+        expect(footprintGapM(house, tower), `${house.id} vs ${tower.id}`).toBeGreaterThan(20);
+      }
+    }
+  });
+
   it("gives every country a currency and formats money in it", () => {
     const expected: Record<
       string,
