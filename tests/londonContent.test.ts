@@ -135,7 +135,7 @@ describe("London flagship content", () => {
     if (quietStart?.kind === "player") {
       expect(quietStart.anchor).toEqual({
         laneId: "london-local-west",
-        distanceAlongM: 15.35,
+        distanceAlongM: 22,
       });
     }
     if (queenGateStart?.kind === "player") {

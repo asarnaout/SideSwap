@@ -700,7 +700,9 @@ describe("SideSwap content", () => {
       {
         spawnId: "london-player",
         laneId: "london-local-west",
-        x: -121.98,
+        // Slid west with the gas station (the spawn shares its anchor) so the
+        // fuel lot clears the Queen's Gate junction.
+        x: -128.63,
         z: -105.8,
       },
       {

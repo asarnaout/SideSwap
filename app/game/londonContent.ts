@@ -287,11 +287,13 @@ const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
 
 // Distances include the short junction connector before each established
 // running lane. These anchors resolve to the requested lane-true starts at
-// approximately (-125.6, -105.8) and (-109.7, -92). The quiet-street start is
-// shared by the player spawn, the start checkpoint and the gas station, so this
-// slides all three ~4 m west of the Queen's Gate junction — clearing the fuel
-// lot off the perpendicular carriageway while keeping the spawn at the pump.
-const LONDON_QUIET_START_DISTANCE_M = 19.5;
+// approximately (-128.6, -105.8) and (-109.7, -92). The quiet-street start is
+// shared by the player spawn, the start checkpoint and the gas station; 22
+// puts the station's 23.3 m base slab (half-width 11.65) with its east edge at
+// x≈-117 — exactly the west edge of the Queen's Gate junction's dirt apron —
+// so the fuel lot touches the junction shoulder without overlapping it, while
+// the spawn stays at the pump.
+const LONDON_QUIET_START_DISTANCE_M = 22;
 const LONDON_QUEEN_GATE_START_DISTANCE_M = 13.27;
 
 const roadMarking = (
@@ -1178,7 +1180,10 @@ export const LONDON_MAP_PACK: MapPack = {
       },
     ],
     servicePoints: [
-      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 19 },
+      // setbackM 18.6: the lane sits at z-105.8 and the quiet-loop shoulder's
+      // outer edge at z-98.9, so 18.6 lands the slab's front edge at z-98.85 —
+      // right after the shoulder, touching it, zero overlap.
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
     ],
     gigVenues: [
       { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },

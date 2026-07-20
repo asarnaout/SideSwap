@@ -4240,27 +4240,16 @@ class BabylonGameSession {
   }
 
   /**
-   * The gas-station glb ships as a diorama sat on a big pale base slab, with
-   * baked-in grass strips and a parked car. Left alone the slab reads as an alien
-   * grey platform that clashes with the surrounding asphalt. So, geometry-first
-   * (its mesh names are cryptic), recolour every flat ground-level plate — the
-   * slab top and the grass strips — to road-matching asphalt so the whole lot
-   * reads as one paved forecourt continuous with the carriageway, and hide the
-   * baked car. Tall parts (pumps, store, canopy) and the elevated canopy roof are
-   * untouched.
+   * The gas-station glb ships as a diorama: its base slab carries baked-on
+   * ground clutter — painted parking/crossing stripes, planter strips and dirt
+   * paths. Recolouring those plates reads as smears on the lot, so hide every
+   * thin ground-level plate outright. Geometry-driven because the glb's mesh
+   * names are cryptic: the ~23 m base slab survives via the footprint ceiling,
+   * and every tall part (pumps, store, canopy, poles) via the height floor.
    */
   private dressGasStationForecourt(root: TransformNode): void {
-    const asphalt = makeMaterial(
-      this.scene,
-      "forecourt-asphalt",
-      new Color3(0.22, 0.25, 0.27),
-    );
     root.computeWorldMatrix(true);
     for (const mesh of root.getChildMeshes()) {
-      if (/NormalCar/i.test(mesh.name)) {
-        mesh.setEnabled(false);
-        continue;
-      }
       mesh.computeWorldMatrix(true);
       const box = mesh.getBoundingInfo().boundingBox;
       const height = box.maximumWorld.y - box.minimumWorld.y;
@@ -4269,8 +4258,8 @@ class BabylonGameSession {
         box.maximumWorld.z - box.minimumWorld.z,
       );
       const centreY = (box.maximumWorld.y + box.minimumWorld.y) / 2;
-      if (height < 0.7 && footprint > 2 && centreY < 0.6) {
-        mesh.material = asphalt;
+      if (height < 0.7 && centreY < 0.6 && footprint > 1 && footprint < 16) {
+        mesh.setEnabled(false);
       }
     }
   }
