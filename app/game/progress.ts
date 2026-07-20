@@ -45,7 +45,8 @@ const DEFAULT_ACCESSIBILITY: AccessibilityPreferences = {
   fieldOfView: 72,
   masterVolume: 0.8,
   effectsVolume: 0.8,
-  coachVolume: 0.9,
+  // Under the effects bus by default: music is a bed, not the main event.
+  musicVolume: 0.55,
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -123,7 +124,10 @@ const parseAccessibility = (value: unknown): AccessibilityPreferences => {
     fieldOfView: clamp(record.fieldOfView, 55, 100, DEFAULT_ACCESSIBILITY.fieldOfView),
     masterVolume: clamp(record.masterVolume, 0, 1, DEFAULT_ACCESSIBILITY.masterVolume),
     effectsVolume: clamp(record.effectsVolume, 0, 1, DEFAULT_ACCESSIBILITY.effectsVolume),
-    coachVolume: clamp(record.coachVolume, 0, 1, DEFAULT_ACCESSIBILITY.coachVolume),
+    // Saved blobs from before the coach was removed carry a `coachVolume` that
+    // simply falls away here — this builds a fresh object from known keys, so no
+    // progress-version bump is needed to retire it.
+    musicVolume: clamp(record.musicVolume, 0, 1, DEFAULT_ACCESSIBILITY.musicVolume),
   };
 };
 

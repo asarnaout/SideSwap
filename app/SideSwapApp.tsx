@@ -46,6 +46,7 @@ import {
   gasStationPumpPositions,
 } from "./game/servicePoints";
 import { Minimap } from "./game/MinimapCanvas";
+import { primeAudioContext, suspendAudioContext } from "./game/audio/audioContext";
 import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
 import type {
@@ -433,6 +434,10 @@ export default function SideSwapApp() {
     scenarioId: ScenarioId,
     nextDestinationId = destinationId,
   ) => {
+    // Synchronously, inside the click that got us here: Safari only honours an
+    // audio resume in the same task as the gesture that triggered it, so this
+    // cannot move into an effect or behind an await.
+    primeAudioContext();
     const nextDestination = getDestinationProfile(nextDestinationId);
     const nextCountryId = nextDestination.countryId;
     const session: GameSessionConfig = {
@@ -485,6 +490,9 @@ export default function SideSwapApp() {
     setGig(null);
     setPaused(false);
     setActiveSession(null);
+    // Parked, not closed — the player will almost certainly start another drive,
+    // and a closed context can never be reopened.
+    suspendAudioContext();
     setView("launcher");
   };
 
@@ -597,7 +605,6 @@ export default function SideSwapApp() {
           fieldOfView={(progress.accessibility.fieldOfView * Math.PI) / 180}
           masterVolume={progress.accessibility.masterVolume}
           effectsVolume={progress.accessibility.effectsVolume}
-          coachVolume={progress.accessibility.coachVolume}
           cameraShake={progress.accessibility.cameraShake}
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
@@ -1101,7 +1108,7 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
         <div>
           <p className="eyebrow">SETTINGS</p>
           <h1>Make the road comfortable to read</h1>
-          <p>Visual and audio coaching remain independent of the score.</p>
+          <p>Comfort, controls and sound, tuned to how you like to drive.</p>
         </div>
         <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
       </div>
@@ -1125,7 +1132,7 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
         <section className="settings-card" aria-labelledby="accessibility-audio-title">
           <div className="settings-card-head">
             <h2 id="accessibility-audio-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Accessibility &amp; audio</h2>
-            <p className="settings-card-sub">Coaching cues and sound.</p>
+            <p className="settings-card-sub">Readability cues and sound.</p>
           </div>
           <div className="settings-toggle-stack">
             <Toggle label="Subtitles" checked={draft.accessibility.subtitles} onChange={(checked) => updateAccessibility({ subtitles: checked })} />
@@ -1137,7 +1144,7 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
             <RangeControl label="Field of view" value={draft.accessibility.fieldOfView} min={55} max={100} step={1} formatValue={(value) => `${value}°`} ariaValueText={(value) => `${value} degrees`} onChange={(fieldOfView) => updateAccessibility({ fieldOfView })} />
             <RangeControl label="Master volume" value={draft.accessibility.masterVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(masterVolume) => updateAccessibility({ masterVolume })} />
             <RangeControl label="Effects volume" value={draft.accessibility.effectsVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(effectsVolume) => updateAccessibility({ effectsVolume })} />
-            <RangeControl label="Coach volume" value={draft.accessibility.coachVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(coachVolume) => updateAccessibility({ coachVolume })} />
+            <RangeControl label="Music volume" value={draft.accessibility.musicVolume} min={0} max={1} step={0.05} formatValue={(value) => `${Math.round(value * 100)}%`} ariaValueText={(value) => `${Math.round(value * 100)} percent`} onChange={(musicVolume) => updateAccessibility({ musicVolume })} />
           </div>
         </section>
       </div>

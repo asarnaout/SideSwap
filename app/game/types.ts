@@ -542,7 +542,7 @@ export interface AccessibilityPreferences {
   readonly fieldOfView: number;
   readonly masterVolume: number;
   readonly effectsVolume: number;
-  readonly coachVolume: number;
+  readonly musicVolume: number;
 }
 
 export interface PlayerProgressV2 {
