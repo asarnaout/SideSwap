@@ -169,6 +169,10 @@ export interface PropModelConfig {
   readonly url: string;
   readonly scale: number;
   readonly yawOffset: number;
+  /** Vertical offset (m) applied to the holder. Negative sinks a model whose own
+   * base/plinth would otherwise raise it above the road (e.g. the gas station,
+   * which ships as a diorama on a raised lot). Defaults to 0. */
+  readonly groundY?: number;
 }
 
 /**
@@ -182,7 +186,7 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // wildly — the diner is authored at ~300 units, the shop at ~2) then set to a
   // sensible real-world footprint per building type. yawOffset 0: the buildings
   // read from any side; exact facing/height is a playtest tweak.
-  gas_station: { url: `${P}/gas-station.glb`, scale: 2.2, yawOffset: 0 },
+  gas_station: { url: `${P}/gas-station.glb`, scale: 2.2, yawOffset: 0, groundY: -1.5 },
   restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: 0 },
   shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: 0 },
   residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: 0 },
