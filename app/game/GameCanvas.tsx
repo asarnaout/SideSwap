@@ -2571,6 +2571,12 @@ class BabylonGameSession {
   /** Fraction of each block's building wall to build. 1 on desktop; thinned on
    * touch / low-core devices so phones stay playable. */
   private buildingKeepFraction = 1;
+  /** Per-url merged building master mesh (all submeshes baked into one, keeping
+   * a MultiMaterial), built lazily and hidden. Every placement is a single
+   * `createInstance` of it, so a building costs one scene mesh (one cull check)
+   * instead of ~15 — the fix for the culling spike on fast/turning driving.
+   * null = merge failed for that url (falls back to the multi-mesh path). */
+  private readonly buildingMasters = new Map<string, Mesh | null>();
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -4518,6 +4524,38 @@ class BabylonGameSession {
     }
   }
 
+  /**
+   * The merged single-mesh master for a building url (built once, hidden). All
+   * of the glb's submeshes are baked into one mesh with a MultiMaterial, folding
+   * in the loader's 180° flip, so a placement is a single createInstance. Returns
+   * null (cached) if the glb can't be merged, so the caller uses the multi-mesh
+   * path for that url.
+   */
+  private getBuildingMaster(url: string): Mesh | null {
+    const cached = this.buildingMasters.get(url);
+    if (cached !== undefined) return cached;
+    let master: Mesh | null = null;
+    const instance = instantiateModel(this.scene, url); // real clones, mergeable
+    const root = instance?.rootNodes[0] as TransformNode | undefined;
+    if (root) {
+      root.computeWorldMatrix(true);
+      const meshes = root
+        .getChildMeshes(false)
+        .filter((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
+      for (const mesh of meshes) mesh.computeWorldMatrix(true);
+      master = meshes.length
+        ? Mesh.MergeMeshes(meshes, true, true, undefined, false, true)
+        : null;
+      root.dispose(false, false);
+      if (master) {
+        master.isVisible = false;
+        master.isPickable = false;
+      }
+    }
+    this.buildingMasters.set(url, master);
+    return master;
+  }
+
   private buildInstancedBuildings() {
     if (this.visualPalette?.night) this.applyBuildingNightGlow();
     for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
@@ -4530,6 +4568,19 @@ class BabylonGameSession {
       );
       let placed = 0;
       for (const b of placements) {
+        const master = this.getBuildingMaster(b.url);
+        if (master) {
+          // Fast path: one instance = one scene mesh = one cull check.
+          const inst = master.createInstance(`bldg-${block.id}-${placed}`);
+          inst.position.set(b.x, b.groundY, b.z);
+          inst.rotation.y = b.yaw;
+          inst.scaling.setAll(b.scale);
+          inst.isPickable = false;
+          this.staticSceneryFreeze.push(inst);
+          placed += 1;
+          continue;
+        }
+        // Fallback: the glb wouldn't merge — place it as a multi-mesh instance.
         const instance = instantiateModelInstanced(this.scene, b.url);
         const root = instance?.rootNodes[0] as TransformNode | undefined;
         if (!root) continue;
