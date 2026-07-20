@@ -36,8 +36,10 @@ stations) live under `public/models/props/`.
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Gas Station by Alex
   Safayan". Fuel station used for the refuel service points. **Modified:** the
   model's bundled clutter (parked cars/trucks, trees, bushes, flowers, crates,
-  power box, filler buildings) was trimmed to match the game's art style, keeping
-  the canopy + pumps + store — see `tools/clean-gas-station.mjs`.
+  power box, filler buildings), its mirrored "QUICK STOP" lettering, and a
+  freestanding sign/pylon were all trimmed to match the game's art style, keeping
+  just the canopy + pumps + store — see `tools/clean-gas-station.mjs`. The game
+  also sits it on a procedural concrete forecourt.
 - **props/restaurant.glb** ("Diner") — by **"Poly by Google"** via Poly Pizza
   (<https://poly.pizza/m/4Xlqz9IfdrV>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
