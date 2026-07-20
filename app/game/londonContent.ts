@@ -287,13 +287,8 @@ const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
 
 // Distances include the short junction connector before each established
 // running lane. These anchors resolve to the requested lane-true starts at
-// approximately (-128.6, -105.8) and (-109.7, -92). The quiet-street start is
-// shared by the player spawn, the start checkpoint and the gas station; 22
-// puts the station's 23.3 m base slab (half-width 11.65) with its east edge at
-// x≈-117 — exactly the west edge of the Queen's Gate junction's dirt apron —
-// so the fuel lot touches the junction shoulder without overlapping it, while
-// the spawn stays at the pump.
-const LONDON_QUIET_START_DISTANCE_M = 22;
+// approximately (-121.98, -105.8) and (-109.7, -92).
+const LONDON_QUIET_START_DISTANCE_M = 15.35;
 const LONDON_QUEEN_GATE_START_DISTANCE_M = 13.27;
 
 const roadMarking = (
@@ -1180,17 +1175,18 @@ export const LONDON_MAP_PACK: MapPack = {
       },
     ],
     servicePoints: [
-      // setbackM 18.6: the lane sits at z-105.8 and the quiet-loop shoulder's
-      // outer edge at z-98.9, so 18.6 lands the slab's front edge at z-98.85 —
-      // right after the shoulder, touching it, zero overlap.
-      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
+      // Mid-block on the quiet loop's straight west leg, set back onto the open
+      // grass west of the road — 30+ m from both corner junctions, so the
+      // station's square 23.3 m base slab never meets a mitered junction edge.
+      // setbackM 18.6: the southbound lane sits at x-162.2 and the west
+      // shoulder's outer edge at x-169.1, so the slab's front edge lands at
+      // x≈-169.05 — right after the shoulder, touching it, zero overlap.
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-quiet-south-opposite", distanceAlongM: 24.4 }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
     ],
     gigVenues: [
       { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },
       { id: "london-v2", kind: "shop", anchor: { laneId: "london-exhibition-shared-1", distanceAlongM: 48 }, footprint: point(14, 10), name: "Exhibition Road Shops" },
-      // Pulled ~13 m north (50→37) so it clears the gas-station lot's back edge
-      // instead of intersecting the store.
-      { id: "london-v3", kind: "residence", anchor: { laneId: "london-queen-gate-south-2", distanceAlongM: 37 }, footprint: point(14, 12), name: "Queen's Gate Flats" },
+      { id: "london-v3", kind: "residence", anchor: { laneId: "london-queen-gate-south-2", distanceAlongM: 50 }, footprint: point(14, 12), name: "Queen's Gate Flats" },
       { id: "london-v4", kind: "office", anchor: { laneId: "london-quiet-north", distanceAlongM: 36 }, footprint: point(14, 12), name: "South Ken Office" },
     ],
     landmarks: [

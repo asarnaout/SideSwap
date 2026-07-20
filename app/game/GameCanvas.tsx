@@ -6633,6 +6633,31 @@ class BabylonGameSession {
         this.touch.brake = clamp(input.brake ?? 0, 0, 1);
         this.touch.steer = clamp(input.steer ?? 0, -1, 1);
       };
+      // World-space AABB inventory: lets WebDriver QA verify placement (e.g.
+      // "does the fuel lot overlap the shoulder?") numerically, not by pixel.
+      debugWindow.__sideswapMeshes = () =>
+        this.scene.meshes
+          .filter((mesh) => mesh.isEnabled())
+          .map((mesh) => {
+            mesh.computeWorldMatrix(true);
+            const bounds = mesh.getBoundingInfo().boundingBox;
+            const lo = bounds.minimumWorld;
+            const hi = bounds.maximumWorld;
+            const r = (value: number) => Math.round(value * 100) / 100;
+            return {
+              n: mesh.name,
+              x: r((lo.x + hi.x) / 2),
+              y: r((lo.y + hi.y) / 2),
+              z: r((lo.z + hi.z) / 2),
+              sx: r(hi.x - lo.x),
+              sy: r(hi.y - lo.y),
+              sz: r(hi.z - lo.z),
+              minx: r(lo.x),
+              maxx: r(hi.x),
+              minz: r(lo.z),
+              maxz: r(hi.z),
+            };
+          });
     }
   }
 
