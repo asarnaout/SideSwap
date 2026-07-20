@@ -393,6 +393,11 @@ export interface ServicePoint {
   /** Footprint (metres) for the rendered building/pumps. */
   readonly footprint: WorldPoint;
   readonly label: string;
+  /** Metres the model is set back perpendicular from the anchored lane, so its
+   * lot starts just past the shoulder instead of bleeding onto the carriageway.
+   * Tuned per site because the gas-station model carries a large base slab and
+   * some sites sit at cramped junction corners. Defaults to 16. */
+  readonly setbackM?: number;
 }
 
 export type GigVenueKind =
@@ -409,6 +414,10 @@ export interface GigVenue {
   readonly anchor: LaneAnchor;
   readonly footprint: WorldPoint;
   readonly name: string;
+  /** Metres the building is set back perpendicular from the anchored lane.
+   * Tune it up to pull a venue off a neighbouring lot it would otherwise
+   * intersect. Defaults to 13. */
+  readonly setbackM?: number;
 }
 
 export interface ProceduralMapGeometry {

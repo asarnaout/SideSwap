@@ -287,8 +287,11 @@ const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
 
 // Distances include the short junction connector before each established
 // running lane. These anchors resolve to the requested lane-true starts at
-// approximately (-121.98, -105.8) and (-109.7, -92).
-const LONDON_QUIET_START_DISTANCE_M = 15.35;
+// approximately (-125.6, -105.8) and (-109.7, -92). The quiet-street start is
+// shared by the player spawn, the start checkpoint and the gas station, so this
+// slides all three ~4 m west of the Queen's Gate junction — clearing the fuel
+// lot off the perpendicular carriageway while keeping the spawn at the pump.
+const LONDON_QUIET_START_DISTANCE_M = 19.5;
 const LONDON_QUEEN_GATE_START_DISTANCE_M = 13.27;
 
 const roadMarking = (
@@ -1175,12 +1178,14 @@ export const LONDON_MAP_PACK: MapPack = {
       },
     ],
     servicePoints: [
-      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel" },
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-local-west", distanceAlongM: LONDON_QUIET_START_DISTANCE_M }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 19 },
     ],
     gigVenues: [
       { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },
       { id: "london-v2", kind: "shop", anchor: { laneId: "london-exhibition-shared-1", distanceAlongM: 48 }, footprint: point(14, 10), name: "Exhibition Road Shops" },
-      { id: "london-v3", kind: "residence", anchor: { laneId: "london-queen-gate-south-2", distanceAlongM: 50 }, footprint: point(14, 12), name: "Queen's Gate Flats" },
+      // Pulled ~13 m north (50→37) so it clears the gas-station lot's back edge
+      // instead of intersecting the store.
+      { id: "london-v3", kind: "residence", anchor: { laneId: "london-queen-gate-south-2", distanceAlongM: 37 }, footprint: point(14, 12), name: "Queen's Gate Flats" },
       { id: "london-v4", kind: "office", anchor: { laneId: "london-quiet-north", distanceAlongM: 36 }, footprint: point(14, 12), name: "South Ken Office" },
     ],
     landmarks: [

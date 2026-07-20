@@ -854,6 +854,7 @@ export interface GameCanvasMapPack {
       };
       readonly footprint: GameCanvasPoint;
       readonly label: string;
+      readonly setbackM?: number;
     }[];
     gigVenues?: readonly {
       readonly id: string;
@@ -864,6 +865,7 @@ export interface GameCanvasMapPack {
       };
       readonly footprint: GameCanvasPoint;
       readonly name: string;
+      readonly setbackM?: number;
     }[];
   }>;
   readonly laneGraph: Readonly<{
@@ -4986,9 +4988,11 @@ class BabylonGameSession {
       );
       if (!pose) continue;
       // Set the forecourt back just past the shoulder so its lot no longer bleeds
-      // onto the carriageway (a small grass set-back, no big apron).
-      const px = pose.x + Math.cos(pose.heading) * 16;
-      const pz = pose.z - Math.sin(pose.heading) * 16;
+      // onto the carriageway (a small grass set-back, no big apron). Per-site
+      // `setbackM` tunes cramped junction corners; 16 is the default.
+      const setback = service.setbackM ?? 16;
+      const px = pose.x + Math.cos(pose.heading) * setback;
+      const pz = pose.z - Math.sin(pose.heading) * setback;
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
@@ -5044,9 +5048,11 @@ class BabylonGameSession {
       );
       if (!pose) continue;
       // Set the building back off the road so its footprint + base sit on the
-      // verge, not the carriageway.
-      const px = pose.x + Math.cos(pose.heading) * 13;
-      const pz = pose.z - Math.sin(pose.heading) * 13;
+      // verge, not the carriageway. Per-site `setbackM` pulls a venue off a
+      // neighbouring lot it would otherwise intersect; 13 is the default.
+      const setback = venue.setbackM ?? 13;
+      const px = pose.x + Math.cos(pose.heading) * setback;
+      const pz = pose.z - Math.sin(pose.heading) * setback;
       // A rider waits curbside (nearer the lane than the building) facing the road.
       this.gigVenueCurbside.set(venue.id, {
         x: pose.x + Math.cos(pose.heading) * 4.5,
