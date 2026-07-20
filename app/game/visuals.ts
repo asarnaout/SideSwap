@@ -29,6 +29,15 @@ export interface MapVisualPalette {
   readonly silhouetteNear: string;
   readonly silhouetteFar: string;
   readonly sunTint: string;
+  /**
+   * Paved-city option. When `paved` is set, the base ground renders as concrete
+   * (`groundBase`) instead of grass, and the road shoulder band becomes a
+   * concrete sidewalk (`pavement`). Parks still paint their own green on top.
+   * Omitted on rural/suburban maps, which keep the grass ground + dirt shoulder.
+   */
+  readonly paved?: boolean;
+  readonly groundBase?: string;
+  readonly pavement?: string;
 }
 
 export type MapVisualKey =
@@ -57,6 +66,10 @@ const MAP_VISUAL_PALETTES: Record<MapVisualKey, MapVisualPalette> = {
     silhouetteNear: "#a8a499",
     silhouetteFar: "#d2c9b2",
     sunTint: "#ffe9c4",
+    // NYC is a paved city: concrete lots + sidewalks instead of the grass plane.
+    paved: true,
+    groundBase: "#4c5053",
+    pavement: "#6a6e71",
   },
   london: {
     skyTop: "#3f7fb8",

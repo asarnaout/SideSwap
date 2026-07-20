@@ -155,6 +155,10 @@ const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y + 0.0016;
 const ROAD_SHOULDER_Y = 0.045;
 const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
+// On paved ("city") maps the shoulder band becomes a concrete sidewalk: wider
+// than the dirt shoulder so pedestrians, vendors and streetlights have a curb to
+// sit on. It rides the same band + junction-fill machinery as the dirt shoulder.
+const PAVED_SIDEWALK_WIDTH = 3.4;
 const MAX_ROAD_MITER_RATIO = 3.25;
 
 export interface RoadSurfaceStripGeometry {
@@ -4861,6 +4865,10 @@ class BabylonGameSession {
     this.visualPalette = palette;
     this.createSkyAndHorizon(palette, mapId, mapPack.geometry.worldSize);
 
+    // Paved cities (NYC) render the base ground as concrete and the road shoulder
+    // as a wider concrete sidewalk; everywhere else keeps grass + a dirt shoulder.
+    const paved = palette.paved ?? false;
+
     const grass = makeMaterial(scene, "scenario-ground", new Color3(0.24, 0.39, 0.25));
     const asphalt = makeMaterial(scene, "scenario-asphalt", Color3.White());
     asphalt.diffuseTexture = createAsphaltTexture(
@@ -4889,11 +4897,19 @@ class BabylonGameSession {
       "#25292b",
       hashStringToSeed(`${mapId}-terminal`),
     );
-    const dirtShoulder = makeMaterial(
-      scene,
-      "scenario-dirt-shoulder",
-      Color3.FromHexString(palette.dirtShoulder),
-    );
+    // On paved maps this band is the concrete sidewalk (textured like the road
+    // but lighter); elsewhere it stays a flat dirt shoulder.
+    const dirtShoulder = makeMaterial(scene, "scenario-dirt-shoulder", Color3.White());
+    if (paved) {
+      dirtShoulder.diffuseTexture = createAsphaltTexture(
+        scene,
+        "scenario-sidewalk-texture",
+        palette.pavement ?? "#6a6e71",
+        hashStringToSeed(`${mapId}-sidewalk`),
+      );
+    } else {
+      dirtShoulder.diffuseColor = Color3.FromHexString(palette.dirtShoulder);
+    }
     const routeMaterial = makeMaterial(
       scene,
       "scenario-route",
@@ -4927,16 +4943,24 @@ class BabylonGameSession {
 
     const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
     const groundHeight = Math.max(90, mapPack.geometry.worldSize.z + 36);
-    const grassTexture = createGrassTexture(
-      scene,
-      "scenario-ground-texture",
-      palette,
-      hashStringToSeed(`${mapId}-grass`),
-    );
-    grassTexture.uScale = groundWidth / 16;
-    grassTexture.vScale = groundHeight / 16;
+    const groundTexture = paved
+      ? createAsphaltTexture(
+          scene,
+          "scenario-ground-texture",
+          palette.groundBase ?? "#4c5053",
+          hashStringToSeed(`${mapId}-ground`),
+        )
+      : createGrassTexture(
+          scene,
+          "scenario-ground-texture",
+          palette,
+          hashStringToSeed(`${mapId}-grass`),
+        );
+    const groundTile = paved ? 10 : 16;
+    groundTexture.uScale = groundWidth / groundTile;
+    groundTexture.vScale = groundHeight / groundTile;
     grass.diffuseColor = Color3.White();
-    grass.diffuseTexture = grassTexture;
+    grass.diffuseTexture = groundTexture;
     const ground = MeshBuilder.CreateGround(
       "scenario-world",
       { width: groundWidth, height: groundHeight, subdivisions: 1 },
@@ -4967,7 +4991,9 @@ class BabylonGameSession {
     const roadSurfaces = connectedRoadSurfaces.length
       ? connectedRoadSurfaces
       : authoredRoadSurfaces;
-    const shoulderWidth = Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+    const shoulderWidth = paved
+      ? PAVED_SIDEWALK_WIDTH
+      : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     for (const surface of roadSurfaces) {
       const surfaceMaterial =
         surface.surfaceType === "shared_space"
