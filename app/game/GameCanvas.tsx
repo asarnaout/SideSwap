@@ -100,8 +100,11 @@ import {
 import {
   buildingSetUrls,
   isBuildingSetId,
+  NYC_VENDORS,
+  nycVendorUrls,
   slotBlockBuildings,
   type BuildingSetId,
+  type StreetPropConfig,
 } from "./buildingSets";
 import {
   buildCyclistVisual,
@@ -1721,6 +1724,19 @@ function roadsidePropKindsForMap(
           faceRoad: true,
         },
         PROP_SIGN,
+        // Street vendor carts, curbside and alternating sides. The placement is
+        // computed here but the carts are glb instances (routed out of the
+        // procedural-prop loop into pendingVendors), not master boxes.
+        {
+          kind: "vendor",
+          spacingM: 82,
+          jitterM: 24,
+          lateralMarginM: 1.4,
+          bothSides: false,
+          alternateSides: true,
+          variants: Math.max(1, NYC_VENDORS.length),
+          faceRoad: true,
+        },
       ];
     case "london":
       // Street lamps are hand-placed for South Kensington; scattered props
@@ -2579,6 +2595,8 @@ class BabylonGameSession {
   /** Keep-out circles (gas station + gig-venue lots) so the block street wall
    * never drops a scenery building on top of an interactive POI. */
   private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
+  /** Sidewalk vendor carts to instantiate once their glbs preload. */
+  private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -4640,6 +4658,23 @@ class BabylonGameSession {
       if (placed === 0) buildFallback();
     }
     this.pendingBuildingBlocks.length = 0;
+
+    // Sidewalk vendor carts: glb instances via the same merged-master path, so
+    // each cart is one cheap scene mesh. Frozen alongside the rest of the
+    // static scenery.
+    let vendorIndex = 0;
+    for (const vendor of this.pendingVendors) {
+      const master = this.getBuildingMaster(vendor.config.url);
+      if (!master) continue;
+      const inst = master.createInstance(`vendor-${vendorIndex}`);
+      vendorIndex += 1;
+      inst.position.set(vendor.x, vendor.config.groundY + BUILDING_GROUND_LIFT, vendor.z);
+      inst.rotation.y = vendor.yaw;
+      inst.scaling.setAll(vendor.config.scale);
+      inst.isPickable = false;
+      this.staticSceneryFreeze.push(inst);
+    }
+    this.pendingVendors.length = 0;
   }
 
   /**
@@ -5459,12 +5494,13 @@ class BabylonGameSession {
       placeFacadeGrid(block, material);
     }
     // Preload just this map's building-set glbs (not every map's) off the
-    // critical path; buildInstancedBuildings consumes them once ready.
-    this.buildingModelUrls = buildingSetUrls([
-      ...new Set(
-        this.pendingBuildingBlocks.map((entry) => entry.setId),
-      ),
-    ]);
+    // critical path; buildInstancedBuildings consumes them once ready. City
+    // maps (those with building sets) also get the sidewalk vendor carts.
+    const setIds = [...new Set(this.pendingBuildingBlocks.map((e) => e.setId))];
+    this.buildingModelUrls = [
+      ...buildingSetUrls(setIds),
+      ...(setIds.length ? nycVendorUrls() : []),
+    ];
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(
@@ -6504,6 +6540,14 @@ class BabylonGameSession {
 
     let instanceIndex = 0;
     for (const placement of placements) {
+      if (placement.kind === "vendor") {
+        // glb cart, not a procedural master — instantiate later once preloaded.
+        const config = NYC_VENDORS[placement.variant % NYC_VENDORS.length];
+        if (config) {
+          this.pendingVendors.push({ config, x: placement.x, z: placement.z, yaw: placement.rotationY });
+        }
+        continue;
+      }
       const parts = partsFor(placement.kind, placement.variant);
       const sin = Math.sin(placement.rotationY);
       const cos = Math.cos(placement.rotationY);
