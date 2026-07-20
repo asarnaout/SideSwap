@@ -167,6 +167,11 @@ const ROAD_POINT_EPSILON_M = 0.08;
 // than the dirt shoulder so pedestrians, vendors and streetlights have a curb to
 // sit on. It rides the same band + junction-fill machinery as the dirt shoulder.
 const PAVED_SIDEWALK_WIDTH = 3.4;
+// Lift instanced buildings a few cm so a model's flat base plate never sits
+// exactly coplanar with the ground/sidewalk — otherwise the two surfaces
+// z-fight and flicker as the camera moves. Above the sidewalk band (0.045),
+// small enough to read as flush.
+const BUILDING_GROUND_LIFT = 0.08;
 const MAX_ROAD_MITER_RATIO = 3.25;
 
 export interface RoadSurfaceStripGeometry {
@@ -4572,7 +4577,7 @@ class BabylonGameSession {
         if (master) {
           // Fast path: one instance = one scene mesh = one cull check.
           const inst = master.createInstance(`bldg-${block.id}-${placed}`);
-          inst.position.set(b.x, b.groundY, b.z);
+          inst.position.set(b.x, b.groundY + BUILDING_GROUND_LIFT, b.z);
           inst.rotation.y = b.yaw;
           inst.scaling.setAll(b.scale);
           inst.isPickable = false;
@@ -4585,7 +4590,7 @@ class BabylonGameSession {
         const root = instance?.rootNodes[0] as TransformNode | undefined;
         if (!root) continue;
         const holder = new TransformNode(`bldg-${block.id}-${placed}`, this.scene);
-        holder.position.set(b.x, b.groundY, b.z);
+        holder.position.set(b.x, b.groundY + BUILDING_GROUND_LIFT, b.z);
         holder.rotation.y = b.yaw;
         root.parent = holder;
         root.scaling.setAll(b.scale);
