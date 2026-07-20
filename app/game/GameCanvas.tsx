@@ -4506,8 +4506,9 @@ class BabylonGameSession {
    * Mutates the shared container materials once — all instances light up.
    */
   private applyBuildingNightGlow() {
-    // Warm interior-light colour for lit windows.
-    const WARM = new Color3(1.0, 0.8, 0.46);
+    // Warm sodium/incandescent colour for lit windows (blue-hour amber). Kept
+    // below pure white so bloom softens it to a glow instead of blowing it out.
+    const WARM = new Color3(0.95, 0.6, 0.29);
     for (const url of this.buildingModelUrls) {
       const mats = modelMaterials(this.scene, url);
       // Models with a dedicated window material get the realistic treatment:
@@ -4521,6 +4522,8 @@ class BabylonGameSession {
       for (const mat of mats) {
         const name = (mat.name ?? "").toLowerCase();
         const m = mat as unknown as {
+          albedoColor?: Color3;
+          diffuseColor?: Color3;
           albedoTexture?: unknown;
           diffuseTexture?: unknown;
           emissiveColor?: Color3;
@@ -4529,9 +4532,17 @@ class BabylonGameSession {
         };
         if (hasWindowMat) {
           const isWindow = /window|glass|trim/.test(name);
-          m.emissiveColor = isWindow ? WARM.clone() : new Color3(0, 0, 0);
-          if (typeof m.emissiveIntensity === "number") {
-            m.emissiveIntensity = isWindow ? 0.95 : 0;
+          if (isWindow) {
+            // A lit window is a dark pane that only glows warm — otherwise the
+            // pane's own (light) albedo, lit by the sky, washes it out to white.
+            const dark = new Color3(0.05, 0.045, 0.04);
+            if (m.albedoColor) m.albedoColor = dark;
+            if (m.diffuseColor) m.diffuseColor = dark;
+            m.emissiveColor = WARM.clone();
+            if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.72;
+          } else {
+            m.emissiveColor = new Color3(0, 0, 0);
+            if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0;
           }
         } else {
           const tex = m.albedoTexture ?? m.diffuseTexture;
@@ -5134,19 +5145,21 @@ class BabylonGameSession {
     // (lit building facades, streetlights, signage) carries the scene.
     const night = palette.night ?? false;
     const hemi = new HemisphericLight("scenario-sky-light", new Vector3(0.1, 1, 0.15), scene);
-    // Night streets are still well-lit (streetlights + spill from lit shops), so
-    // the fill stays generous — the mood comes from the dark sky + emissive glow,
-    // not from an unplayably dark road. Cool-neutral so the amber emissives pop.
-    hemi.intensity = night ? 0.72 : 0.5;
+    // Dusk / blue hour: a cool blue sky fill from above (twilight) plus a warm
+    // low "sun" (set to palette.sunTint in createSkyAndHorizon) and a warm
+    // ground bounce, so building faces + the street pick up sodium warmth
+    // against the cool sky — the classic blue-hour warm/cool split. Bright
+    // enough that the road + car stay clearly readable.
+    hemi.intensity = night ? 0.64 : 0.5;
     hemi.diffuse = night
-      ? new Color3(0.62, 0.68, 0.82)
+      ? new Color3(0.44, 0.54, 0.76)
       : new Color3(0.82, 0.88, 0.98);
     hemi.groundColor = night
-      ? new Color3(0.24, 0.25, 0.3)
+      ? new Color3(0.38, 0.29, 0.18)
       : new Color3(0.34, 0.3, 0.24);
     const sun = new DirectionalLight("scenario-sun", new Vector3(-0.42, -1, 0.48), scene);
-    sun.intensity = night ? 0.75 : 1.3;
-    if (night) scene.ambientColor = new Color3(0.26, 0.27, 0.32);
+    sun.intensity = night ? 0.6 : 1.3;
+    if (night) scene.ambientColor = new Color3(0.23, 0.22, 0.26);
     this.createSunShadows(sun);
 
     const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
@@ -6091,9 +6104,41 @@ class BabylonGameSession {
     const night = palette.night ?? false;
     const lampHead = material(
       "lamp-head",
-      new Color3(0.75, 0.7, 0.5),
-      night ? new Color3(1.35, 1.05, 0.5) : new Color3(0.3, 0.26, 0.12),
+      new Color3(0.85, 0.66, 0.4),
+      // Warm sodium-vapour orange at night (blooms into a soft glow); a faint
+      // warm cast by day.
+      night ? new Color3(1.5, 0.86, 0.34) : new Color3(0.3, 0.26, 0.12),
     );
+    // At night each streetlight drops a soft warm pool of light on the pavement
+    // (a radial-gradient decal) — the signature "sodium spill" of a dusk street.
+    let lampPool: StandardMaterial | null = null;
+    if (night) {
+      const poolTex = new DynamicTexture(
+        "lamp-pool-tex",
+        { width: 128, height: 128 },
+        scene,
+        true,
+      );
+      const pctx = textureContext(poolTex);
+      const grad = pctx.createRadialGradient(64, 64, 3, 64, 64, 62);
+      grad.addColorStop(0, "rgba(255,190,110,0.85)");
+      grad.addColorStop(0.4, "rgba(255,155,80,0.42)");
+      grad.addColorStop(1, "rgba(255,140,60,0)");
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, 128, 128);
+      poolTex.update();
+      poolTex.hasAlpha = true;
+      lampPool = new StandardMaterial("lamp-pool", scene);
+      // Dim warm tint (not white) so the pool reads as a soft sodium spill and
+      // its centre stays below the bloom threshold instead of blowing out.
+      lampPool.emissiveColor = new Color3(0.72, 0.44, 0.19);
+      lampPool.emissiveTexture = poolTex;
+      lampPool.opacityTexture = poolTex;
+      lampPool.diffuseColor = Color3.Black();
+      lampPool.specularColor = Color3.Black();
+      lampPool.disableLighting = true;
+      lampPool.disableDepthWrite = true;
+    }
     const signPost = material("sign-post", new Color3(0.45, 0.47, 0.48));
     const signPanels = [
       material("sign-panel-blue", new Color3(0.1, 0.28, 0.5), night ? new Color3(0.14, 0.38, 0.72) : undefined),
@@ -6273,6 +6318,19 @@ class BabylonGameSession {
               ),
               offset: new Vector3(0, 5.08, 1.25),
             },
+            ...(lampPool
+              ? [
+                  {
+                    master: masterBox(
+                      `${cacheKey}-pool`,
+                      { width: 7, height: 0.02, depth: 7 },
+                      lampPool,
+                    ),
+                    offset: new Vector3(0, 0.07, 1.1),
+                    castShadow: false,
+                  },
+                ]
+              : []),
           ];
           break;
         case "sign":
@@ -7570,8 +7628,10 @@ class BabylonGameSession {
     // bloom harder — lower threshold + more weight so lit windows, streetlights
     // and signage bloom into a glowing skyline.
     const night = this.visualPalette?.night ?? false;
-    pipeline.bloomThreshold = night ? 0.55 : 0.9;
-    pipeline.bloomWeight = night ? 0.42 : 0.18;
+    // Softer night bloom (higher threshold, lower weight): the warm lights glow
+    // rather than blowing out to white.
+    pipeline.bloomThreshold = night ? 0.72 : 0.9;
+    pipeline.bloomWeight = night ? 0.3 : 0.18;
     pipeline.bloomScale = 0.5;
     pipeline.bloomKernel = night ? 64 : 48;
     pipeline.imageProcessingEnabled = true;

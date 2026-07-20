@@ -64,21 +64,22 @@ export type MapVisualKey =
 // Tokyo soft warm residential.
 const MAP_VISUAL_PALETTES: Record<MapVisualKey, MapVisualPalette> = {
   nyc: {
-    // Night city: dark navy zenith warming to a faint amber city-glow at the
-    // horizon (light pollution), matching fog. Moonlight is a cool pale blue.
-    skyTop: "#070b16",
-    skyHorizon: "#2a2733",
-    fogColor: "#1b1a24",
+    // Blue-hour NYC: a luminous deep-blue dusk zenith warming to a soft amber
+    // sunset glow down the avenue (horizon + fog), so the warm sodium
+    // streetlights/windows read against a cool sky — the classic dusk contrast.
+    skyTop: "#3b4e74",
+    skyHorizon: "#a78868",
+    fogColor: "#6a5a4c",
     grassBase: "#3f6a3c",
     grassAlt: "#4d7c44",
     dirtShoulder: "#6b5a3f",
-    silhouetteNear: "#191b26",
-    silhouetteFar: "#24222f",
-    sunTint: "#9fb0d6",
+    silhouetteNear: "#3a3742",
+    silhouetteFar: "#6a5d55",
+    sunTint: "#ffddab",
     // NYC is a paved city: concrete lots + sidewalks instead of the grass plane.
     paved: true,
-    groundBase: "#33363a",
-    pavement: "#43474b",
+    groundBase: "#34363b",
+    pavement: "#45474c",
     night: true,
   },
   london: {
