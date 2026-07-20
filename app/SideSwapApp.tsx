@@ -47,6 +47,7 @@ import {
 } from "./game/servicePoints";
 import { Minimap } from "./game/MinimapCanvas";
 import { primeAudioContext, suspendAudioContext } from "./game/audio/audioContext";
+import { useDriveMusic } from "./game/audio/musicPlayer";
 import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
 import type {
@@ -272,6 +273,12 @@ export default function SideSwapApp() {
     reason: string;
   } | null>(null);
   const lastFineAtRef = useRef(0);
+  // Lives out here rather than inside GameCanvas, which remounts mid-session
+  // whenever the destination or steering side changes — music placed in there
+  // would restart at apparently random moments.
+  const music = useDriveMusic(
+    progress.accessibility.masterVolume * progress.accessibility.musicVolume,
+  );
 
   // Drain fuel by the distance the car actually moved between HUD samples, then
   // mirror the pose for the next delta. Fuel lives in the drive session and is
@@ -434,10 +441,11 @@ export default function SideSwapApp() {
     scenarioId: ScenarioId,
     nextDestinationId = destinationId,
   ) => {
-    // Synchronously, inside the click that got us here: Safari only honours an
-    // audio resume in the same task as the gesture that triggered it, so this
-    // cannot move into an effect or behind an await.
+    // Both synchronously, inside the click that got us here: Safari only honours
+    // an audio resume and a play() in the same task as the gesture that
+    // triggered them, so neither can move into an effect or behind an await.
     primeAudioContext();
+    music.start(nextDestinationId);
     const nextDestination = getDestinationProfile(nextDestinationId);
     const nextCountryId = nextDestination.countryId;
     const session: GameSessionConfig = {
@@ -490,6 +498,7 @@ export default function SideSwapApp() {
     setGig(null);
     setPaused(false);
     setActiveSession(null);
+    music.stop();
     // Parked, not closed — the player will almost certainly start another drive,
     // and a closed context can never be reopened.
     suspendAudioContext();
