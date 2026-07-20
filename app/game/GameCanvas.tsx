@@ -4986,9 +4986,17 @@ class BabylonGameSession {
       );
       if (!pose) continue;
       // Set the forecourt well back from the lane so the (large) station model
-      // and its base plinth clear the road instead of swallowing it.
+      // clears the road instead of swallowing it.
       const px = pose.x + Math.cos(pose.heading) * 15;
       const pz = pose.z - Math.sin(pose.heading) * 15;
+      // A concrete apron under the station so it sits on paving, not grass.
+      createBox(
+        scene,
+        `${service.id}-forecourt`,
+        { width: 26, height: 0.16, depth: 26 },
+        new Vector3(px, 0.09, pz),
+        makeMaterial(scene, `${service.id}-forecourt`, new Color3(0.34, 0.35, 0.37)),
+      );
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
