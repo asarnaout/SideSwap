@@ -1175,13 +1175,15 @@ export const LONDON_MAP_PACK: MapPack = {
       },
     ],
     servicePoints: [
-      // Mid-block on the quiet loop's straight west leg, set back onto the open
-      // grass west of the road — 30+ m from both corner junctions, so the
-      // station's square 23.3 m base slab never meets a mitered junction edge.
-      // setbackM 18.6: the southbound lane sits at x-162.2 and the west
-      // shoulder's outer edge at x-169.1, so the slab's front edge lands at
-      // x≈-169.05 — right after the shoulder, touching it, zero overlap.
-      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-quiet-south-opposite", distanceAlongM: 24.4 }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
+      // Tucked into the square corner west of the quiet loop, where Cromwell
+      // Road's far-west run meets the loop's straight west leg. Both edges are
+      // straight here, so unlike the mitered Queen's Gate corner a square
+      // 23.3 m slab can sit flush against the pair of them.
+      // setbackM 18.6: the southbound lane sits at x-162.2 and the loop's west
+      // shoulder ends at x-169.1, putting the slab's east edge at x≈-169.16.
+      // distanceAlongM 18.16 does the same to the north: Cromwell's south
+      // shoulder ends at z-37.1 and the slab's north edge lands at z≈-37.15.
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-quiet-south-opposite", distanceAlongM: 18.16 }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
     ],
     gigVenues: [
       { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },
