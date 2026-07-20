@@ -4229,7 +4229,7 @@ class BabylonGameSession {
       `prop-${kind}-${Math.round(x)}-${Math.round(z)}`,
       this.scene,
     );
-    holder.position.set(x, 0, z);
+    holder.position.set(x, config.groundY ?? 0, z);
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
     root.scaling.setAll(config.scale);
