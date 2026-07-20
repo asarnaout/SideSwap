@@ -17,6 +17,7 @@ import {
   AssetContainer,
   InstantiatedEntries,
   LoadAssetContainerAsync,
+  type Material,
   Scene,
 } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
@@ -117,6 +118,16 @@ export function instantiateModelInstanced(
   return container.instantiateModelsToScene(undefined, false, {
     doNotInstantiate: false,
   });
+}
+
+/**
+ * The (shared) materials of a preloaded model, so callers can retune them once —
+ * e.g. add a night-time emissive glow to every building of a type. Empty when
+ * the url hasn't loaded. Mutating these affects all instances of the model,
+ * which is exactly what a per-model retune wants.
+ */
+export function modelMaterials(scene: Scene, url: string): Material[] {
+  return CONTAINERS_BY_SCENE.get(scene)?.get(url)?.materials ?? [];
 }
 
 export function disposeModels(scene: Scene): void {

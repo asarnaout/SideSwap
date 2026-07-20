@@ -38,6 +38,13 @@ export interface MapVisualPalette {
   readonly paved?: boolean;
   readonly groundBase?: string;
   readonly pavement?: string;
+  /**
+   * Night city. When set, the scene lights dim to a cool moonlight, building
+   * materials gain a warm emissive so windows/facades glow, streetlights and
+   * signage light up, and bloom is nudged — a night drive lit by the city
+   * itself. The sky/fog/silhouette colours above are authored dark to match.
+   */
+  readonly night?: boolean;
 }
 
 export type MapVisualKey =
@@ -57,19 +64,22 @@ export type MapVisualKey =
 // Tokyo soft warm residential.
 const MAP_VISUAL_PALETTES: Record<MapVisualKey, MapVisualPalette> = {
   nyc: {
-    skyTop: "#2f7fc8",
-    skyHorizon: "#f3d9ac",
-    fogColor: "#ecd2b2",
+    // Night city: dark navy zenith warming to a faint amber city-glow at the
+    // horizon (light pollution), matching fog. Moonlight is a cool pale blue.
+    skyTop: "#070b16",
+    skyHorizon: "#2a2733",
+    fogColor: "#1b1a24",
     grassBase: "#3f6a3c",
     grassAlt: "#4d7c44",
     dirtShoulder: "#6b5a3f",
-    silhouetteNear: "#a8a499",
-    silhouetteFar: "#d2c9b2",
-    sunTint: "#ffe9c4",
+    silhouetteNear: "#191b26",
+    silhouetteFar: "#24222f",
+    sunTint: "#9fb0d6",
     // NYC is a paved city: concrete lots + sidewalks instead of the grass plane.
     paved: true,
-    groundBase: "#4c5053",
-    pavement: "#6a6e71",
+    groundBase: "#33363a",
+    pavement: "#43474b",
+    night: true,
   },
   london: {
     skyTop: "#3f7fb8",

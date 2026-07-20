@@ -91,6 +91,7 @@ import {
   instantiateModel,
   instantiateModelInstanced,
   isModelReady,
+  modelMaterials,
   PROP_MODEL_REGISTRY,
   preloadModels,
   propModelUrls,
@@ -4471,7 +4472,38 @@ class BabylonGameSession {
    * calls rather than hundreds. A block whose set never loaded (offline) falls
    * back to its procedural facade-box grid so it is never left empty.
    */
+  /**
+   * Night city: make every building material glow its own albedo/texture, so
+   * facades and painted windows read as lit-from-within under the dim moonlight
+   * (the low-poly glbs have no emissive of their own). Bloom does the rest.
+   * Mutates the shared container materials once — all instances light up.
+   */
+  private applyBuildingNightGlow() {
+    for (const url of this.buildingModelUrls) {
+      for (const mat of modelMaterials(this.scene, url)) {
+        const m = mat as unknown as {
+          albedoColor?: Color3;
+          albedoTexture?: unknown;
+          diffuseColor?: Color3;
+          diffuseTexture?: unknown;
+          emissiveColor?: Color3;
+          emissiveTexture?: unknown;
+          emissiveIntensity?: number;
+        };
+        if (m.albedoColor) {
+          m.emissiveColor = m.albedoColor.clone();
+          if (m.albedoTexture) m.emissiveTexture = m.albedoTexture;
+          if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.5;
+        } else if (m.diffuseColor) {
+          m.emissiveColor = m.diffuseColor.scale(0.5);
+          if (m.diffuseTexture) m.emissiveTexture = m.diffuseTexture;
+        }
+      }
+    }
+  }
+
   private buildInstancedBuildings() {
+    if (this.visualPalette?.night) this.applyBuildingNightGlow();
     for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
       const placements = slotBlockBuildings(
         block.center,
@@ -4987,12 +5019,23 @@ class BabylonGameSession {
       new Color3(0.025, 0.16, 0.13),
     );
 
+    // Night cities dim to a cool moonlight so the city's own emissive glow
+    // (lit building facades, streetlights, signage) carries the scene.
+    const night = palette.night ?? false;
     const hemi = new HemisphericLight("scenario-sky-light", new Vector3(0.1, 1, 0.15), scene);
-    hemi.intensity = 0.5;
-    hemi.diffuse = new Color3(0.82, 0.88, 0.98);
-    hemi.groundColor = new Color3(0.34, 0.3, 0.24);
+    // Night streets are still well-lit (streetlights + spill from lit shops), so
+    // the fill stays generous — the mood comes from the dark sky + emissive glow,
+    // not from an unplayably dark road. Cool-neutral so the amber emissives pop.
+    hemi.intensity = night ? 0.72 : 0.5;
+    hemi.diffuse = night
+      ? new Color3(0.62, 0.68, 0.82)
+      : new Color3(0.82, 0.88, 0.98);
+    hemi.groundColor = night
+      ? new Color3(0.24, 0.25, 0.3)
+      : new Color3(0.34, 0.3, 0.24);
     const sun = new DirectionalLight("scenario-sun", new Vector3(-0.42, -1, 0.48), scene);
-    sun.intensity = 1.3;
+    sun.intensity = night ? 0.75 : 1.3;
+    if (night) scene.ambientColor = new Color3(0.26, 0.27, 0.32);
     this.createSunShadows(sun);
 
     const groundWidth = Math.max(90, mapPack.geometry.worldSize.x + 36);
@@ -5932,15 +5975,18 @@ class BabylonGameSession {
       material("leaves-2", new Color3(0.13, 0.3, 0.17)),
     ];
     const iron = material("iron", new Color3(0.09, 0.1, 0.11));
+    // Streetlights blaze warm at night (bloom turns them into glowing points);
+    // by day they carry only a faint warm cast.
+    const night = palette.night ?? false;
     const lampHead = material(
       "lamp-head",
       new Color3(0.75, 0.7, 0.5),
-      new Color3(0.3, 0.26, 0.12),
+      night ? new Color3(1.35, 1.05, 0.5) : new Color3(0.3, 0.26, 0.12),
     );
     const signPost = material("sign-post", new Color3(0.45, 0.47, 0.48));
     const signPanels = [
-      material("sign-panel-blue", new Color3(0.1, 0.28, 0.5)),
-      material("sign-panel-green", new Color3(0.1, 0.35, 0.2)),
+      material("sign-panel-blue", new Color3(0.1, 0.28, 0.5), night ? new Color3(0.14, 0.38, 0.72) : undefined),
+      material("sign-panel-green", new Color3(0.1, 0.35, 0.2), night ? new Color3(0.14, 0.5, 0.26) : undefined),
     ];
     const hydrantRed = material("hydrant", new Color3(0.62, 0.1, 0.07));
     const hedgeGreen = material("hedge", new Color3(0.15, 0.32, 0.15));
@@ -7392,11 +7438,14 @@ class BabylonGameSession {
     pipeline.bloomEnabled = true;
     // Bloom stays keyed to bright emissives (lamps, brake lights); the
     // threshold is lifted alongside tone mapping so the newly warm, brighter
-    // sky and sunlit surfaces don't bloom into a haze.
-    pipeline.bloomThreshold = 0.9;
-    pipeline.bloomWeight = 0.18;
+    // sky and sunlit surfaces don't bloom into a haze. A night city leans on
+    // bloom harder — lower threshold + more weight so lit windows, streetlights
+    // and signage bloom into a glowing skyline.
+    const night = this.visualPalette?.night ?? false;
+    pipeline.bloomThreshold = night ? 0.55 : 0.9;
+    pipeline.bloomWeight = night ? 0.42 : 0.18;
     pipeline.bloomScale = 0.5;
-    pipeline.bloomKernel = 48;
+    pipeline.bloomKernel = night ? 64 : 48;
     pipeline.imageProcessingEnabled = true;
     const imageProcessing = pipeline.imageProcessing;
     // ACES filmic tone mapping is the core of the "cinematic" look: it
@@ -7407,7 +7456,8 @@ class BabylonGameSession {
     imageProcessing.toneMappingType =
       ImageProcessingConfiguration.TONEMAPPING_ACES;
     imageProcessing.contrast = 1.12;
-    imageProcessing.exposure = 1.2;
+    // Lift night exposure so the road + car read clearly under the dark sky.
+    imageProcessing.exposure = night ? 1.55 : 1.2;
     imageProcessing.vignetteEnabled = true;
     imageProcessing.vignetteWeight = 0.9;
     imageProcessing.vignetteColor = new Color4(0.03, 0.02, 0, 0);
