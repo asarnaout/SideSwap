@@ -18,7 +18,15 @@
  *   2. text (Text* — the mirrored "QUICK STOP" lettering), or
  *   3. freestanding signage: its geometry sits far (>4.5m) from the model's
  *      footprint centroid AND elevated (>1m) — i.e. the roof sign + the pylon.
+ *   4. named explicitly in STRAY_NODES (below).
  * The BIN chunk is kept as-is (orphaned geometry is just unreferenced).
+ *
+ * WHAT IT ADJUSTS
+ * ---------------
+ * The shop awning's end caps are modelled flush with the end walls, which
+ * z-fights; AWNING_END_INSET pulls them just inside. Vertices are never
+ * rewritten — only the node's TRS, computed from the vertex bounds, so the
+ * step is idempotent.
  *
  * REPRODUCE
  * ---------
@@ -59,6 +67,32 @@ for (const r of json.scenes?.[json.scene ?? 0]?.nodes ?? []) walk(r, idm());
 
 const clutter = /^(MY_CAR|zTruck|Tree|Leaves|zBush|zFlowerRed|zWoodBox|zPowerMed|zBuilding|zzzz)/i;
 const textish = /^Text/i;
+/**
+ * The pylon's two arrow flashes. Rule 3 removed the pylon's mast and panel but
+ * not these: they sit 3.58m and 4.32m from the centroid, just inside the 4.5m
+ * cut-off, so they were left hovering ~2.6m and ~3.4m above the forecourt with
+ * nothing under them. In game they read as a small white arrow floating over
+ * the grass beside the station. Loosening rule 3 to catch them would also take
+ * the roof billboard (3.15m, elevated), which the game letters with each
+ * station's name — so name them instead.
+ */
+const STRAY_NODES = new Set([
+  "Cylinder.068_Cylinder.126",
+  "Cylinder.069_Cylinder.127",
+]);
+
+/**
+ * The shop's red awning is a half-pipe running the full length of the shopfront,
+ * half-buried in the wall. Its two end caps land exactly on the end walls'
+ * outer faces — x max 1.6570 against the wall's 1.6570, x min -0.2493 against
+ * -0.2496. Coplanar faces z-fight, so the cap shows through the grey wall as a
+ * ragged red half-disc that looks like the awning is bleeding into the shop.
+ * Pull the awning in along its own length so both caps sit just inside the
+ * walls. INSET is in model units; at the registry's 2.8x scale 0.015 retracts
+ * each end ~4cm on a 5.3m shopfront, which reads as no change at all.
+ */
+const AWNING_NODE = "Cylinder.065_Cylinder.018";
+const AWNING_END_INSET = 0.015;
 // Footprint centroid from the meshes that are NOT clutter/text (the station).
 const structural = [...centers.entries()].filter(([i]) => {
   const nm = json.nodes[i].name ?? "";
@@ -74,15 +108,44 @@ for (const node of json.nodes ?? []) {
   const idx = json.nodes.indexOf(node);
   const c = centers.get(idx);
   const far = c && Math.hypot(c.x - cx, c.z - cz) > 4.5 && c.y > 1.0;
-  if (clutter.test(nm) || textish.test(nm) || far) {
-    removed.push(`${nm}${far && !clutter.test(nm) && !textish.test(nm) ? " (far/elevated)" : ""}`);
+  const stray = STRAY_NODES.has(nm);
+  if (clutter.test(nm) || textish.test(nm) || far || stray) {
+    removed.push(
+      `${nm}${stray ? " (stray pylon flash)" : far && !clutter.test(nm) && !textish.test(nm) ? " (far/elevated)" : ""}`,
+    );
     if (!dry) delete node.mesh;
   }
+}
+
+// Inset the awning. The node carries no authored transform, so the TRS below is
+// absolute and derived from the (untouched) vertex bounds — re-running the
+// script recomputes the same values rather than shrinking the awning again.
+const adjusted = [];
+const awningIndex = json.nodes.findIndex((n) => n.name === AWNING_NODE);
+if (awningIndex >= 0) {
+  const node = json.nodes[awningIndex];
+  const accessor =
+    json.accessors[json.meshes[node.mesh].primitives[0].attributes.POSITION];
+  const [minX] = accessor.min;
+  const maxX = accessor.max[0];
+  const length = maxX - minX;
+  const scale = (length - AWNING_END_INSET * 2) / length;
+  const centre = (minX + maxX) / 2;
+  if (!dry) {
+    node.scale = [scale, 1, 1];
+    // Scaling happens about the model origin, so shift back to hold the centre.
+    node.translation = [centre * (1 - scale), 0, 0];
+  }
+  adjusted.push(
+    `${AWNING_NODE} inset ${AWNING_END_INSET} per end (scale ${scale.toFixed(5)})`,
+  );
 }
 
 if (dry) {
   console.log(`[dry] would remove ${removed.length} meshes:`);
   for (const r of removed) console.log("  " + r);
+  console.log(`[dry] would adjust ${adjusted.length} meshes:`);
+  for (const a of adjusted) console.log("  " + a);
   process.exit(0);
 }
 
@@ -106,4 +169,4 @@ if (binChunk) {
   bin.copy(out, p + 8);
 }
 fs.writeFileSync(path, out);
-console.log(`cleared ${removed.length} clutter/sign/text meshes; wrote ${out.length} bytes to ${path}`);
+console.log(`cleared ${removed.length} clutter/sign/text meshes, adjusted ${adjusted.length}; wrote ${out.length} bytes to ${path}`);
