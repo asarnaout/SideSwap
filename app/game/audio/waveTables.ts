@@ -38,16 +38,21 @@ export const ENGINE_PARTIALS = 384;
 export function buildEngineHarmonics(
   partials = ENGINE_PARTIALS,
   cylinders = 4,
+  /** Firing-harmonic exponent. Larger drops the upper orders away faster, which
+   *  is most of the difference between a hard-edged engine and a soft one. */
+  firingRolloff = 0.75,
+  /** Spectral tilt denominator. Smaller is darker overall. */
+  tilt = 140,
 ): Float32Array {
   const amplitudes = new Float32Array(partials + 1);
   for (let k = 1; k <= partials; k += 1) {
     const base =
       k % cylinders === 0
-        ? 1 / Math.pow(k / cylinders, 0.75)
+        ? 1 / Math.pow(k / cylinders, firingRolloff)
         : k % 2 === 1
           ? 0.3 / Math.pow(k, 1.15)
           : 0.62 / Math.pow(k, 0.8);
-    amplitudes[k] = base * Math.exp(-k / 140);
+    amplitudes[k] = base * Math.exp(-k / tilt);
   }
   return amplitudes;
 }

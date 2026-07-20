@@ -7,7 +7,7 @@
  * ramped to zero — which is what makes the whole class of start/stop clicks
  * impossible rather than merely rare.
  */
-import type { DriveAudioParams } from "../audioMath";
+import { ENGINE, ENGINE_CYLINDERS, type DriveAudioParams } from "../audioMath";
 import {
   CONTINUOUS_LOOKAHEAD,
   EPSILON_GAIN,
@@ -67,7 +67,10 @@ export class EngineVoice {
   constructor(voice: VoiceContext) {
     const context = voice.context;
     this.context = context;
-    const engineWave = periodicWave(context, buildEngineHarmonics());
+    const engineWave = periodicWave(
+      context,
+      buildEngineHarmonics(undefined, ENGINE_CYLINDERS, ENGINE.harmonicRolloff, ENGINE.harmonicTilt),
+    );
     const topWave = periodicWave(context, buildEngineTopHarmonics());
 
     const mix = context.createGain();
