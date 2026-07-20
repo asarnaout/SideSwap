@@ -4506,24 +4506,38 @@ class BabylonGameSession {
    * Mutates the shared container materials once — all instances light up.
    */
   private applyBuildingNightGlow() {
+    // Warm interior-light colour for lit windows.
+    const WARM = new Color3(1.0, 0.8, 0.46);
     for (const url of this.buildingModelUrls) {
-      for (const mat of modelMaterials(this.scene, url)) {
+      const mats = modelMaterials(this.scene, url);
+      // Models with a dedicated window material get the realistic treatment:
+      // light only the windows, keep the walls dark (lit by moonlight +
+      // streetlights). Single-texture models (windows baked into one texture)
+      // can't isolate windows, so they get a dim warm self-glow — enough to read
+      // as lit without blowing the whole facade out to white.
+      const hasWindowMat = mats.some((mm) =>
+        /window|glass/.test((mm.name ?? "").toLowerCase()),
+      );
+      for (const mat of mats) {
+        const name = (mat.name ?? "").toLowerCase();
         const m = mat as unknown as {
-          albedoColor?: Color3;
           albedoTexture?: unknown;
-          diffuseColor?: Color3;
           diffuseTexture?: unknown;
           emissiveColor?: Color3;
           emissiveTexture?: unknown;
           emissiveIntensity?: number;
         };
-        if (m.albedoColor) {
-          m.emissiveColor = m.albedoColor.clone();
-          if (m.albedoTexture) m.emissiveTexture = m.albedoTexture;
-          if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.5;
-        } else if (m.diffuseColor) {
-          m.emissiveColor = m.diffuseColor.scale(0.5);
-          if (m.diffuseTexture) m.emissiveTexture = m.diffuseTexture;
+        if (hasWindowMat) {
+          const isWindow = /window|glass|trim/.test(name);
+          m.emissiveColor = isWindow ? WARM.clone() : new Color3(0, 0, 0);
+          if (typeof m.emissiveIntensity === "number") {
+            m.emissiveIntensity = isWindow ? 0.95 : 0;
+          }
+        } else {
+          const tex = m.albedoTexture ?? m.diffuseTexture;
+          m.emissiveColor = new Color3(0.42, 0.32, 0.19);
+          if (tex) m.emissiveTexture = tex;
+          if (typeof m.emissiveIntensity === "number") m.emissiveIntensity = 0.32;
         }
       }
     }
