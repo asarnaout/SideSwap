@@ -40,6 +40,11 @@ import {
   setFuel,
 } from "./game/progress";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
+import {
+  FUEL_PUMP_REACH_M,
+  distanceToNearestPump,
+  gasStationPumpPositions,
+} from "./game/servicePoints";
 import { Minimap } from "./game/MinimapCanvas";
 import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
@@ -494,19 +499,20 @@ export default function SideSwapApp() {
   // is stopped at a gas station (so the refuel prompt can appear).
   const walletHere = progress.walletByCountry[driveCountry.id];
   const fuelFraction = driveFuel / TANK_CAPACITY_L;
+  // Measured to the pumps, not to the lane anchor: the station model is set
+  // back ~16-19m from its anchor, so an anchor-radius check offered fuel to a
+  // car stopped on the carriageway while refusing it at the pumps themselves.
   const activeGasStation =
-    view === "driving" && hud
-      ? (runtimeMap.geometry.servicePoints ?? []).find((service) => {
-          const pose = resolveSimulationLaneAnchor(
-            runtimeMap.laneGraph.lanes,
-            service.anchor,
-          );
-          if (!pose) return false;
-          return (
-            hud.speed <= 1 &&
-            Math.hypot(hud.playerX - pose.x, hud.playerZ - pose.z) < 16
-          );
-        }) ?? null
+    view === "driving" && hud && hud.speed <= 1
+      ? (runtimeMap.geometry.servicePoints ?? []).find(
+          (service) =>
+            distanceToNearestPump(
+              runtimeMap.laneGraph.lanes,
+              service,
+              hud.playerX,
+              hud.playerZ,
+            ) <= FUEL_PUMP_REACH_M,
+        ) ?? null
       : null;
   const litresNeeded = Math.max(0, TANK_CAPACITY_L - driveFuel);
   const refuelCost =
@@ -526,14 +532,24 @@ export default function SideSwapApp() {
     setDriveFuel(TANK_CAPACITY_L);
   };
 
+  // Pin the pumps rather than the lane anchor. The anchor sits on the
+  // carriageway ~19m short of the forecourt, and now that fuel is only offered
+  // at the pumps a pin out on the road would send the player to a dead spot.
   const gasPins =
     view === "driving"
       ? (runtimeMap.geometry.servicePoints ?? []).flatMap((service) => {
-          const pose = resolveSimulationLaneAnchor(
+          const pumps = gasStationPumpPositions(
             runtimeMap.laneGraph.lanes,
-            service.anchor,
+            service,
           );
-          return pose ? [{ x: pose.x, z: pose.z, color: "#5bbf6a" }] : [];
+          if (!pumps.length) return [];
+          return [
+            {
+              x: pumps.reduce((total, pump) => total + pump.x, 0) / pumps.length,
+              z: pumps.reduce((total, pump) => total + pump.z, 0) / pumps.length,
+              color: "#5bbf6a",
+            },
+          ];
         })
       : [];
   const gigTargetVenue = gig ? gigTarget(gig) : null;
