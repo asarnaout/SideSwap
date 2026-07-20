@@ -74,7 +74,7 @@ const SETS: Record<BuildingSetId, readonly string[]> = {
   ],
   "nyc-midrise": [
     "nyc-midrise-a", "nyc-midrise-b", "nyc-midrise-low", "nyc-tenement",
-    "nyc-tower-a",
+    "nyc-tower-a", "nyc-shop-corner",
   ],
   "nyc-brownstone": [
     "nyc-brownstone-a", "nyc-brownstone-b", "nyc-brownstone-c",
