@@ -186,7 +186,7 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // wildly — the diner is authored at ~300 units, the shop at ~2) then set to a
   // sensible real-world footprint per building type. yawOffset 0: the buildings
   // read from any side; exact facing/height is a playtest tweak.
-  gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: 0 },
+  gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: -1.63 },
   restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: 0 },
   shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: 0 },
   residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: 0 },
