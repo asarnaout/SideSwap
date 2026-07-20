@@ -3069,6 +3069,9 @@ class BabylonGameSession {
     this.buildInstancedBuildings();
     // Freeze the dense scenery once the first frame has computed its matrices.
     this.scene.onAfterRenderObservable.addOnce(() => this.freezeStaticScenery());
+    // Compile every shader + upload every buffer now, while the loading gate is
+    // still up, so the first corner of the drive doesn't stall.
+    this.warmUpPipeline();
     this.markReady();
   }
 
@@ -4651,6 +4654,36 @@ class BabylonGameSession {
       if ("doNotSyncBoundingInfo" in mesh) mesh.doNotSyncBoundingInfo = true;
     }
     this.staticSceneryFreeze.length = 0;
+  }
+
+  /**
+   * Pre-warm the render pipeline before the drive starts, so the first corner
+   * doesn't stall. WebGL compiles a material's shader — and uploads its
+   * geometry, textures and instance buffers — lazily on first render; driving
+   * straight only pays for what's on that street, so turning to reveal new
+   * geometry hitches until it's all been rendered once. Here we force every
+   * mesh active (bypassing frustum culling) and render a couple of frames while
+   * the loading gate is still up, paying every first-render cost upfront. The
+   * first render also fires the static-scenery freeze (registered just before).
+   */
+  private warmUpPipeline() {
+    if (!this.scene.activeCamera && !(this.scene.activeCameras?.length)) return;
+    // Populate the shadow map's caster list so the shadow-depth shaders compile
+    // during warm-up too, not on the first corner.
+    this.refreshShadowCasters();
+    const renderable = this.scene.meshes.filter((m) => m.getTotalVertices() > 0);
+    const previous = renderable.map((m) => m.alwaysSelectAsActiveMesh);
+    for (const mesh of renderable) mesh.alwaysSelectAsActiveMesh = true;
+    try {
+      // Two frames: the first compiles/uploads, the second confirms a clean pass.
+      this.scene.render();
+      this.scene.render();
+    } catch {
+      // Warm-up is best-effort — never block the drive from starting.
+    }
+    renderable.forEach((mesh, index) => {
+      mesh.alwaysSelectAsActiveMesh = previous[index];
+    });
   }
 
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
@@ -7557,7 +7590,10 @@ class BabylonGameSession {
     sun.position = sun.direction.scale(-260);
     sun.autoUpdateExtends = true;
     sun.autoCalcShadowZBounds = true;
-    const generator = new ShadowGenerator(2048, sun);
+    // 1024 (was 2048): the dense city re-renders this shadow map every frame,
+    // so quartering its pixels frees real per-frame budget; night shadows are
+    // soft + dim enough that the lower resolution isn't noticeable.
+    const generator = new ShadowGenerator(1024, sun);
     generator.usePercentageCloserFiltering = true;
     generator.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
     generator.bias = 0.015;
