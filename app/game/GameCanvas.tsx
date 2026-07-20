@@ -2525,6 +2525,15 @@ class BabylonGameSession {
   private riderVisual: CharacterVisual | null = null;
   private riderNode: TransformNode | null = null;
   private riderVenuePlaced: string | null = null;
+  /** Venues/stations shown on their procedural box because the glb had not
+   * preloaded yet; upgraded to models once preload finishes. */
+  private readonly deferredProps: {
+    kind: string;
+    x: number;
+    z: number;
+    heading: number;
+    fallback: TransformNode;
+  }[] = [];
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -2977,6 +2986,7 @@ class BabylonGameSession {
     this.modelsReady = true;
     this.upgradeVehiclesToModels();
     this.upgradeRoadUsersToModels();
+    this.upgradePropsToModels();
     this.markReady();
   }
 
@@ -4226,6 +4236,43 @@ class BabylonGameSession {
     return true;
   }
 
+  /**
+   * Places a venue/station: the imported model when its glb has preloaded, else
+   * the caller's procedural fallback (built under a holder node) recorded so
+   * upgradePropsToModels can swap it for the model once preload finishes. The
+   * environment is built during construction — before the async model preload —
+   * so at first pass the model is never ready and every prop starts procedural.
+   */
+  private placeProp(
+    kind: string,
+    x: number,
+    z: number,
+    heading: number,
+    id: string,
+    buildFallback: (parent: TransformNode) => void,
+  ) {
+    if (this.instantiateProp(kind, x, z, heading)) return;
+    const fallback = new TransformNode(`prop-fallback-${id}`, this.scene);
+    buildFallback(fallback);
+    this.deferredProps.push({ kind, x, z, heading, fallback });
+  }
+
+  /** Once the prop glbs preload, replace each procedural venue/station box with
+   * its imported model, disposing the fallback. Kinds whose glb never loaded stay
+   * procedural. Mirrors upgradeRoadUsersToModels for the environment props. */
+  private upgradePropsToModels() {
+    const stillProcedural: typeof this.deferredProps = [];
+    for (const prop of this.deferredProps) {
+      if (this.instantiateProp(prop.kind, prop.x, prop.z, prop.heading)) {
+        prop.fallback.dispose(false, false);
+      } else {
+        stillProcedural.push(prop);
+      }
+    }
+    this.deferredProps.length = 0;
+    this.deferredProps.push(...stillProcedural);
+  }
+
   private applySimulationNpcSnapshots(snapshot: SimulationSnapshot) {
     for (const npc of this.npcVehicles) {
       npc.active = false;
@@ -4938,43 +4985,49 @@ class BabylonGameSession {
         service.anchor,
       );
       if (!pose) continue;
-      // Set the forecourt back from the lane, on the kerb side.
-      const px = pose.x + Math.cos(pose.heading) * 7;
-      const pz = pose.z - Math.sin(pose.heading) * 7;
-      if (this.instantiateProp(service.kind, px, pz, pose.heading)) continue;
-      const trim = makeMaterial(
-        scene,
-        `${service.id}-trim`,
-        new Color3(0.86, 0.24, 0.18),
-      );
-      createBox(
-        scene,
-        `${service.id}-pad`,
-        { width: service.footprint.x, height: 0.06, depth: service.footprint.z },
-        new Vector3(px, 0.04, pz),
-        makeMaterial(scene, `${service.id}-pad`, new Color3(0.2, 0.21, 0.23)),
-      );
-      createBox(
-        scene,
-        `${service.id}-canopy`,
-        { width: service.footprint.x, height: 0.35, depth: service.footprint.z },
-        new Vector3(px, 3.6, pz),
-        trim,
-      );
-      createBox(
-        scene,
-        `${service.id}-pillar`,
-        { width: 0.5, height: 3.6, depth: 0.5 },
-        new Vector3(px, 1.8, pz),
-        trim,
-      );
-      createBox(
-        scene,
-        `${service.id}-sign`,
-        { width: 1.6, height: 1.6, depth: 0.24 },
-        new Vector3(px, 5.4, pz),
-        makeMaterial(scene, `${service.id}-sign`, new Color3(0.96, 0.86, 0.16)),
-      );
+      // Set the forecourt well back from the lane so the (large) station model
+      // and its base plinth clear the road instead of swallowing it.
+      const px = pose.x + Math.cos(pose.heading) * 15;
+      const pz = pose.z - Math.sin(pose.heading) * 15;
+      this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
+        const trim = makeMaterial(
+          scene,
+          `${service.id}-trim`,
+          new Color3(0.86, 0.24, 0.18),
+        );
+        createBox(
+          scene,
+          `${service.id}-pad`,
+          { width: service.footprint.x, height: 0.06, depth: service.footprint.z },
+          new Vector3(px, 0.04, pz),
+          makeMaterial(scene, `${service.id}-pad`, new Color3(0.2, 0.21, 0.23)),
+          parent,
+        );
+        createBox(
+          scene,
+          `${service.id}-canopy`,
+          { width: service.footprint.x, height: 0.35, depth: service.footprint.z },
+          new Vector3(px, 3.6, pz),
+          trim,
+          parent,
+        );
+        createBox(
+          scene,
+          `${service.id}-pillar`,
+          { width: 0.5, height: 3.6, depth: 0.5 },
+          new Vector3(px, 1.8, pz),
+          trim,
+          parent,
+        );
+        createBox(
+          scene,
+          `${service.id}-sign`,
+          { width: 1.6, height: 1.6, depth: 0.24 },
+          new Vector3(px, 5.4, pz),
+          makeMaterial(scene, `${service.id}-sign`, new Color3(0.96, 0.86, 0.16)),
+          parent,
+        );
+      });
     }
 
     const gigVenueColor: Record<string, Color3> = {
@@ -4990,39 +5043,44 @@ class BabylonGameSession {
         venue.anchor,
       );
       if (!pose) continue;
-      const px = pose.x + Math.cos(pose.heading) * 8;
-      const pz = pose.z - Math.sin(pose.heading) * 8;
+      // Set the building back off the road so its footprint + base sit on the
+      // verge, not the carriageway.
+      const px = pose.x + Math.cos(pose.heading) * 13;
+      const pz = pose.z - Math.sin(pose.heading) * 13;
       // A rider waits curbside (nearer the lane than the building) facing the road.
       this.gigVenueCurbside.set(venue.id, {
         x: pose.x + Math.cos(pose.heading) * 4.5,
         z: pose.z - Math.sin(pose.heading) * 4.5,
         facing: Math.atan2(-Math.cos(pose.heading), Math.sin(pose.heading)),
       });
-      if (this.instantiateProp(venue.kind, px, pz, pose.heading)) continue;
-      const height = 6;
-      createBox(
-        scene,
-        `${venue.id}-body`,
-        { width: venue.footprint.x, height, depth: venue.footprint.z },
-        new Vector3(px, height / 2, pz),
-        makeMaterial(
+      this.placeProp(venue.kind, px, pz, pose.heading, venue.id, (parent) => {
+        const height = 6;
+        createBox(
           scene,
           `${venue.id}-body`,
-          gigVenueColor[venue.kind] ?? new Color3(0.6, 0.6, 0.62),
-        ),
-      );
-      // Bright rooftop marker so venues read on approach.
-      createBox(
-        scene,
-        `${venue.id}-roof`,
-        {
-          width: venue.footprint.x * 0.5,
-          height: 0.6,
-          depth: venue.footprint.z * 0.5,
-        },
-        new Vector3(px, height + 0.3, pz),
-        makeMaterial(scene, `${venue.id}-roof`, new Color3(0.95, 0.82, 0.3)),
-      );
+          { width: venue.footprint.x, height, depth: venue.footprint.z },
+          new Vector3(px, height / 2, pz),
+          makeMaterial(
+            scene,
+            `${venue.id}-body`,
+            gigVenueColor[venue.kind] ?? new Color3(0.6, 0.6, 0.62),
+          ),
+          parent,
+        );
+        // Bright rooftop marker so venues read on approach.
+        createBox(
+          scene,
+          `${venue.id}-roof`,
+          {
+            width: venue.footprint.x * 0.5,
+            height: 0.6,
+            depth: venue.footprint.z * 0.5,
+          },
+          new Vector3(px, height + 0.3, pz),
+          makeMaterial(scene, `${venue.id}-roof`, new Color3(0.95, 0.82, 0.3)),
+          parent,
+        );
+      });
     }
 
     for (const landmark of mapPack.geometry.landmarks) {
