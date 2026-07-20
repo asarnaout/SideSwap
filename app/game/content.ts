@@ -1385,7 +1385,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-block-col-cpw-s", center: point(250, -240), size: point(100, 420), heightRange: [20, 48], density: 0.8, material: "brick" },
       ],
       servicePoints: [
-        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel" },
+        // West 72nd is a wide two-way, so the lot has to clear 3.5 m of lane
+        // plus the 1.5 m shoulder before its own 11.64 m half-width starts.
+        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 16.7 },
       ],
       gigVenues: [
         { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 240 }, footprint: point(16, 12), name: "Amsterdam Diner" },
@@ -1472,7 +1474,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "uk-retail", center: point(84, -72), size: point(96, 70), heightRange: [6, 14], density: 0.4, material: "concrete" },
       ],
       servicePoints: [
-        { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Grafton Fuel" },
+        // Anchored on the far-side lane of a left-hand-drive approach, so the
+        // lot clears the full carriageway plus a 2 m shoulder. Nudged one metre
+        // up the approach to keep its near corner off the south split's apron.
+        { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 23 }, footprint: point(14, 9), label: "Grafton Fuel", setbackM: 19 },
       ],
       gigVenues: [
         { id: "mk-v1", kind: "shop", anchor: { laneId: "uk-dual-n-east", distanceAlongM: 48 }, footprint: point(16, 12), name: "Grafton Retail Park" },
@@ -1579,7 +1584,11 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "fr-commercial", center: point(118, -104), size: point(28, 28), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
       ],
       servicePoints: [
-        { id: "fr-gas", kind: "gas_station", anchor: { laneId: "fr-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Coquelles Carburant" },
+        // Moved 10 m further up the approach: at the old anchor the lot's far
+        // corner sat astride the Coquelles link that peels off south-east, so
+        // the forecourt read as paved-over road. Up here the link is a couple
+        // of metres clear and the lot only has the south approach to meet.
+        { id: "fr-gas", kind: "gas_station", anchor: { laneId: "fr-entry-south", distanceAlongM: 32 }, footprint: point(14, 9), label: "Coquelles Carburant", setbackM: 15.6 },
       ],
       gigVenues: [
         { id: "fr-v1", kind: "shop", anchor: { laneId: "fr-north-west", distanceAlongM: 82 }, footprint: point(16, 12), name: "Cité Europe Market" },
@@ -1701,7 +1710,11 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "jp-block-south-east", center: point(21, -120), size: point(92, 74), heightRange: [6, 14], density: 0.72, material: "plaster" },
       ],
       servicePoints: [
-        { id: "jp-gas", kind: "gas_station", anchor: { laneId: "jp-south-east-1", distanceAlongM: 18 }, footprint: point(12, 8), label: "Setagaya Fuel" },
+        // The narrow south road still needs a 17.3 m set-back because the lot
+        // is anchored on the near lane. Shifted 4 m east of the old anchor so
+        // the west edge clears the junction apron at jp-a rather than kissing
+        // its corner.
+        { id: "jp-gas", kind: "gas_station", anchor: { laneId: "jp-south-east-1", distanceAlongM: 22 }, footprint: point(12, 8), label: "Setagaya Fuel", setbackM: 17.3 },
       ],
       gigVenues: [
         { id: "jp-v1", kind: "restaurant", anchor: { laneId: "jp-narrow-north-1", distanceAlongM: 82 }, footprint: point(12, 9), name: "Gotokuji Bento" },
