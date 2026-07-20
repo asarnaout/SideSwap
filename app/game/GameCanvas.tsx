@@ -53,6 +53,10 @@ import {
   resolveSimulationLaneAnchor,
 } from "./simulationAdapter";
 import {
+  DEFAULT_SERVICE_SETBACK_M,
+  resolveServicePointLot,
+} from "./servicePoints";
+import {
   authoredSignalAspectAt,
   authoredSignalRequiresStop,
   type AuthoredSignalAspect,
@@ -5101,10 +5105,12 @@ class BabylonGameSession {
       if (!pose) continue;
       // Set the forecourt back just past the shoulder so its lot no longer bleeds
       // onto the carriageway (a small grass set-back, no big apron). Per-site
-      // `setbackM` tunes cramped junction corners; 16 is the default.
-      const setback = service.setbackM ?? 16;
-      const px = pose.x + Math.cos(pose.heading) * setback;
-      const pz = pose.z - Math.sin(pose.heading) * setback;
+      // `setbackM` tunes cramped junction corners; 16 is the default. Shared
+      // with the refuel prompt, which locates the pumps from the same lot pose.
+      const lot = resolveServicePointLot(mapPack.laneGraph.lanes, service);
+      if (!lot) continue;
+      const px = lot.x;
+      const pz = lot.z;
       this.placeProp(service.kind, px, pz, pose.heading, service.id, (parent) => {
         const trim = makeMaterial(
           scene,
@@ -5710,7 +5716,7 @@ class BabylonGameSession {
     const poiExclusions: { center: GameCanvasPoint; size: GameCanvasPoint }[] = [
       ...(mapPack.geometry.servicePoints ?? []).map((sp) => ({
         anchor: sp.anchor,
-        setback: sp.setbackM ?? 16,
+        setback: sp.setbackM ?? DEFAULT_SERVICE_SETBACK_M,
         span: 22,
       })),
       ...(mapPack.geometry.gigVenues ?? []).map((venue) => ({
