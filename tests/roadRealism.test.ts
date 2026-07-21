@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MAP_PACKS, getCountryProfile } from "../app/game/content";
+import {
+  NPC_PATH_MAX_HOPS,
+  buildConnectedNpcPath,
+} from "../app/game/npcPaths";
 import type { LaneSegment, MapPack, RoadSurface } from "../app/game/types";
 
 /**
@@ -29,6 +33,18 @@ const directionsOf = (lanes: readonly LaneSegment[]): Set<string> => {
     );
   }
   return directions;
+};
+
+const nyc = MAP_PACKS.find((pack) => pack.id === "nyc-upper-west-side")!;
+
+/** heading 0 = +z, increasing clockwise, so a positive delta is a right turn. */
+const headingOf = (from: { x: number; z: number }, to: { x: number; z: number }) =>
+  Math.atan2(to.x - from.x, to.z - from.z);
+const signedTurn = (before: number, after: number): number => {
+  let delta = after - before;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
 };
 
 const surfacesOf = (
@@ -108,7 +124,6 @@ describe("road markings read the way a local driver expects", () => {
 
   it("gives NYC a paint scheme that tells its one-ways from its two-ways", () => {
     // The regression guard for issue #5, spelled out on the map that had it.
-    const nyc = MAP_PACKS.find((pack) => pack.id === "nyc-upper-west-side")!;
     const byRoad = new Map(
       surfacesOf(nyc).map((entry) => [entry.surface.id, entry]),
     );
@@ -136,4 +151,135 @@ describe("road markings read the way a local driver expects", () => {
       ).toEqual(["lane_dashed/white"]);
     }
   });
+});
+
+describe("NYC junctions connect the way the asphalt suggests", () => {
+  const lanes = nyc.laneGraph.lanes;
+  const byId = new Map(lanes.map((lane) => [lane.id, lane]));
+  const predecessors = new Map<string, string[]>();
+  for (const lane of lanes) {
+    for (const successor of lane.successors) {
+      predecessors.set(successor, [
+        ...(predecessors.get(successor) ?? []),
+        lane.id,
+      ]);
+    }
+  }
+
+  it("never leaves a driver at a junction with nowhere legal to go", () => {
+    // Thirteen of forty-four lanes used to end here — the whole east side of
+    // 72nd and 86th, both ends of Central Park West, and the outer lanes of
+    // Amsterdam and Columbus.
+    const stranded = lanes.filter((lane) => lane.successors.length === 0);
+    expect(stranded.map((lane) => lane.id)).toEqual([]);
+  });
+
+  it("leaves no lane that no route can enter", () => {
+    const orphans = lanes.filter((lane) => !predecessors.has(lane.id));
+    expect(orphans.map((lane) => lane.id)).toEqual([]);
+  });
+
+  it("lets a driver get from any lane to any other", () => {
+    // Strong connectivity is what a grid promises. It is also what the gig
+    // pool assumes now that drop-offs are scattered over every street.
+    const reach = (from: string, edges: Map<string, string[]>): Set<string> => {
+      const seen = new Set([from]);
+      const queue = [from];
+      while (queue.length) {
+        for (const next of edges.get(queue.shift()!) ?? []) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+      return seen;
+    };
+    const forward = new Map(lanes.map((lane) => [lane.id, [...lane.successors]]));
+    const backward = new Map(
+      lanes.map((lane) => [lane.id, predecessors.get(lane.id) ?? []]),
+    );
+    const root = lanes[0].id;
+    expect(reach(root, forward).size, `reachable from ${root}`).toBe(lanes.length);
+    expect(reach(root, backward).size, `can reach ${root}`).toBe(lanes.length);
+  });
+
+  it("turns out of a one-way avenue from the lane you would really use", () => {
+    // Two lanes running the same way is only realistic if the kerbside one
+    // takes the right turns and the one against the centreline takes the
+    // lefts. It is also what feeds traffic into both of them.
+    for (const roadId of ["nyc-amsterdam", "nyc-columbus"]) {
+      const surface = nyc.geometry.roadSurfaces.find((s) => s.id === roadId)!;
+      const roadLanes = surface.laneIds.map((id) => byId.get(id)!);
+      const groups = new Map<string, LaneSegment[]>();
+      for (const lane of roadLanes) {
+        const key = `${lane.from}->${lane.to}`;
+        groups.set(key, [...(groups.get(key) ?? []), lane]);
+      }
+      for (const [key, pair] of groups) {
+        expect(pair.length, `${roadId} ${key}`).toBe(2);
+        const heading = headingOf(pair[0].centerline[0], pair[0].centerline.at(-1)!);
+        // The kerb is off the right-hand normal (cos h, -sin h), so of the two
+        // the lane further along it is the outside one. Measured at the second
+        // point, which is where each lane has settled onto its own offset.
+        const offset = (lane: LaneSegment) =>
+          lane.centerline[1].x * Math.cos(heading) -
+          lane.centerline[1].z * Math.sin(heading);
+        const [inner, kerbside] = [...pair].sort((a, b) => offset(a) - offset(b));
+        for (const [lane, expected] of [
+          [inner, "left"],
+          [kerbside, "right"],
+        ] as const) {
+          const leaving = lane.successors
+            .map((id) => byId.get(id)!)
+            .filter((next) => next.roadId !== lane.roadId);
+          expect(leaving.length, `${lane.id} turns off ${roadId}`).toBeGreaterThan(0);
+          // End to end, not segment to segment: a lane's last half-metre is the
+          // taper into the junction node and points nothing like the road does.
+          const turn = signedTurn(
+            headingOf(lane.centerline[0], lane.centerline.at(-1)!),
+            headingOf(leaving[0].centerline[0], leaving[0].centerline.at(-1)!),
+          );
+          expect(
+            turn > 0 ? "right" : "left",
+            `${lane.id} → ${leaving[0].id} should be its ${expected} turn`,
+          ).toBe(expected);
+        }
+      }
+    }
+  });
+});
+
+describe("ambient traffic circulates instead of blinking out", () => {
+  // A car whose route ends is deactivated and respawned at its spawn point
+  // 2.5 s later (GameCanvas `updateNpcVehicles`). Before the junctions were
+  // wired up, every NYC route ended, so all the traffic did this. Cars start
+  // on an authored spawn lane or, past the fifth, on an arbitrary lane — and
+  // the branch offset is the car's index — so the property has to hold for
+  // every lane and every offset, not just the spawn points.
+  const EXPECTED_STUBS: Record<string, string[]> = {
+    // A bus lane joined by changing lanes, not by turning into it.
+    "london-south-kensington": ["london-cromwell-east-bus"],
+  };
+
+  for (const pack of MAP_PACKS) {
+    it(`keeps every route in ${pack.id} on a circuit`, () => {
+      const stranded = new Set<string>();
+      for (const lane of pack.laneGraph.lanes) {
+        for (let offset = 0; offset < NPC_PATH_MAX_HOPS; offset += 1) {
+          const path = buildConnectedNpcPath(
+            pack.laneGraph.lanes,
+            lane.id,
+            offset,
+          );
+          expect(path.segments.length, `${lane.id} @${offset}`).toBeGreaterThan(0);
+          expect(
+            path.loopStartSegment,
+            `${lane.id} @${offset} wraps inside its route`,
+          ).toBeLessThan(path.segments.length);
+          if (!path.loop) stranded.add(lane.id);
+        }
+      }
+      expect([...stranded].sort()).toEqual(EXPECTED_STUBS[pack.id] ?? []);
+    });
+  }
 });

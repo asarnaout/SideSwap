@@ -1034,59 +1034,69 @@ const nycNodes = {
 // (right-hand traffic: north/east-bound on the +offset side) and converge to the
 // shared junction node only over laneTrue's short connector. Straight-ahead
 // successors keep each avenue/street flowing; a couple of turns feed the lessons.
+// Successors are every turn a driver may legally make at a junction, not just
+// the one the map author had in mind. Each inbound lane lists straight-ahead
+// first, then its turns. On the two-lane one-way avenues the turn is assigned
+// to the lane you would really make it from — the kerbside lane turns right,
+// the lane against the centreline turns left — which is also what puts traffic
+// into both of them. The four perimeter corners close the grid into a ring, so
+// a car can circulate for ever instead of running out of road.
 const nycLanes: readonly LaneSegment[] = [
   // West End Avenue (two-way, x=-320)
-  laneTrue("nyc-we-n-1", nycNodes.we72, nycNodes.we79, "right", 25, ["nyc-we-n-2"], "travel", [point(-318.3, -240)], ["nyc-we-s-2"]),
+  laneTrue("nyc-we-n-1", nycNodes.we72, nycNodes.we79, "right", 25, ["nyc-we-n-2", "nyc-79-e-1"], "travel", [point(-318.3, -240)], ["nyc-we-s-2"]),
   laneTrue("nyc-we-n-2", nycNodes.we79, nycNodes.we86, "right", 25, ["nyc-86-e-1"], "travel", [point(-318.3, 240)], ["nyc-we-s-1"]),
-  laneTrue("nyc-we-s-1", nycNodes.we86, nycNodes.we79, "right", 25, ["nyc-we-s-2"], "travel", [point(-321.7, 240)], ["nyc-we-n-2"]),
-  laneTrue("nyc-we-s-2", nycNodes.we79, nycNodes.we72, "right", 25, [], "travel", [point(-321.7, -240)], ["nyc-we-n-1"]),
+  laneTrue("nyc-we-s-1", nycNodes.we86, nycNodes.we79, "right", 25, ["nyc-we-s-2", "nyc-79-e-1"], "travel", [point(-321.7, 240)], ["nyc-we-n-2"]),
+  laneTrue("nyc-we-s-2", nycNodes.we79, nycNodes.we72, "right", 25, ["nyc-72-e-1"], "travel", [point(-321.7, -240)], ["nyc-we-n-1"]),
   // Broadway (two-way, x=-120) — the hero avenue
-  laneTrue("nyc-bway-n-1", nycNodes.bw72, nycNodes.bw79, "right", 25, ["nyc-bway-n-2"], "travel", [point(-118.3, -240)], ["nyc-bway-s-2"]),
-  laneTrue("nyc-bway-n-2", nycNodes.bw79, nycNodes.bw86, "right", 25, ["nyc-86-w-4"], "travel", [point(-118.3, 240)], ["nyc-bway-s-1"]),
-  laneTrue("nyc-bway-s-1", nycNodes.bw86, nycNodes.bw79, "right", 25, ["nyc-bway-s-2"], "travel", [point(-121.7, 240)], ["nyc-bway-n-2"]),
-  laneTrue("nyc-bway-s-2", nycNodes.bw79, nycNodes.bw72, "right", 25, [], "travel", [point(-121.7, -240)], ["nyc-bway-n-1"]),
-  // Central Park West (two-way, x=320)
-  laneTrue("nyc-cpw-n-1", nycNodes.cpw72, nycNodes.cpw79, "right", 25, ["nyc-cpw-n-2"], "travel", [point(321.7, -240)], ["nyc-cpw-s-2"]),
-  laneTrue("nyc-cpw-n-2", nycNodes.cpw79, nycNodes.cpw86, "right", 25, [], "travel", [point(321.7, 240)], ["nyc-cpw-s-1"]),
-  laneTrue("nyc-cpw-s-1", nycNodes.cpw86, nycNodes.cpw79, "right", 25, ["nyc-cpw-s-2"], "travel", [point(318.3, 240)], ["nyc-cpw-n-2"]),
-  laneTrue("nyc-cpw-s-2", nycNodes.cpw79, nycNodes.cpw72, "right", 25, [], "travel", [point(318.3, -240)], ["nyc-cpw-n-1"]),
+  laneTrue("nyc-bway-n-1", nycNodes.bw72, nycNodes.bw79, "right", 25, ["nyc-bway-n-2", "nyc-79-e-2", "nyc-79-w-4"], "travel", [point(-118.3, -240)], ["nyc-bway-s-2"]),
+  laneTrue("nyc-bway-n-2", nycNodes.bw79, nycNodes.bw86, "right", 25, ["nyc-86-w-4", "nyc-86-e-2"], "travel", [point(-118.3, 240)], ["nyc-bway-s-1"]),
+  laneTrue("nyc-bway-s-1", nycNodes.bw86, nycNodes.bw79, "right", 25, ["nyc-bway-s-2", "nyc-79-w-4", "nyc-79-e-2"], "travel", [point(-121.7, 240)], ["nyc-bway-n-2"]),
+  laneTrue("nyc-bway-s-2", nycNodes.bw79, nycNodes.bw72, "right", 25, ["nyc-72-e-2", "nyc-72-w-4"], "travel", [point(-121.7, -240)], ["nyc-bway-n-1"]),
+  // Central Park West (two-way, x=320) — the park side has no cross traffic
+  laneTrue("nyc-cpw-n-1", nycNodes.cpw72, nycNodes.cpw79, "right", 25, ["nyc-cpw-n-2", "nyc-79-w-1"], "travel", [point(321.7, -240)], ["nyc-cpw-s-2"]),
+  laneTrue("nyc-cpw-n-2", nycNodes.cpw79, nycNodes.cpw86, "right", 25, ["nyc-86-w-1"], "travel", [point(321.7, 240)], ["nyc-cpw-s-1"]),
+  laneTrue("nyc-cpw-s-1", nycNodes.cpw86, nycNodes.cpw79, "right", 25, ["nyc-cpw-s-2", "nyc-79-w-1"], "travel", [point(318.3, 240)], ["nyc-cpw-n-2"]),
+  laneTrue("nyc-cpw-s-2", nycNodes.cpw79, nycNodes.cpw72, "right", 25, ["nyc-72-w-1"], "travel", [point(318.3, -240)], ["nyc-cpw-n-1"]),
   // West 72nd Street (two-way, z=-480), split across Amsterdam & Columbus
   laneTrue("nyc-72-e-1", nycNodes.we72, nycNodes.bw72, "right", 25, ["nyc-72-e-2", "nyc-bway-n-1"], "travel", [point(-220, -481.7)], ["nyc-72-w-4"]),
   laneTrue("nyc-72-e-2", nycNodes.bw72, nycNodes.amst72, "right", 25, ["nyc-72-e-3", "nyc-amst-n-1a"], "travel", [point(-40, -481.7)], ["nyc-72-w-3"]),
   laneTrue("nyc-72-e-3", nycNodes.amst72, nycNodes.col72, "right", 25, ["nyc-72-e-4"], "travel", [point(110, -481.7)], ["nyc-72-w-2"]),
-  laneTrue("nyc-72-e-4", nycNodes.col72, nycNodes.cpw72, "right", 25, [], "travel", [point(250, -481.7)], ["nyc-72-w-1"]),
+  laneTrue("nyc-72-e-4", nycNodes.col72, nycNodes.cpw72, "right", 25, ["nyc-cpw-n-1"], "travel", [point(250, -481.7)], ["nyc-72-w-1"]),
   laneTrue("nyc-72-w-1", nycNodes.cpw72, nycNodes.col72, "right", 25, ["nyc-72-w-2"], "travel", [point(250, -478.3)], ["nyc-72-e-4"]),
-  laneTrue("nyc-72-w-2", nycNodes.col72, nycNodes.amst72, "right", 25, ["nyc-72-w-3"], "travel", [point(110, -478.3)], ["nyc-72-e-3"]),
-  laneTrue("nyc-72-w-3", nycNodes.amst72, nycNodes.bw72, "right", 25, ["nyc-72-w-4"], "travel", [point(-40, -478.3)], ["nyc-72-e-2"]),
-  laneTrue("nyc-72-w-4", nycNodes.bw72, nycNodes.we72, "right", 25, [], "travel", [point(-220, -478.3)], ["nyc-72-e-1"]),
+  laneTrue("nyc-72-w-2", nycNodes.col72, nycNodes.amst72, "right", 25, ["nyc-72-w-3", "nyc-amst-n-2a"], "travel", [point(110, -478.3)], ["nyc-72-e-3"]),
+  laneTrue("nyc-72-w-3", nycNodes.amst72, nycNodes.bw72, "right", 25, ["nyc-72-w-4", "nyc-bway-n-1"], "travel", [point(-40, -478.3)], ["nyc-72-e-2"]),
+  laneTrue("nyc-72-w-4", nycNodes.bw72, nycNodes.we72, "right", 25, ["nyc-we-n-1"], "travel", [point(-220, -478.3)], ["nyc-72-e-1"]),
   // West 79th Street (two-way, z=0)
-  laneTrue("nyc-79-e-1", nycNodes.we79, nycNodes.bw79, "right", 25, ["nyc-79-e-2"], "travel", [point(-220, -1.7)], ["nyc-79-w-4"]),
-  laneTrue("nyc-79-e-2", nycNodes.bw79, nycNodes.amst79, "right", 25, ["nyc-79-e-3"], "travel", [point(-40, -1.7)], ["nyc-79-w-3"]),
-  laneTrue("nyc-79-e-3", nycNodes.amst79, nycNodes.col79, "right", 25, ["nyc-79-e-4"], "travel", [point(110, -1.7)], ["nyc-79-w-2"]),
-  laneTrue("nyc-79-e-4", nycNodes.col79, nycNodes.cpw79, "right", 25, [], "travel", [point(250, -1.7)], ["nyc-79-w-1"]),
-  laneTrue("nyc-79-w-1", nycNodes.cpw79, nycNodes.col79, "right", 25, ["nyc-79-w-2"], "travel", [point(250, 1.7)], ["nyc-79-e-4"]),
-  laneTrue("nyc-79-w-2", nycNodes.col79, nycNodes.amst79, "right", 25, ["nyc-79-w-3"], "travel", [point(110, 1.7)], ["nyc-79-e-3"]),
-  laneTrue("nyc-79-w-3", nycNodes.amst79, nycNodes.bw79, "right", 25, ["nyc-79-w-4"], "travel", [point(-40, 1.7)], ["nyc-79-e-2"]),
-  laneTrue("nyc-79-w-4", nycNodes.bw79, nycNodes.we79, "right", 25, [], "travel", [point(-220, 1.7)], ["nyc-79-e-1"]),
+  laneTrue("nyc-79-e-1", nycNodes.we79, nycNodes.bw79, "right", 25, ["nyc-79-e-2", "nyc-bway-n-2", "nyc-bway-s-2"], "travel", [point(-220, -1.7)], ["nyc-79-w-4"]),
+  laneTrue("nyc-79-e-2", nycNodes.bw79, nycNodes.amst79, "right", 25, ["nyc-79-e-3", "nyc-amst-n-1b"], "travel", [point(-40, -1.7)], ["nyc-79-w-3"]),
+  laneTrue("nyc-79-e-3", nycNodes.amst79, nycNodes.col79, "right", 25, ["nyc-79-e-4", "nyc-col-s-1b"], "travel", [point(110, -1.7)], ["nyc-79-w-2"]),
+  laneTrue("nyc-79-e-4", nycNodes.col79, nycNodes.cpw79, "right", 25, ["nyc-cpw-n-2", "nyc-cpw-s-2"], "travel", [point(250, -1.7)], ["nyc-79-w-1"]),
+  laneTrue("nyc-79-w-1", nycNodes.cpw79, nycNodes.col79, "right", 25, ["nyc-79-w-2", "nyc-col-s-2b"], "travel", [point(250, 1.7)], ["nyc-79-e-4"]),
+  laneTrue("nyc-79-w-2", nycNodes.col79, nycNodes.amst79, "right", 25, ["nyc-79-w-3", "nyc-amst-n-2b"], "travel", [point(110, 1.7)], ["nyc-79-e-3"]),
+  laneTrue("nyc-79-w-3", nycNodes.amst79, nycNodes.bw79, "right", 25, ["nyc-79-w-4", "nyc-bway-n-2", "nyc-bway-s-2"], "travel", [point(-40, 1.7)], ["nyc-79-e-2"]),
+  laneTrue("nyc-79-w-4", nycNodes.bw79, nycNodes.we79, "right", 25, ["nyc-we-n-2", "nyc-we-s-2"], "travel", [point(-220, 1.7)], ["nyc-79-e-1"]),
   // West 86th Street (two-way, z=480)
-  laneTrue("nyc-86-e-1", nycNodes.we86, nycNodes.bw86, "right", 25, ["nyc-86-e-2"], "travel", [point(-220, 478.3)], ["nyc-86-w-4"]),
+  laneTrue("nyc-86-e-1", nycNodes.we86, nycNodes.bw86, "right", 25, ["nyc-86-e-2", "nyc-bway-s-1"], "travel", [point(-220, 478.3)], ["nyc-86-w-4"]),
   laneTrue("nyc-86-e-2", nycNodes.bw86, nycNodes.amst86, "right", 25, ["nyc-86-e-3"], "travel", [point(-40, 478.3)], ["nyc-86-w-3"]),
   laneTrue("nyc-86-e-3", nycNodes.amst86, nycNodes.col86, "right", 25, ["nyc-86-e-4", "nyc-col-s-1a"], "travel", [point(110, 478.3)], ["nyc-86-w-2"]),
-  laneTrue("nyc-86-e-4", nycNodes.col86, nycNodes.cpw86, "right", 25, [], "travel", [point(250, 478.3)], ["nyc-86-w-1"]),
-  laneTrue("nyc-86-w-1", nycNodes.cpw86, nycNodes.col86, "right", 25, ["nyc-86-w-2"], "travel", [point(250, 481.7)], ["nyc-86-e-4"]),
+  laneTrue("nyc-86-e-4", nycNodes.col86, nycNodes.cpw86, "right", 25, ["nyc-cpw-s-1"], "travel", [point(250, 478.3)], ["nyc-86-w-1"]),
+  laneTrue("nyc-86-w-1", nycNodes.cpw86, nycNodes.col86, "right", 25, ["nyc-86-w-2", "nyc-col-s-2a"], "travel", [point(250, 481.7)], ["nyc-86-e-4"]),
   laneTrue("nyc-86-w-2", nycNodes.col86, nycNodes.amst86, "right", 25, ["nyc-86-w-3"], "travel", [point(110, 481.7)], ["nyc-86-e-3"]),
-  laneTrue("nyc-86-w-3", nycNodes.amst86, nycNodes.bw86, "right", 25, ["nyc-86-w-4"], "travel", [point(-40, 481.7)], ["nyc-86-e-2"]),
-  laneTrue("nyc-86-w-4", nycNodes.bw86, nycNodes.we86, "right", 25, [], "travel", [point(-220, 481.7)], ["nyc-86-e-1"]),
-  // Amsterdam Avenue (one-way northbound, x=40) — two parallel lanes
-  laneTrue("nyc-amst-n-1a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-1b"], "one_way", [point(38.3, -240)], ["nyc-amst-n-2a"]),
-  laneTrue("nyc-amst-n-1b", nycNodes.amst79, nycNodes.amst86, "right", 25, ["nyc-86-e-3"], "one_way", [point(38.3, 240)], ["nyc-amst-n-2b"]),
-  laneTrue("nyc-amst-n-2a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-2b"], "one_way", [point(41.7, -240)], ["nyc-amst-n-1a"]),
-  laneTrue("nyc-amst-n-2b", nycNodes.amst79, nycNodes.amst86, "right", 25, [], "one_way", [point(41.7, 240)], ["nyc-amst-n-1b"]),
-  // Columbus Avenue (one-way southbound, x=180) — two parallel lanes
-  laneTrue("nyc-col-s-1a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-1b"], "one_way", [point(178.3, 240)], ["nyc-col-s-2a"]),
-  laneTrue("nyc-col-s-1b", nycNodes.col79, nycNodes.col72, "right", 25, [], "one_way", [point(178.3, -240)], ["nyc-col-s-2b"]),
-  laneTrue("nyc-col-s-2a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-2b"], "one_way", [point(181.7, 240)], ["nyc-col-s-1a"]),
-  laneTrue("nyc-col-s-2b", nycNodes.col79, nycNodes.col72, "right", 25, [], "one_way", [point(181.7, -240)], ["nyc-col-s-1b"]),
+  laneTrue("nyc-86-w-3", nycNodes.amst86, nycNodes.bw86, "right", 25, ["nyc-86-w-4", "nyc-bway-s-1"], "travel", [point(-40, 481.7)], ["nyc-86-e-2"]),
+  laneTrue("nyc-86-w-4", nycNodes.bw86, nycNodes.we86, "right", 25, ["nyc-we-s-1"], "travel", [point(-220, 481.7)], ["nyc-86-e-1"]),
+  // Amsterdam Avenue (one-way northbound, x=40) — two parallel lanes. Heading
+  // north the kerb is to the east, so `n-2*` (x=41.7) is the kerbside lane and
+  // takes the right turns; `n-1*` (x=38.3) rides the centreline and turns left.
+  laneTrue("nyc-amst-n-1a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-1b", "nyc-79-w-3"], "one_way", [point(38.3, -240)], ["nyc-amst-n-2a"]),
+  laneTrue("nyc-amst-n-1b", nycNodes.amst79, nycNodes.amst86, "right", 25, ["nyc-86-w-3", "nyc-86-e-3"], "one_way", [point(38.3, 240)], ["nyc-amst-n-2b"]),
+  laneTrue("nyc-amst-n-2a", nycNodes.amst72, nycNodes.amst79, "right", 25, ["nyc-amst-n-2b", "nyc-79-e-3"], "one_way", [point(41.7, -240)], ["nyc-amst-n-1a"]),
+  laneTrue("nyc-amst-n-2b", nycNodes.amst79, nycNodes.amst86, "right", 25, ["nyc-86-e-3", "nyc-86-w-3"], "one_way", [point(41.7, 240)], ["nyc-amst-n-1b"]),
+  // Columbus Avenue (one-way southbound, x=180). Heading south the kerb is to
+  // the west, so `s-1*` (x=178.3) is kerbside and `s-2*` (x=181.7) turns left.
+  laneTrue("nyc-col-s-1a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-1b", "nyc-79-w-2"], "one_way", [point(178.3, 240)], ["nyc-col-s-2a"]),
+  laneTrue("nyc-col-s-1b", nycNodes.col79, nycNodes.col72, "right", 25, ["nyc-72-w-2"], "one_way", [point(178.3, -240)], ["nyc-col-s-2b"]),
+  laneTrue("nyc-col-s-2a", nycNodes.col86, nycNodes.col79, "right", 25, ["nyc-col-s-2b", "nyc-79-e-4"], "one_way", [point(181.7, 240)], ["nyc-col-s-1a"]),
+  laneTrue("nyc-col-s-2b", nycNodes.col79, nycNodes.col72, "right", 25, ["nyc-72-e-4"], "one_way", [point(181.7, -240)], ["nyc-col-s-1b"]),
 ];
 
 // Signalised junctions along the Broadway corridor (the lesson route).
