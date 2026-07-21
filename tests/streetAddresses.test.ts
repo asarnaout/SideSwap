@@ -10,6 +10,7 @@ import {
   JUNCTION_CLEARANCE_M,
   MIN_SEPARATION_M,
   generateStreetAddresses,
+  streetAddressesForMap,
   type StreetAddress,
   type StreetAddressInput,
 } from "../app/game/streetAddresses";
@@ -27,22 +28,29 @@ import type { MapPack, WorldPoint } from "../app/game/types";
 
 const nyc = MAP_PACKS.find((pack) => pack.id === "nyc-upper-west-side")!;
 
-const inputFor = (pack: MapPack): StreetAddressInput => ({
-  mapId: pack.id,
-  lanes: pack.laneGraph.lanes,
-  blocks: pack.geometry.blocks,
-  landmarks: pack.geometry.landmarks,
-  roadSurfaces: pack.geometry.roadSurfaces,
-  occupiedPoints: [
+const poisOf = (pack: MapPack): WorldPoint[] =>
+  [
     ...(pack.geometry.gigVenues ?? []),
     ...(pack.geometry.servicePoints ?? []),
   ].flatMap((poi) => {
     const pose = resolveSimulationLaneAnchor(pack.laneGraph.lanes, poi.anchor);
     return pose ? [{ x: pose.x, z: pose.z }] : [];
-  }),
+  });
+
+const rawInput = (pack: MapPack): StreetAddressInput => ({
+  mapId: pack.id,
+  lanes: pack.laneGraph.lanes,
+  blocks: pack.geometry.blocks,
+  landmarks: pack.geometry.landmarks,
+  roadSurfaces: pack.geometry.roadSurfaces,
+  occupiedPoints: poisOf(pack),
 });
 
-const nycAddresses = generateStreetAddresses(inputFor(nyc));
+// Deliberately the same accessor the game uses, not a parallel construction —
+// a gig refers to a stop by id, so the gig pool, the renderer (which stands
+// riders and the beacon on these kerbs) and these tests must all be looking at
+// byte-identical lists.
+const nycAddresses = streetAddressesForMap(nyc);
 
 const distance = (a: WorldPoint, b: WorldPoint): number =>
   Math.hypot(a.x - b.x, a.z - b.z);
@@ -82,7 +90,9 @@ describe("procedural street addresses", () => {
   });
 
   it("is deterministic, so a street keeps its addresses between runs", () => {
-    expect(generateStreetAddresses(inputFor(nyc))).toEqual(nycAddresses);
+    expect(streetAddressesForMap(nyc)).toEqual(nycAddresses);
+    // And a fresh derivation, bypassing the cache, agrees with it.
+    expect(generateStreetAddresses(rawInput(nyc))).toEqual([...nycAddresses]);
   });
 
   it("gives every address a unique id and a unique display name", () => {
@@ -165,7 +175,7 @@ describe("procedural street addresses", () => {
   });
 
   it("keeps clear of the authored venues and the gas station", () => {
-    const pois = inputFor(nyc).occupiedPoints ?? [];
+    const pois = poisOf(nyc);
     expect(pois.length).toBe(5); // four gig venues + one gas station
     for (const address of nycAddresses) {
       for (const poi of pois) {
@@ -186,7 +196,7 @@ describe("procedural street addresses", () => {
 
   it("generates nothing for maps that have not opted in", () => {
     for (const pack of MAP_PACKS.filter((p) => p.id !== nyc.id)) {
-      expect(generateStreetAddresses(inputFor(pack)), pack.id).toEqual([]);
+      expect(streetAddressesForMap(pack), pack.id).toEqual([]);
     }
   });
 

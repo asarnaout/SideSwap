@@ -25,13 +25,18 @@ import { resolveSimulationLaneAnchor } from "./simulationAdapter";
 import type { GigVenueKind, WorldPoint } from "./types";
 import { distanceToPolylineM, hashStringToSeed, seededUnit } from "./visuals";
 
-/** The only lane fields address generation needs. `LaneSegment` satisfies it. */
+/**
+ * The only lane fields address generation needs. Both the authored
+ * `LaneSegment` and the renderer's lighter `GameCanvasLane` satisfy it — hence
+ * the optional fields, which the renderer's type leaves off. A lane missing
+ * either simply gets no addresses.
+ */
 export interface AddressLane {
   readonly id: string;
   /** Groups lanes into a street; drives the address's street name. */
-  readonly roadId: string;
+  readonly roadId?: string;
   readonly centerline: readonly WorldPoint[];
-  readonly role: string;
+  readonly role?: string;
 }
 
 /** A zoned city block. `ProceduralBlock` satisfies it. */
@@ -83,6 +88,59 @@ export interface StreetAddress {
   readonly kerbZ: number;
   /** Kerb facing, looking back across the carriageway. */
   readonly facing: number;
+}
+
+/** Enough of a map pack to derive its addresses. Both the authored `MapPack`
+ * and the renderer's `GameCanvasMapPack` satisfy this. */
+export interface AddressMapPack {
+  readonly id: string;
+  readonly geometry: {
+    readonly blocks?: readonly AddressBlock[];
+    readonly landmarks?: readonly AddressLandmark[];
+    readonly roadSurfaces?: readonly AddressRoadSurface[];
+    readonly gigVenues?: readonly {
+      readonly anchor: { readonly laneId: string; readonly distanceAlongM: number };
+    }[];
+    readonly servicePoints?: readonly {
+      readonly anchor: { readonly laneId: string; readonly distanceAlongM: number };
+    }[];
+  };
+  readonly laneGraph: { readonly lanes: readonly AddressLane[] };
+}
+
+const ADDRESSES_BY_MAP = new Map<string, readonly StreetAddress[]>();
+
+/**
+ * A map's addresses, derived once and cached.
+ *
+ * Three callers need the identical list — gig selection, the renderer (which
+ * stands riders and the drop-off marker on their kerbs) and the tests — and
+ * they must agree exactly, since a gig refers to a stop by id. Deriving it
+ * here rather than at each call site is what guarantees that, and saves walking
+ * the whole lane graph on every payout.
+ */
+export function streetAddressesForMap(
+  pack: AddressMapPack,
+): readonly StreetAddress[] {
+  const cached = ADDRESSES_BY_MAP.get(pack.id);
+  if (cached) return cached;
+  const lanes = pack.laneGraph.lanes;
+  const addresses = generateStreetAddresses({
+    mapId: pack.id,
+    lanes,
+    blocks: pack.geometry.blocks ?? [],
+    landmarks: pack.geometry.landmarks ?? [],
+    roadSurfaces: pack.geometry.roadSurfaces ?? [],
+    occupiedPoints: [
+      ...(pack.geometry.gigVenues ?? []),
+      ...(pack.geometry.servicePoints ?? []),
+    ].flatMap((poi) => {
+      const pose = resolveSimulationLaneAnchor(lanes, poi.anchor);
+      return pose ? [{ x: pose.x, z: pose.z }] : [];
+    }),
+  });
+  ADDRESSES_BY_MAP.set(pack.id, addresses);
+  return addresses;
 }
 
 /** Lanes carrying real traffic. Connectors and roundabout arms get no addresses. */
@@ -220,12 +278,12 @@ export function generateStreetAddresses(
 
   // Sorted for a stable walk order regardless of how the map authored its lanes.
   const lanes = [...input.lanes]
-    .filter((lane) => ADDRESSABLE_ROLES.has(lane.role))
-    .filter((lane) => STREET_PROFILES[lane.roadId])
+    .filter((lane) => ADDRESSABLE_ROLES.has(lane.role ?? ""))
+    .filter((lane) => STREET_PROFILES[lane.roadId ?? ""])
     .sort((a, b) => a.id.localeCompare(b.id));
 
   for (const lane of lanes) {
-    const profile = STREET_PROFILES[lane.roadId];
+    const profile = STREET_PROFILES[lane.roadId ?? ""];
     const length = polylineLength(lane.centerline);
     if (length <= JUNCTION_CLEARANCE_M * 2) continue;
 

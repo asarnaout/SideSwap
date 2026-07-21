@@ -107,6 +107,7 @@ import {
   type StreetPropConfig,
 } from "./buildingSets";
 import { orientMergedFacesOutward } from "./buildingWinding";
+import { streetAddressesForMap } from "./streetAddresses";
 import {
   buildCyclistVisual,
   buildPedestrianVisual,
@@ -1045,6 +1046,10 @@ export interface GameCanvasProps {
   outOfFuel?: boolean;
   /** Venue id where a passenger is waiting to be collected, else null. */
   riderVenueId?: string | null;
+  /** Stop the active gig is currently heading for, else null. */
+  gigStopId?: string | null;
+  /** True once the parcel/rider is aboard, so the marker reads as a drop-off. */
+  gigStopCarrying?: boolean;
   className?: string;
   style?: CSSProperties;
   showBuiltInHud?: boolean;
@@ -1095,6 +1100,8 @@ interface SessionOptions {
   headBob: boolean;
   outOfFuel: boolean;
   riderVenueId: string | null;
+  gigStopId: string | null;
+  gigStopCarrying: boolean;
   lesson?: GameCanvasLesson;
   mapPack?: GameCanvasMapPack;
 }
@@ -2578,7 +2585,10 @@ class BabylonGameSession {
   private readyEmitted = false;
   private readonly npcVehicles: NpcVehicle[] = [];
   private readonly pedestrians: Pedestrian[] = [];
-  /** Curbside standing spot (+facing) for each gig venue, keyed by venue id. */
+  /**
+   * Curbside standing spot (+facing) for every place a gig can send you —
+   * authored venues and generated street addresses alike, keyed by stop id.
+   */
   private readonly gigVenueCurbside = new Map<
     string,
     { x: number; z: number; facing: number }
@@ -2586,6 +2596,9 @@ class BabylonGameSession {
   private riderVisual: CharacterVisual | null = null;
   private riderNode: TransformNode | null = null;
   private riderVenuePlaced: string | null = null;
+  private gigMarkerNode: TransformNode | null = null;
+  private gigMarkerPlaced: string | null = null;
+  private gigMarkerCarrying = false;
   /** Venues/stations shown on their procedural box because the glb had not
    * preloaded yet; upgraded to models once preload finishes. */
   private readonly deferredProps: {
@@ -2909,6 +2922,7 @@ class BabylonGameSession {
       effects: this.options.effectsVolume,
     });
     this.syncRider();
+    this.syncGigMarker();
   }
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
@@ -3084,6 +3098,7 @@ class BabylonGameSession {
     this.effectsPipeline = null;
     this.riderVisual?.dispose();
     this.riderNode?.dispose(false, false);
+    this.gigMarkerNode?.dispose(false, true);
     disposeModels(this.scene);
     this.scene.dispose();
     this.engine.dispose();
@@ -3240,6 +3255,68 @@ class BabylonGameSession {
       new Color3(0.92, 0.55, 0.2),
       0.6,
     );
+  }
+
+  /**
+   * Places (or clears) a lit beacon on the kerb of the stop the gig is heading
+   * for. Authored venues announce themselves with a building; a street address
+   * is just a spot outside a row of brownstones that look like every other row,
+   * so without this "you have arrived" would be guesswork.
+   *
+   * Only ever one beacon exists — it follows the active gig rather than marking
+   * every stop, which keeps this to a single mesh no matter how many addresses
+   * the map generates. Colours match the minimap pin: warm red heading to a
+   * pickup, amber once you are carrying.
+   */
+  private syncGigMarker() {
+    const target = this.options.gigStopId ?? null;
+    const carrying = this.options.gigStopCarrying ?? false;
+    if (target === this.gigMarkerPlaced && carrying === this.gigMarkerCarrying) {
+      return;
+    }
+    this.gigMarkerNode?.dispose(false, true);
+    this.gigMarkerNode = null;
+    this.gigMarkerPlaced = target;
+    this.gigMarkerCarrying = carrying;
+    if (!target) return;
+    const spot = this.gigVenueCurbside.get(target);
+    if (!spot) return;
+
+    const tint = carrying
+      ? new Color3(0.95, 0.78, 0.35)
+      : new Color3(0.88, 0.33, 0.25);
+    // Emissive, because against NYC's night palette a diffuse-only post is just
+    // another dark shape on a dark sidewalk.
+    const material = makeMaterial(
+      this.scene,
+      `gig-marker-${target}`,
+      tint,
+      tint.scale(0.85),
+    );
+
+    // Children are positioned in the node's local frame so the head turns with
+    // it to face the carriageway.
+    const node = new TransformNode(`gig-marker-${target}`, this.scene);
+    node.position.set(spot.x, 0, spot.z);
+    node.rotation.y = spot.facing;
+    this.gigMarkerNode = node;
+    createCylinder(
+      this.scene,
+      `gig-marker-${target}-post`,
+      { diameter: 0.34, height: 2.6 },
+      new Vector3(0, 1.3, 0),
+      material,
+      node,
+    );
+    createBox(
+      this.scene,
+      `gig-marker-${target}-head`,
+      { width: 0.9, height: 0.9, depth: 0.26 },
+      new Vector3(0, 3, 0),
+      material,
+      node,
+    );
+    for (const mesh of node.getChildMeshes()) mesh.isPickable = false;
   }
 
   private readonly renderFrame = () => {
@@ -5703,6 +5780,19 @@ class BabylonGameSession {
           parent,
         );
       }, venue.name);
+    }
+
+    // Generated street addresses are drop-off points, not buildings — they get a
+    // kerb spot so a rider can wait and the gig marker has somewhere to stand,
+    // and deliberately NO buildingExclusions entry. Punching a keep-out circle
+    // per address would erase most of the block street wall, and the whole point
+    // of an address is that the buildings already there are the destination.
+    for (const address of streetAddressesForMap(mapPack)) {
+      this.gigVenueCurbside.set(address.id, {
+        x: address.kerbX,
+        z: address.kerbZ,
+        facing: address.facing,
+      });
     }
 
     for (const landmark of mapPack.geometry.landmarks) {
@@ -8823,6 +8913,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       visualHonkIndicator = true,
       outOfFuel = false,
       riderVenueId = null,
+      gigStopId = null,
+      gigStopCarrying = false,
       className,
       style,
       showBuiltInHud = true,
@@ -8963,6 +9055,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             headBob,
             outOfFuel,
             riderVenueId,
+            gigStopId,
+            gigStopCarrying,
           },
           {
             onHudUpdate: (snapshot) => callbackRef.current.onHudUpdate?.(snapshot),
@@ -9009,8 +9103,10 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         headBob,
         outOfFuel,
         riderVenueId,
+        gigStopId,
+        gigStopCarrying,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, riderVenueId]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, riderVenueId, gigStopId, gigStopCarrying]);
 
     useImperativeHandle(
       ref,

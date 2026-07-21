@@ -56,7 +56,7 @@ import {
   selectGigPools,
 } from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
-import { generateStreetAddresses } from "./game/streetAddresses";
+import { streetAddressesForMap } from "./game/streetAddresses";
 import type {
   CameraMode,
   CountryProfile,
@@ -214,45 +214,17 @@ function resolveGigVenues(
   });
 }
 
-/**
- * Every place a gig can touch on a map: the authored venues plus the addresses
- * derived from its streets. Derivation walks the whole lane graph, so it is
- * cached per map — a drive asks for this on every payout.
- */
-const stopsByMap = new Map<
-  string,
-  { venues: GigVenuePosition[]; addresses: GigVenuePosition[] }
->();
-
-function resolveGigStops(map: ReturnType<typeof getMapPack>): {
-  venues: GigVenuePosition[];
-  addresses: GigVenuePosition[];
-} {
-  const cached = stopsByMap.get(map.id);
-  if (cached) return cached;
-  const addresses = generateStreetAddresses({
-    mapId: map.id,
-    lanes: map.laneGraph.lanes,
-    blocks: map.geometry.blocks,
-    landmarks: map.geometry.landmarks,
-    roadSurfaces: map.geometry.roadSurfaces,
-    occupiedPoints: [
-      ...(map.geometry.gigVenues ?? []),
-      ...(map.geometry.servicePoints ?? []),
-    ].flatMap((poi) => {
-      const pose = resolveSimulationLaneAnchor(map.laneGraph.lanes, poi.anchor);
-      return pose ? [{ x: pose.x, z: pose.z }] : [];
-    }),
-  }).map((address) => ({
+/** The map's generated street addresses, in gig-pool shape. */
+function resolveGigAddresses(
+  map: ReturnType<typeof getMapPack>,
+): GigVenuePosition[] {
+  return streetAddressesForMap(map).map((address) => ({
     id: address.id,
     name: address.name,
     kind: address.kind,
     x: address.x,
     z: address.z,
   }));
-  const resolved = { venues: resolveGigVenues(map), addresses };
-  stopsByMap.set(map.id, resolved);
-  return resolved;
 }
 
 /**
@@ -271,8 +243,11 @@ function nextGigFor(
     kind === "passenger"
       ? PASSENGER_FARE_BY_COUNTRY[country.id]
       : GIG_FARE_BY_COUNTRY[country.id];
-  const { venues, addresses } = resolveGigStops(map);
-  const { pickups, dropoffs } = selectGigPools(venues, addresses, kind);
+  const { pickups, dropoffs } = selectGigPools(
+    resolveGigVenues(map),
+    resolveGigAddresses(map),
+    kind,
+  );
   return generateGigFromPools(
     pickups,
     dropoffs,
@@ -637,6 +612,10 @@ export default function SideSwapApp() {
     gig && gig.kind === "passenger" && gig.state === "enroute_pickup"
       ? gig.pickup.id
       : null;
+  // A street address is a spot outside a row of buildings that look like every
+  // other row, so the stop you are heading for gets a lit kerbside beacon.
+  const gigStopId = gigTargetVenue?.id ?? null;
+  const gigStopCarrying = gig?.state === "carrying";
 
   if (!hydrated) {
     return (
@@ -671,6 +650,8 @@ export default function SideSwapApp() {
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           outOfFuel={driveFuel <= 0}
           riderVenueId={riderVenueId}
+          gigStopId={gigStopId}
+          gigStopCarrying={gigStopCarrying}
           onHudUpdate={handleHud}
           onEvent={handleGameEvent}
           onPauseChange={setPaused}
