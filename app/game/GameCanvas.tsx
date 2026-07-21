@@ -1735,8 +1735,10 @@ function roadsidePropKindsForMap(
         // computed here but the carts are glb instances (routed out of the
         // procedural-prop loop into pendingVendors), not master boxes.
         {
+          // Sparser than one-per-frontage: a dumpster/cart every ~130 m curbside,
+          // not outside every building (which read as unrealistic clutter).
           kind: "vendor",
-          spacingM: 82,
+          spacingM: 130,
           jitterM: 24,
           lateralMarginM: 1.4,
           bothSides: false,
