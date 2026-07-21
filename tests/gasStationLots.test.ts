@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MAP_PACKS } from "../app/game/content";
 import { resolveSimulationLaneAnchor } from "../app/game/simulationAdapter";
-import type { ProceduralMapGeometry, WorldPoint } from "../app/game/types";
+import { resolveMapVisualPalette } from "../app/game/visuals";
+import type { WorldPoint } from "../app/game/types";
 
 /**
  * Every gas station is a square glb lot dropped beside a lane. It has to land
@@ -14,9 +15,16 @@ import type { ProceduralMapGeometry, WorldPoint } from "../app/game/types";
 // prop registry's 2.8x scale is applied, so the lot reaches 11.64 m out from
 // the anchored centre in every direction.
 const LOT_HALF_M = 11.64;
-// GameCanvas floors the authored shoulder width when it builds the dirt band.
-const shoulderWidthFor = (geometry: ProceduralMapGeometry): number =>
-  Math.max(0.9, geometry.shoulderWidth ?? 1.2);
+// Mirrors GameCanvas: a paved city renders a fixed concrete sidewalk in place of
+// the authored dirt shoulder, so the lot must park hard against THAT wider band
+// (PAVED_SIDEWALK_WIDTH), not the narrower authored one — otherwise the forecourt
+// slab overshoots the sidewalk. Off paved maps, GameCanvas floors the authored
+// width at 0.9 m when it builds the dirt band.
+const PAVED_SIDEWALK_M = 3.4;
+const shoulderWidthFor = (pack: (typeof MAP_PACKS)[number]): number =>
+  resolveMapVisualPalette(pack.id).paved
+    ? PAVED_SIDEWALK_M
+    : Math.max(0.9, pack.geometry.shoulderWidth ?? 1.2);
 // Mirrors the fallback in GameCanvas's service-point loop.
 const DEFAULT_SETBACK_M = 16;
 // A lot further than this from its nearest road reads as an orphaned slab in a
@@ -108,7 +116,7 @@ describe("gas-station lots", () => {
     const reviewed: string[] = [];
 
     for (const pack of MAP_PACKS) {
-      const shoulderWidth = shoulderWidthFor(pack.geometry);
+      const shoulderWidth = shoulderWidthFor(pack);
       const stations = (pack.geometry.servicePoints ?? []).filter(
         (service) => service.kind === "gas_station",
       );

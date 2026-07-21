@@ -1399,9 +1399,11 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-block-north-margin", center: point(0, 512), size: point(628, 44), heightRange: [16, 28], density: 0.9, material: "sandstone", buildingSet: "nyc-midrise" },
       ],
       servicePoints: [
-        // West 72nd is a wide two-way, so the lot has to clear 3.5 m of lane
-        // plus the 1.5 m shoulder before its own 11.64 m half-width starts.
-        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 16.7 },
+        // West 72nd is a wide two-way, and NYC is a paved city, so the lot must
+        // clear the carriageway plus the full 3.4 m concrete sidewalk (not the
+        // 1.5 m authored shoulder) before its 11.64 m half-width starts — else the
+        // forecourt slab bleeds onto the sidewalk.
+        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 18.7 },
       ],
       gigVenues: [
         { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 240 }, footprint: point(16, 12), name: "Amsterdam Diner" },

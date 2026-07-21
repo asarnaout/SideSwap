@@ -2877,7 +2877,7 @@ class BabylonGameSession {
 
   /**
    * Lifts the loading gate: emits `ready` so the React overlay
-   * ("Preparing your training drive…") clears and controls/HUD come up. Called
+   * ("Preparing your drive…") clears and controls/HUD come up. Called
    * once, after the model preload settles (or fails — we still proceed).
    */
   private markReady() {
@@ -9405,7 +9405,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
                 {runtimeState === "unsupported" && "This browser cannot start the 3D drive"}
                 {runtimeState === "context-lost" && "The 3D view was interrupted"}
                 {runtimeState === "error" && "The training yard could not load"}
-                {runtimeState === "loading" && "Preparing your training drive…"}
+                {runtimeState === "loading" && "Preparing your drive…"}
               </strong>
               <span style={{ opacity: 0.72, fontSize: 14, lineHeight: 1.5 }}>
                 {runtimeState === "unsupported"
