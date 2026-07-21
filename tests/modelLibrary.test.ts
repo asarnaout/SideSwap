@@ -5,6 +5,7 @@ import { NullEngine, Scene, LoadAssetContainerAsync } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
 import { PROP_MODEL_REGISTRY } from "../app/game/modelLibrary";
 import { NYC_ENV_MODELS } from "../app/game/buildingCatalog";
+import { MAP_PACKS } from "../app/game/content";
 
 // Guards the Babylon 9 loader-registration path that modelLibrary.preloadModels
 // depends on. The old `import "@babylonjs/loaders/glTF/2.0"` side effect did NOT
@@ -141,6 +142,35 @@ describe("prop (environment building) model assets", () => {
     ]) {
       expect(PROP_MODEL_REGISTRY[kind], kind).toBeDefined();
     }
+  });
+
+  // A venue may name a variant model instead of using its kind's default. A
+  // typo there is invisible in play — the venue just renders as a coloured box
+  // forever — so resolve every authored key here instead.
+  it("resolves the model every authored venue and station asks for", () => {
+    for (const pack of MAP_PACKS) {
+      for (const venue of pack.geometry.gigVenues ?? []) {
+        const key = venue.modelId ?? venue.kind;
+        expect(PROP_MODEL_REGISTRY[key], `${pack.id}/${venue.id} → ${key}`)
+          .toBeDefined();
+      }
+      for (const service of pack.geometry.servicePoints ?? []) {
+        expect(PROP_MODEL_REGISTRY[service.kind], `${pack.id}/${service.id}`)
+          .toBeDefined();
+      }
+    }
+  });
+
+  // Only models that bake mirrored lettering want a name overlay, and the
+  // board's height is model-specific — a wrong value silently finds a window,
+  // or nothing at all.
+  it("keeps per-model import quirks on the config, not switched on by kind", () => {
+    expect(PROP_MODEL_REGISTRY.restaurant.stripMeshPattern).toBe("Box001");
+    expect(PROP_MODEL_REGISTRY.restaurant.roofSignMinY).toBeGreaterThan(0);
+    expect(PROP_MODEL_REGISTRY.gas_station.roofSignMinY).toBeGreaterThan(0);
+    // Models with nothing to strip must not inherit another model's surgery.
+    expect(PROP_MODEL_REGISTRY.shop.stripMeshPattern).toBeUndefined();
+    expect(PROP_MODEL_REGISTRY.residence.roofSignMinY).toBeUndefined();
   });
 
   // Each committed glb must parse as real geometry (self-contained, no external

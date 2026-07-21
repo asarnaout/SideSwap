@@ -1410,6 +1410,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-v2", kind: "shop", anchor: { laneId: "nyc-86-e-3", distanceAlongM: 70 }, footprint: point(16, 12), name: "West 86th Grocers" },
         { id: "nyc-v3", kind: "residence", anchor: { laneId: "nyc-col-s-1b", distanceAlongM: 445 }, footprint: point(14, 12), name: "Columbus Apartments" },
         { id: "nyc-v4", kind: "office", anchor: { laneId: "nyc-we-n-2", distanceAlongM: 240 }, footprint: point(16, 14), name: "West End Offices" },
+        // A second kitchen, on the far side of the map from the diner, so
+        // deliveries do not all start on Amsterdam. `modelId` gives it its own
+        // building — two restaurants that look identical read as one place.
+        { id: "nyc-v5", kind: "restaurant", anchor: { laneId: "nyc-bway-n-1", distanceAlongM: 330 }, footprint: point(14, 14), name: "Broadway Pizzeria", modelId: "restaurant-pizzeria" },
       ],
       landmarks: [
         // Kept clear of the carriageways (a content test enforces this).

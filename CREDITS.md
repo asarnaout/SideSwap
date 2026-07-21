@@ -86,7 +86,9 @@ in that catalogue's `attribution` field.
 - **props/nyc-house-b.glb** ("Farm house") — **Poly by Google**. Credit: "Farm
   house by Poly by Google". Detached house for the residential pocket.
 - **props/nyc-shop-corner.glb** ("Pizza Corner") — **J-Toastie**. Credit: "Pizza
-  Corner by J-Toastie". Corner bodega / ground-floor retail.
+  Corner by J-Toastie". Corner bodega / ground-floor retail in the street wall,
+  and (as prop-registry key `restaurant-pizzeria`) the Broadway Pizzeria gig
+  venue, so the map's two restaurants are visibly different buildings.
 - **props/vendor-food.glb** ("Street Vendor Cart") — **Alan Zimmerman**. Credit:
   "Street Vendor Cart by Alan Zimmerman". Street vendor.
 

@@ -219,7 +219,10 @@ describe("procedural street addresses", () => {
 
   it("keeps clear of the authored venues and the gas station", () => {
     const pois = poisOf(nyc);
-    expect(pois.length).toBe(5); // four gig venues + one gas station
+    expect(pois).toHaveLength(
+      (nyc.geometry.gigVenues ?? []).length +
+        (nyc.geometry.servicePoints ?? []).length,
+    );
     for (const address of nycAddresses) {
       for (const poi of pois) {
         expect(distance(address, poi), address.name).toBeGreaterThan(20);
