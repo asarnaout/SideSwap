@@ -205,6 +205,27 @@ export interface PropModelConfig {
    * base/plinth would otherwise raise it above the road (e.g. the gas station,
    * which ships as a diorama on a raised lot). Defaults to 0. */
   readonly groundY?: number;
+  /**
+   * Regex source; child meshes whose name matches are disposed after import.
+   * Some models ship as a diorama on a base slab that would read as a plinth
+   * once the building is set on a real street.
+   */
+  readonly stripMeshPattern?: string;
+  /**
+   * Minimum centre height (m) for the board `addRoofSign` writes the venue's
+   * name onto. Absent means this model gets no sign. Per-model because it
+   * depends entirely on where that glb happens to put a flat facade — too low
+   * and the search latches onto a window, too high and it finds nothing.
+   */
+  readonly roofSignMinY?: number;
+  /**
+   * Mirrors the model across its local X axis on import. The glTF loader maps
+   * right-handed glTF into left-handed Babylon with a reflection, which renders
+   * any lettering baked into a model's texture back-to-front. Models carrying
+   * painted signage set this to undo it. Babylon flips backface culling to match
+   * a negative-determinant world matrix, so the model does not turn inside out.
+   */
+  readonly mirrorX?: boolean;
 }
 
 /**
@@ -228,11 +249,39 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // door/storefront to look across its verge at the road. The gas station lands
   // at the same offset independently (its diorama forecourt faces the pumps to
   // the lot's road edge).
-  gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: -1.63 },
+  gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: -1.63, roofSignMinY: 4 },
   // Enlarged from 0.045 to read at a realistic size next to the avenue buildings.
-  // groundY drops it back onto the road after GameCanvas strips its raised base
-  // platform (see instantiateProp): its body sits ~11.7 native units up, ×0.07.
-  restaurant: { url: `${P}/restaurant.glb`, scale: 0.085, yawOffset: Math.PI / 2, groundY: -0.92 },
+  // groundY drops it back onto the road once its raised base platform (Box001)
+  // is stripped: its body sits ~11.7 native units up, ×0.085.
+  restaurant: {
+    url: `${P}/restaurant.glb`,
+    scale: 0.085,
+    yawOffset: Math.PI / 2,
+    groundY: -0.92,
+    stripMeshPattern: "Box001",
+    // The diner's only flat sign surface is the low fascia over its windows.
+    roofSignMinY: 1.4,
+  },
+  // A second restaurant so two diners on one map are visibly different places.
+  // This glb already ships for the NYC street wall (buildingCatalog's
+  // "Pizza Corner"), so the variety costs no new bytes. Its storefront is on
+  // local +Z rather than the -Z the other props import with — the same fact
+  // buildingSets records as `frontOffset: Math.PI` — so its yaw offset is a
+  // half-turn round from the usual π/2.
+  // No roofSignMinY: this model carries its own painted storefront branding and
+  // has no sign board to overlay. The board search is geometric ("largest thin
+  // elevated plate"), so pointing it at a building with no such plate makes it
+  // pick the whole facade and render a name plane the size of a wall.
+  "restaurant-pizzeria": {
+    url: `${P}/nyc-shop-corner.glb`,
+    scale: 8,
+    // Its storefront fascia has "PIZZA" painted on, which the loader's
+    // reflection renders back-to-front, so the model is mirrored back. That
+    // moves the storefront to the opposite face, hence the extra half-turn on
+    // top of this model's usual -π/2.
+    yawOffset: Math.PI / 2,
+    mirrorX: true,
+  },
   shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: Math.PI / 2 },
   residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: Math.PI / 2 },
   office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: Math.PI / 2 },

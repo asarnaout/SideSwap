@@ -425,6 +425,12 @@ export interface GigVenue {
    * Tune it up to pull a venue off a neighbouring lot it would otherwise
    * intersect. Defaults to 13. */
   readonly setbackM?: number;
+  /**
+   * Prop-registry key for this venue's building, overriding `kind`. Lets two
+   * restaurants on the same map be visibly different places rather than the
+   * same glb twice, without inventing venue kinds that mean nothing to gigs.
+   */
+  readonly modelId?: string;
 }
 
 export interface ProceduralMapGeometry {

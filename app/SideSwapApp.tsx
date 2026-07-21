@@ -48,8 +48,15 @@ import {
 import { Minimap } from "./game/MinimapCanvas";
 import { primeAudioContext, suspendAudioContext } from "./game/audio/audioContext";
 import { useDriveMusic } from "./game/audio/musicPlayer";
-import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
+import {
+  advanceGig,
+  generateGigFromPools,
+  gigTarget,
+  pickGigKind,
+  selectGigPools,
+} from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
+import { streetAddressesForMap } from "./game/streetAddresses";
 import type {
   CameraMode,
   CountryProfile,
@@ -207,10 +214,24 @@ function resolveGigVenues(
   });
 }
 
+/** The map's generated street addresses, in gig-pool shape. */
+function resolveGigAddresses(
+  map: ReturnType<typeof getMapPack>,
+): GigVenuePosition[] {
+  return streetAddressesForMap(map).map((address) => ({
+    id: address.id,
+    name: address.name,
+    kind: address.kind,
+    x: address.x,
+    z: address.z,
+  }));
+}
+
 /**
  * Builds the next gig for a drive: picks delivery vs. passenger deterministically
  * from the seed, then draws from the matching fare table so rides pay their
- * premium. Returns null when the map has too few venues.
+ * premium. Returns null when the map has too few places to work with. Which
+ * places each end may use is `selectGigPools`' call.
  */
 function nextGigFor(
   map: ReturnType<typeof getMapPack>,
@@ -222,8 +243,14 @@ function nextGigFor(
     kind === "passenger"
       ? PASSENGER_FARE_BY_COUNTRY[country.id]
       : GIG_FARE_BY_COUNTRY[country.id];
-  return generateGig(
+  const { pickups, dropoffs } = selectGigPools(
     resolveGigVenues(map),
+    resolveGigAddresses(map),
+    kind,
+  );
+  return generateGigFromPools(
+    pickups,
+    dropoffs,
     fare,
     country.currency.code,
     seed,
@@ -585,6 +612,10 @@ export default function SideSwapApp() {
     gig && gig.kind === "passenger" && gig.state === "enroute_pickup"
       ? gig.pickup.id
       : null;
+  // A street address is a spot outside a row of buildings that look like every
+  // other row, so the stop you are heading for gets a lit kerbside beacon.
+  const gigStopId = gigTargetVenue?.id ?? null;
+  const gigStopCarrying = gig?.state === "carrying";
 
   if (!hydrated) {
     return (
@@ -619,6 +650,8 @@ export default function SideSwapApp() {
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           outOfFuel={driveFuel <= 0}
           riderVenueId={riderVenueId}
+          gigStopId={gigStopId}
+          gigStopCarrying={gigStopCarrying}
           onHudUpdate={handleHud}
           onEvent={handleGameEvent}
           onPauseChange={setPaused}

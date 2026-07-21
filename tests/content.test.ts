@@ -445,8 +445,17 @@ describe("SideSwap content", () => {
       }
       // A gig needs a distinct pickup + drop-off, so every city needs >= 2.
       expect(venues.length, `${pack.id} gig venues`).toBeGreaterThanOrEqual(2);
+      // ...and a delivery has to load somewhere that sells something. Without
+      // this, selectGigPools falls back to letting parcels start at a flat.
+      expect(
+        venues.filter((venue) => venue.kind === "restaurant" || venue.kind === "shop"),
+        `${pack.id} pickup sources`,
+      ).not.toHaveLength(0);
     }
-    expect(count).toBe(20); // four venues per city
+    // Four per city plus NYC's second restaurant. Deliberately a floor rather
+    // than an exact total: adding venues is the point of the map, and a magic
+    // number here just makes that a chore.
+    expect(count).toBeGreaterThanOrEqual(20);
   });
 
   it("keeps traffic side independent from steering-wheel side", () => {
