@@ -1139,6 +1139,39 @@ const nycSignals = [
     { laneId: "nyc-cpw-s-1", phase: "ns" },
     { laneId: "nyc-79-e-4", phase: "ew" },
   ], nycLanes),
+  // Manhattan signalises every avenue crossing, and these six were bare — no
+  // light, no stop, no yield, on junctions where two carriageways cross. The
+  // remaining two (72nd × Amsterdam, 86th × Columbus) are the tail ends of the
+  // one-way avenues: no traffic arrives from the avenue there, so a signal
+  // would only hold the cross street at red for a phase nobody is using.
+  intersectionSignal("nyc-sig-we72", nycNodes.we72.position, [
+    { laneId: "nyc-we-s-2", phase: "ns" },
+    { laneId: "nyc-72-w-4", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-col72", nycNodes.col72.position, [
+    { laneId: "nyc-col-s-1b", phase: "ns" },
+    { laneId: "nyc-col-s-2b", phase: "ns" },
+    { laneId: "nyc-72-e-3", phase: "ew" },
+    { laneId: "nyc-72-w-1", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-cpw72", nycNodes.cpw72.position, [
+    { laneId: "nyc-cpw-s-2", phase: "ns" },
+    { laneId: "nyc-72-e-4", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-we86", nycNodes.we86.position, [
+    { laneId: "nyc-we-n-2", phase: "ns" },
+    { laneId: "nyc-86-w-4", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-amst86", nycNodes.amst86.position, [
+    { laneId: "nyc-amst-n-1b", phase: "ns" },
+    { laneId: "nyc-amst-n-2b", phase: "ns" },
+    { laneId: "nyc-86-e-2", phase: "ew" },
+    { laneId: "nyc-86-w-2", phase: "ew" },
+  ], nycLanes),
+  intersectionSignal("nyc-sig-cpw86", nycNodes.cpw86.position, [
+    { laneId: "nyc-cpw-n-2", phase: "ns" },
+    { laneId: "nyc-86-e-4", phase: "ew" },
+  ], nycLanes),
 ];
 
 const ukNodes = {

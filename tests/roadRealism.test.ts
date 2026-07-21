@@ -283,3 +283,32 @@ describe("ambient traffic circulates instead of blinking out", () => {
     });
   }
 });
+
+describe("NYC controls the junctions a driver expects to be controlled", () => {
+  it("puts a signal on every crossing that has traffic on both phases", () => {
+    // Manhattan signalises its avenue crossings. The two exempt nodes are the
+    // tail ends of the one-way avenues: nothing arrives from the avenue there,
+    // so a second phase would just hold the cross street at red for no one.
+    const ONE_WAY_TAILS = new Set(["nyc-amst-72", "nyc-col-86"]);
+    const inbound = new Map<string, LaneSegment[]>();
+    for (const lane of nyc.laneGraph.lanes) {
+      inbound.set(lane.to, [...(inbound.get(lane.to) ?? []), lane]);
+    }
+    const signalled = new Set(
+      nyc.laneGraph.controls
+        .filter((control) => control.type === "signal")
+        .flatMap((control) => control.laneIds),
+    );
+    for (const node of nyc.laneGraph.nodes) {
+      const arrivals = inbound.get(node.id) ?? [];
+      const roads = new Set(arrivals.map((lane) => lane.roadId));
+      if (roads.size < 2 || ONE_WAY_TAILS.has(node.id)) continue;
+      for (const lane of arrivals) {
+        expect(
+          signalled.has(lane.id),
+          `${lane.id} arrives at ${node.id} unsignalled`,
+        ).toBe(true);
+      }
+    }
+  });
+});
