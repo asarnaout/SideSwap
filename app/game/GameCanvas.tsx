@@ -1754,7 +1754,8 @@ function roadsidePropKindsForMap(
           faceRoad: true,
         },
         // Background pedestrian crowd on both sidewalks (routed to pendingCrowd,
-        // built as instanced static characters).
+        // built as instanced static characters). faceRoad gives a road-relative
+        // rotation the crowd walk direction is derived from.
         {
           kind: "crowd",
           spacingM: 12,
@@ -1762,7 +1763,7 @@ function roadsidePropKindsForMap(
           lateralMarginM: 2.6,
           bothSides: true,
           variants: CROWD_CHARACTER_URLS.length,
-          faceRoad: false,
+          faceRoad: true,
         },
       ];
     case "london":
@@ -2628,6 +2629,20 @@ class BabylonGameSession {
   private readonly pendingCrowd: { url: string; x: number; z: number; yaw: number }[] = [];
   /** Character glbs the instanced crowd needs preloaded (city maps only). */
   private crowdModelUrls: string[] = [];
+  /** Live background crowd: each is a static posed instance translated back and
+   * forth along the sidewalk (no skeleton), so it reads as walking cheaply. */
+  private readonly crowdMembers: {
+    inst: AbstractMesh;
+    ox: number;
+    oz: number;
+    dirX: number;
+    dirZ: number;
+    speed: number;
+    halfSpan: number;
+    offset: number;
+    sign: number;
+    facing: number;
+  }[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -3338,6 +3353,7 @@ class BabylonGameSession {
     this.processSimulationEvents(events);
     if (events.length === 0) this.publishSimulationCoachMessage(snapshot);
     this.animatePedestrians(dt);
+    this.animateCrowd(dt);
     this.reportVulnerableRoadUserCollision();
     this.evaluateAuthoredProgress();
   }
@@ -4662,6 +4678,14 @@ class BabylonGameSession {
     if (instance && root) {
       root.computeWorldMatrix(true);
       const skeleton = instance.skeletons[0];
+      // Sample a mid-stride frame of the Walk clip so the baked pose reads as a
+      // person walking (one leg forward) once we translate them along the walk.
+      const walk = instance.animationGroups.find((g) => /walk/i.test(g.name));
+      if (walk) {
+        walk.play(true);
+        walk.goToFrame(walk.from + (walk.to - walk.from) * 0.3);
+        walk.pause();
+      }
       skeleton?.prepare();
       const meshes = root
         .getChildMeshes(false)
@@ -4669,7 +4693,7 @@ class BabylonGameSession {
       for (const mesh of meshes) {
         mesh.computeWorldMatrix(true);
         if (skeleton && mesh.skeleton) {
-          mesh.applySkeleton(skeleton); // bake bind pose into the vertex buffer
+          mesh.applySkeleton(skeleton); // bake the sampled pose into the vertices
           mesh.skeleton = null;
         }
       }
@@ -4764,14 +4788,55 @@ class BabylonGameSession {
       const master = this.getCrowdMaster(person.url);
       if (!master) continue;
       const inst = master.createInstance(`crowd-${crowdIndex}`);
+      // person.yaw faces the road; walk along it (± perpendicular), alternating.
+      const side = crowdIndex % 2 === 0 ? 1 : -1;
+      const walkHeading = person.yaw + (side * Math.PI) / 2;
+      const facing = walkHeading + CROWD_CHARACTER_YAW;
+      const offset = ((crowdIndex % 7) - 3) * 1.6;
+      inst.rotation.y = offset >= 0 ? facing : facing + Math.PI;
       inst.position.set(person.x, 0.05, person.z);
-      inst.rotation.y = person.yaw + CROWD_CHARACTER_YAW;
       inst.scaling.setAll(CROWD_CHARACTER_SCALE);
       inst.isPickable = false;
-      this.staticSceneryFreeze.push(inst);
+      // Not frozen — these translate each frame (but never re-skin, so it stays
+      // cheap). One glide direction/speed spread so they don't march in lockstep.
+      this.crowdMembers.push({
+        inst,
+        ox: person.x,
+        oz: person.z,
+        dirX: Math.sin(walkHeading),
+        dirZ: Math.cos(walkHeading),
+        speed: 0.85 + (crowdIndex % 5) * 0.12,
+        halfSpan: 6,
+        offset,
+        sign: offset >= 0 ? 1 : -1,
+        facing,
+      });
       crowdIndex += 1;
     }
     this.pendingCrowd.length = 0;
+  }
+
+  /**
+   * Walk the background crowd: translate each posed instance back and forth
+   * along its stretch of sidewalk, flipping its facing at each end. No skeleton
+   * work — just a position + occasional rotation per person, so ~150 of them
+   * stay cheap.
+   */
+  private animateCrowd(dt: number) {
+    for (const m of this.crowdMembers) {
+      m.offset += m.speed * dt * m.sign;
+      if (m.offset > m.halfSpan) {
+        m.offset = m.halfSpan;
+        m.sign = -1;
+        m.inst.rotation.y = m.facing + Math.PI;
+      } else if (m.offset < -m.halfSpan) {
+        m.offset = -m.halfSpan;
+        m.sign = 1;
+        m.inst.rotation.y = m.facing;
+      }
+      m.inst.position.x = m.ox + m.dirX * m.offset;
+      m.inst.position.z = m.oz + m.dirZ * m.offset;
+    }
   }
 
   /**
