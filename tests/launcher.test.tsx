@@ -130,7 +130,7 @@ afterEach(() => {
 
 const findTagline = () =>
   screen.findByRole("heading", {
-    name: /Pick up\. Drop off\. Repeat\./i,
+    name: /No Experience Required/i,
   });
 
 const startButton = (destinationId: Parameters<typeof getDestinationProfile>[0]) =>

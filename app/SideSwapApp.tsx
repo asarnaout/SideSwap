@@ -943,15 +943,9 @@ export default function SideSwapApp() {
         <section className="launcher-page">
           <div className="launcher-copy">
             <p className="eyebrow">READY TO EARN</p>
-            <h1 aria-label="Pick up. Drop off. Repeat.">
-              <>Pick up. Drop off.<br /><em>Repeat.</em></>
+            <h1 aria-label="No Experience Required">
+              <>No Experience<br /><em>Required</em></>
             </h1>
-            <p
-              className="launcher-lead"
-              style={{ margin: "0.5rem 0 0", maxWidth: "34ch", opacity: 0.82 }}
-            >
-              London to Tokyo, the meter&rsquo;s always running.
-            </p>
 
             <p className="launcher-pick-label">Choose a city</p>
             <div
