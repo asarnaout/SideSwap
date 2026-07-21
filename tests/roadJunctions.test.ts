@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAP_PACKS } from "../app/game/content";
 import {
   collectRoadJunctionFills,
   type RoadJunctionSource,
@@ -75,5 +76,95 @@ describe("collectRoadJunctionFills", () => {
     // The inflated apron must extend beyond the bare carriageway fill so it can
     // ring the paved junction with a tan edge.
     expect(spanX(shoulder.polygon)).toBeGreaterThan(spanX(asphalt.polygon));
+  });
+
+  it("leaves the pavement corner between the arms unpaved", () => {
+    // The reported bug. A convex hull spans the four arms and so swallows the
+    // corners between them — the exact ground the traffic-light pole, the
+    // streetlight and the waiting pedestrians stand on. A crossroads is a plus.
+    const [fill] = collectRoadJunctionFills(CROSSROADS);
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const corner = { x: sx * (NS_HALF + 1.5), z: sz * (EW_HALF + 1.5) };
+        expect(pointInPolygon(corner, fill.polygon)).toBe(false);
+      }
+    }
+  });
+
+  it("rounds each corner off with a kerb radius", () => {
+    const [rounded] = collectRoadJunctionFills(CROSSROADS);
+    const [square] = collectRoadJunctionFills(CROSSROADS, 0, 0);
+    // Just diagonally outside the sharp corner: asphalt once the kerb curves,
+    // pavement when it does not.
+    const justOutside = { x: NS_HALF + 0.3, z: EW_HALF + 0.3 };
+    expect(pointInPolygon(justOutside, rounded.polygon)).toBe(true);
+    expect(pointInPolygon(justOutside, square.polygon)).toBe(false);
+  });
+
+  it("closes the notch on the outside of a bend between two surfaces", () => {
+    // Two roads meeting end-to-end at a right angle cover the inside of the
+    // turn twice over and the outside not at all; the fill has to chamfer it.
+    const bend: RoadJunctionSource[] = [
+      { id: "west", centerline: [{ x: -40, z: 0 }, { x: 0, z: 0 }], widthM: EW_HALF * 2 },
+      { id: "north", centerline: [{ x: 0, z: 0 }, { x: 0, z: 40 }], widthM: EW_HALF * 2 },
+    ];
+    const [fill] = collectRoadJunctionFills(bend);
+    expect(pointInPolygon({ x: EW_HALF - 0.3, z: -EW_HALF + 0.3 }, fill.polygon)).toBe(true);
+  });
+
+  it("paves both sides of a ring at the node an approach joins", () => {
+    // A roundabout centreline is a closed loop, so its first point has a
+    // carriageway either side of it. Treating it as a dead end bites a wedge
+    // out of the ring at the one node that always has an approach on it.
+    const ring: RoadJunctionSource[] = [
+      {
+        id: "ring",
+        centerline: [
+          { x: 0, z: 20 }, { x: 20, z: 0 }, { x: 0, z: -20 }, { x: -20, z: 0 },
+          { x: 0, z: 20 },
+        ],
+        widthM: 7.2,
+      },
+      { id: "approach", centerline: [{ x: 0, z: 20 }, { x: 0, z: 60 }], widthM: 7.2 },
+    ];
+    const [fill] = collectRoadJunctionFills(ring);
+    // A step along the ring either way from the seam has to be inside the fill.
+    for (const sx of [-1, 1]) {
+      expect(
+        pointInPolygon({ x: sx * 3, z: 20 - 3 }, fill.polygon),
+        `ring side ${sx}`,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps every authored junction's corners walkable", () => {
+    for (const pack of MAP_PACKS) {
+      const surfaces = pack.geometry.roadSurfaces ?? [];
+      if (!surfaces.length) continue;
+      for (const fill of collectRoadJunctionFills(surfaces)) {
+        // No junction may pave a disc wider than the widest carriageway that
+        // meets it, plus its kerb radius — anything more is eating pavement.
+        const widest = Math.max(
+          ...surfaces
+            .filter((surface) =>
+              surface.centerline.some(
+                (point) =>
+                  Math.hypot(point.x - fill.pivot.x, point.z - fill.pivot.z) <= 0.08,
+              ),
+            )
+            .map((surface) => surface.widthM / 2),
+        );
+        for (const point of fill.polygon) {
+          const lateral = Math.min(
+            Math.abs(point.x - fill.pivot.x),
+            Math.abs(point.z - fill.pivot.z),
+          );
+          expect(
+            lateral,
+            `${pack.id} junction at ${fill.pivot.x},${fill.pivot.z}`,
+          ).toBeLessThanOrEqual(widest + 3.6);
+        }
+      }
+    }
   });
 });

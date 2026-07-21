@@ -195,6 +195,13 @@ const PAVED_SIDEWALK_WIDTH = 3.4;
 // small enough to read as flush.
 const BUILDING_GROUND_LIFT = 0.08;
 const MAX_ROAD_MITER_RATIO = 3.25;
+// Junctions get a kerb radius: real corners curve so a turning vehicle can hold
+// its line, and the pavement wraps that curve. Capped well inside the sidewalk
+// band so the rounded asphalt never eats through to the buildings behind it.
+const JUNCTION_KERB_MAX_RADIUS_M = 3.5;
+const JUNCTION_KERB_ARC_STEPS = 4;
+// Below this the corner is a gore, not a street corner, and stays a sharp point.
+const JUNCTION_KERB_MIN_WEDGE_RAD = (70 * Math.PI) / 180;
 
 export interface RoadSurfaceStripGeometry {
   /** Two vertices per authored centreline point: positive and negative lateral offsets. */
@@ -210,8 +217,15 @@ export interface RoadJunctionSource {
 }
 
 export interface RoadJunctionFill {
-  /** Convex, upward-wound polygon that paves the shared-node junction. */
+  /**
+   * The junction outline, walked in heading order. Deliberately not convex: a
+   * crossroads is a plus, not a blob, and its corners are rounded off by a kerb
+   * radius. Every vertex is visible from `pivot`, so it fan-triangulates from
+   * there without needing a general polygon triangulator.
+   */
   readonly polygon: readonly GameCanvasPoint[];
+  /** The shared node the outline is fanned around. */
+  readonly pivot: GameCanvasPoint;
 }
 
 type RoadDirection = Readonly<{ x: number; z: number }>;
@@ -419,61 +433,136 @@ export function buildRoadSurfaceStripGeometry(
   return { positions, indices, closed };
 }
 
-/** Counter-clockwise convex hull (Andrew's monotone chain) of an xz point set. */
-export function convexHullXZ(
-  points: readonly GameCanvasPoint[],
-): readonly GameCanvasPoint[] {
-  const sorted = points
-    .map((point) => ({ x: point.x, z: point.z }))
-    .sort((left, right) => left.x - right.x || left.z - right.z);
-  const unique: GameCanvasPoint[] = [];
-  for (const point of sorted) {
-    const previous = unique.at(-1);
-    if (!previous || Math.hypot(previous.x - point.x, previous.z - point.z) > 1e-6) {
-      unique.push(point);
-    }
-  }
-  if (unique.length < 3) return unique;
-  const cross = (
-    origin: GameCanvasPoint,
-    a: GameCanvasPoint,
-    b: GameCanvasPoint,
-  ): number =>
-    (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
-  const build = (ordered: readonly GameCanvasPoint[]): GameCanvasPoint[] => {
-    const chain: GameCanvasPoint[] = [];
-    for (const point of ordered) {
-      while (
-        chain.length >= 2 &&
-        cross(chain[chain.length - 2], chain[chain.length - 1], point) <= 0
-      ) {
-        chain.pop();
-      }
-      chain.push(point);
-    }
-    chain.pop();
-    return chain;
+/** One carriageway leaving a shared node, as the junction outline sees it. */
+interface RoadJunctionLeg {
+  readonly direction: RoadDirection;
+  /** Unit normal pointing at the next leg round the node in heading order. */
+  readonly lateral: RoadDirection;
+  readonly half: number;
+  readonly reach: number;
+}
+
+/**
+ * Where leg `a`'s near-side kerb meets leg `b`'s, as a distance along each leg
+ * from the node. Both distances positive is a street corner — the kerbs close
+ * in front of the node. Both negative is the outside of a bend: the kerbs only
+ * meet behind the node, at the miter point that squares the turn off. Null when
+ * they are parallel and never meet at all.
+ */
+function junctionKerbCorner(
+  a: RoadJunctionLeg,
+  b: RoadJunctionLeg,
+): { alongA: number; alongB: number } | null {
+  const offsetX = -b.lateral.x * b.half - a.lateral.x * a.half;
+  const offsetZ = -b.lateral.z * b.half - a.lateral.z * a.half;
+  const determinant = b.direction.x * a.direction.z - a.direction.x * b.direction.z;
+  if (Math.abs(determinant) < 1e-6) return null;
+  return {
+    alongA: (b.direction.x * offsetZ - offsetX * b.direction.z) / determinant,
+    alongB: (a.direction.x * offsetZ - offsetX * a.direction.z) / determinant,
   };
-  const lower = build(unique);
-  const upper = build([...unique].reverse());
-  return lower.concat(upper);
+}
+
+/**
+ * The vertices that carry the outline from leg `a` round to leg `b`: a rounded
+ * kerb at a street corner, a bare point at a gore too sharp to round, a miter
+ * on the outside of a bend — where two surfaces meeting end-on leave a notch
+ * of bare ground that a single mitered strip would never have had — and a
+ * chamfer across the node when the kerbs are parallel or the corner runs away
+ * to somewhere too far off to be a corner at all.
+ */
+function junctionCornerVertices(
+  node: GameCanvasPoint,
+  a: RoadJunctionLeg,
+  b: RoadJunctionLeg,
+  kerbRadiusM: number,
+): GameCanvasPoint[] {
+  const at = (leg: RoadJunctionLeg, lateralSign: number, along: number) => ({
+    x: node.x + leg.lateral.x * leg.half * lateralSign + leg.direction.x * along,
+    z: node.z + leg.lateral.z * leg.half * lateralSign + leg.direction.z * along,
+  });
+  const chamfer = [at(a, 1, 0), at(b, -1, 0)];
+  const meeting = junctionKerbCorner(a, b);
+  if (!meeting) return chamfer;
+  if (meeting.alongA < 1e-3 && meeting.alongB < 1e-3) {
+    const miter = at(a, 1, meeting.alongA);
+    // Same guard the strip mitering uses: past this a near-hairpin would throw
+    // out a long spike instead of squaring off a turn.
+    return Math.hypot(miter.x - node.x, miter.z - node.z) <=
+      Math.min(a.half, b.half) * MAX_ROAD_MITER_RATIO
+      ? [miter]
+      : chamfer;
+  }
+  if (meeting.alongA < 1e-3 || meeting.alongB < 1e-3) return chamfer;
+  if (meeting.alongA > a.reach || meeting.alongB > b.reach) return chamfer;
+  const corner = at(a, 1, meeting.alongA);
+  const wedge = Math.acos(
+    clamp(dotRoadDirections(a.direction, b.direction), -1, 1),
+  );
+  const tangent = Math.tan(wedge / 2);
+  const radius = Math.min(
+    kerbRadiusM,
+    Math.min(a.half, b.half) * 0.6,
+    Math.min(meeting.alongA, meeting.alongB) * 0.5,
+    // The arc's tangent points have to stay on the kerbs they round off.
+    Math.min(a.reach - meeting.alongA, b.reach - meeting.alongB) * tangent,
+  );
+  if (wedge < JUNCTION_KERB_MIN_WEDGE_RAD || radius < 0.2) return [corner];
+  const setback = radius / tangent;
+  const start = {
+    x: corner.x + a.direction.x * setback,
+    z: corner.z + a.direction.z * setback,
+  };
+  const end = {
+    x: corner.x + b.direction.x * setback,
+    z: corner.z + b.direction.z * setback,
+  };
+  const bisector = normalizeRoadDirection({
+    x: a.direction.x + b.direction.x,
+    z: a.direction.z + b.direction.z,
+  });
+  if (!bisector) return [corner];
+  const centreX = corner.x + (bisector.x * radius) / Math.sin(wedge / 2);
+  const centreZ = corner.z + (bisector.z * radius) / Math.sin(wedge / 2);
+  const startAngle = Math.atan2(start.z - centreZ, start.x - centreX);
+  let sweep = Math.atan2(end.z - centreZ, end.x - centreX) - startAngle;
+  while (sweep > Math.PI) sweep -= 2 * Math.PI;
+  while (sweep < -Math.PI) sweep += 2 * Math.PI;
+  const arc: GameCanvasPoint[] = [];
+  for (let step = 0; step <= JUNCTION_KERB_ARC_STEPS; step += 1) {
+    const angle = startAngle + (sweep * step) / JUNCTION_KERB_ARC_STEPS;
+    arc.push({
+      x: centreX + Math.cos(angle) * radius,
+      z: centreZ + Math.sin(angle) * radius,
+    });
+  }
+  return arc;
 }
 
 /**
  * Paves each junction where independently-authored road surfaces share a node
- * (a side street meeting an avenue, a roundabout approach, a spliced segment)
- * with the convex hull of the road cross-sections that meet there. Unlike a
- * circular apron, the hull's straight edges align to the carriageways so it fills
- * the seam without a round lip spilling onto the grass. Each incident arm reaches
- * into the crossing by the WIDEST half-width present at the node — not just its
- * own — so the hull squares off past every crossing edge and covers the gore of a
- * T/Y split, instead of chamfering short and leaving the dirt shoulder to show
- * through as a triangular wedge. `lateralInflationM` widens the sections to build
- * the matching dirt-shoulder fill that rings the paved junction.
+ * (a side street meeting an avenue, a roundabout approach, a spliced segment).
+ *
+ * The fill traces the junction's actual outline: out along one carriageway to
+ * its reach, across, back down its far kerb, round the corner into the next
+ * carriageway, and so on round the node. That shape matters — a crossroads is a
+ * plus, and anything blobbier (a convex hull, say) swallows the four pavement
+ * corners between the arms and paves the very spot the traffic-light pole and
+ * the waiting pedestrians stand on.
+ *
+ * Each arm reaches into the crossing by the WIDEST half-width present at the
+ * node, not just its own, so the fill clears every crossing kerb rather than
+ * stopping short and leaving the shoulder to show through as a wedge.
+ * `lateralInflationM` widens the sections to build the matching shoulder fill
+ * that underlies the paved junction. That one passes `kerbRadiusM` of 0: a kerb
+ * radius rounds a corner *outwards*, which is what the carriageway wants and
+ * the exact opposite of what the pavement wants — rounding the shoulder fill
+ * would balloon the footway out past the building line at every block corner.
  */
 export function collectRoadJunctionFills(
   surfaces: readonly RoadJunctionSource[],
   lateralInflationM = 0,
+  kerbRadiusM = JUNCTION_KERB_MAX_RADIUS_M,
 ): readonly RoadJunctionFill[] {
   const clusters: Array<{
     x: number;
@@ -489,7 +578,7 @@ export function collectRoadJunctionFills(
   // Pass 1: gather every centreline point into shared-node clusters, recording
   // the widest half-width that meets there so the reach can clear it.
   for (const surface of surfaces) {
-    const { points } = normalizeRoadCenterline(surface.centerline);
+    const { points, closed } = normalizeRoadCenterline(surface.centerline);
     const half = surface.widthM / 2 + lateralInflationM;
     for (let index = 0; index < points.length; index += 1) {
       const node = points[index];
@@ -510,19 +599,25 @@ export function collectRoadJunctionFills(
       }
       cluster.surfaceIds.add(surface.id);
       cluster.maxHalf = Math.max(cluster.maxHalf, half);
+      // A closed ring wraps, so its seam node has a carriageway either side of
+      // it like any other — miss that and a roundabout is left with a bite out
+      // of it exactly where an approach joins.
       const neighbours: GameCanvasPoint[] = [];
       if (index > 0) neighbours.push(points[index - 1]);
+      else if (closed) neighbours.push(points[points.length - 1]);
       if (index < points.length - 1) neighbours.push(points[index + 1]);
+      else if (closed) neighbours.push(points[0]);
       cluster.arms.push({ half, node, neighbours });
     }
   }
-  // Pass 2: at every shared node, emit each arm's lateral corners at the node and
-  // a reach into each adjacent segment sized to clear the widest road; the hull
-  // of the union then squares the junction off to the carriageways.
+  // Pass 2: at every shared node, walk the legs in heading order and trace the
+  // outline — out one carriageway, across its end, back down the far kerb, round
+  // the corner, on to the next.
   const fills: RoadJunctionFill[] = [];
   for (const cluster of clusters) {
     if (cluster.surfaceIds.size <= 1) continue;
-    const corners: GameCanvasPoint[] = [];
+    const pivot = { x: cluster.x, z: cluster.z };
+    const legs: RoadJunctionLeg[] = [];
     for (const arm of cluster.arms) {
       for (const neighbour of arm.neighbours) {
         const direction = normalizeRoadDirection({
@@ -530,27 +625,47 @@ export function collectRoadJunctionFills(
           z: neighbour.z - arm.node.z,
         });
         if (!direction) continue;
-        const lateral = roadLateral(direction);
-        const reach = Math.min(
-          Math.max(cluster.maxHalf * 1.7, arm.half * 1.3),
-          roadPointDistance(arm.node, neighbour) * 0.9,
-        );
-        for (const along of [0, reach]) {
-          const baseX = arm.node.x + direction.x * along;
-          const baseZ = arm.node.z + direction.z * along;
-          corners.push({
-            x: baseX + lateral.x * arm.half,
-            z: baseZ + lateral.z * arm.half,
-          });
-          corners.push({
-            x: baseX - lateral.x * arm.half,
-            z: baseZ - lateral.z * arm.half,
-          });
-        }
+        legs.push({
+          direction,
+          // `roadLateral` turns a heading clockwise, which is the direction the
+          // sort below advances in, so this always faces the next leg round.
+          lateral: roadLateral(direction),
+          half: arm.half,
+          reach: Math.min(
+            Math.max(cluster.maxHalf * 1.7, arm.half * 1.3),
+            roadPointDistance(arm.node, neighbour) * 0.9,
+          ),
+        });
       }
     }
-    const polygon = convexHullXZ(corners);
-    if (polygon.length >= 3) fills.push({ polygon });
+    if (legs.length < 2) continue;
+    legs.sort(
+      (first, second) =>
+        Math.atan2(first.direction.x, first.direction.z) -
+        Math.atan2(second.direction.x, second.direction.z),
+    );
+    const polygon: GameCanvasPoint[] = [];
+    for (const [index, leg] of legs.entries()) {
+      const tipX = pivot.x + leg.direction.x * leg.reach;
+      const tipZ = pivot.z + leg.direction.z * leg.reach;
+      polygon.push({
+        x: tipX - leg.lateral.x * leg.half,
+        z: tipZ - leg.lateral.z * leg.half,
+      });
+      polygon.push({
+        x: tipX + leg.lateral.x * leg.half,
+        z: tipZ + leg.lateral.z * leg.half,
+      });
+      polygon.push(
+        ...junctionCornerVertices(
+          pivot,
+          leg,
+          legs[(index + 1) % legs.length],
+          kerbRadiusM,
+        ),
+      );
+    }
+    if (polygon.length >= 3) fills.push({ polygon, pivot });
   }
   return fills;
 }
@@ -5464,29 +5579,28 @@ class BabylonGameSession {
       );
     }
     // Dirt-shoulder fills first (lowest), then the asphalt fills, mirroring the
-    // strip layering so a junction reads as one continuous surface.
+    // strip layering so a junction reads as one continuous surface. Square
+    // corners here: this band's outer edge is the building line.
     for (const [index, fill] of collectRoadJunctionFills(
       roadSurfaces,
       shoulderWidth,
+      0,
     ).entries()) {
       this.createRoadJunctionFill(
         `road-junction-shoulder-${index}`,
-        fill.polygon,
+        fill,
         dirtShoulder,
         ROAD_SHOULDER_JUNCTION_FILL_Y,
       );
     }
-    // Inflate the asphalt fill part-way into the shoulder band so it paves over
-    // the shoulder strips that overlap in a junction's throats and Y-split gores
-    // (which would otherwise read as tan wedges), while the wider dirt-shoulder
-    // fill below still rings the paved junction with a thin, even tan edge.
-    for (const [index, fill] of collectRoadJunctionFills(
-      roadSurfaces,
-      shoulderWidth * 0.55,
-    ).entries()) {
+    // The asphalt fill takes no inflation: it has to stop at the kerb, or it
+    // eats the pavement corners between the arms. Nothing is lost by that —
+    // where one road's shoulder band runs on through a crossing, the crossing
+    // road's own carriageway strip already covers it, being the higher layer.
+    for (const [index, fill] of collectRoadJunctionFills(roadSurfaces).entries()) {
       this.createRoadJunctionFill(
         `road-junction-${index}`,
-        fill.polygon,
+        fill,
         asphalt,
         ROAD_JUNCTION_FILL_Y,
       );
@@ -6880,17 +6994,20 @@ class BabylonGameSession {
 
   private createRoadJunctionFill(
     name: string,
-    polygon: readonly GameCanvasPoint[],
+    fill: RoadJunctionFill,
     material: StandardMaterial,
     y: number,
   ): Mesh | undefined {
+    const { polygon, pivot } = fill;
     if (polygon.length < 3) return undefined;
-    const positions: number[] = [];
+    // Fan from the shared node, not from a vertex: the outline is a plus with
+    // rounded corners, so no vertex of it can see the whole boundary — but the
+    // node it was built around can.
+    const positions: number[] = [pivot.x, y, pivot.z];
     for (const point of polygon) positions.push(point.x, y, point.z);
-    // Fan-triangulate the convex hull from its first vertex.
     const indices: number[] = [];
-    for (let index = 1; index + 1 < polygon.length; index += 1) {
-      indices.push(0, index, index + 1);
+    for (let index = 0; index < polygon.length; index += 1) {
+      indices.push(0, index + 1, ((index + 1) % polygon.length) + 1);
     }
     let normals: number[] = [];
     VertexData.ComputeNormals(positions, indices, normals);

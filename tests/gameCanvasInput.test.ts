@@ -15,7 +15,6 @@ import {
   buildRoadSurfaceStripGeometry,
   clampHorizontalFieldOfView,
   collectRoadJunctionFills,
-  convexHullXZ,
   guidanceCueOverlapsCheckpoint,
   isAuthoredCheckpointCrossing,
   isLaneGuidanceDistanceAllowed,
@@ -326,25 +325,6 @@ describe("continuous road-surface rendering", () => {
     expect(Math.max(...zs)).toBeLessThan(9);
   });
 
-  it("returns a counter-clockwise hull that ignores interior and duplicate points", () => {
-    const hull = convexHullXZ([
-      { x: 0, z: 0 },
-      { x: 4, z: 0 },
-      { x: 4, z: 4 },
-      { x: 0, z: 4 },
-      { x: 2, z: 2 }, // interior point must be dropped
-      { x: 4, z: 0 }, // duplicate must be dropped
-    ]);
-    expect(hull).toHaveLength(4);
-    // Signed area is positive for a counter-clockwise ring in the xz plane.
-    let signedArea = 0;
-    for (let i = 0; i < hull.length; i += 1) {
-      const a = hull[i];
-      const b = hull[(i + 1) % hull.length];
-      signedArea += a.x * b.z - b.x * a.z;
-    }
-    expect(signedArea).toBeGreaterThan(0);
-  });
 });
 
 describe("cockpit camera tracking", () => {
