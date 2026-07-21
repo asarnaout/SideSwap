@@ -229,7 +229,10 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // at the same offset independently (its diorama forecourt faces the pumps to
   // the lot's road edge).
   gas_station: { url: `${P}/gas-station.glb`, scale: 2.8, yawOffset: Math.PI / 2, groundY: -1.63 },
-  restaurant: { url: `${P}/restaurant.glb`, scale: 0.045, yawOffset: Math.PI / 2 },
+  // Enlarged from 0.045 to read at a realistic size next to the avenue buildings.
+  // groundY drops it back onto the road after GameCanvas strips its raised base
+  // platform (see instantiateProp): its body sits ~11.7 native units up, ×0.07.
+  restaurant: { url: `${P}/restaurant.glb`, scale: 0.085, yawOffset: Math.PI / 2, groundY: -0.92 },
   shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: Math.PI / 2 },
   residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: Math.PI / 2 },
   office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: Math.PI / 2 },

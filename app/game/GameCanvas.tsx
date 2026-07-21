@@ -4391,23 +4391,34 @@ class BabylonGameSession {
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
     root.scaling.setAll(config.scale);
-    if (kind === "gas_station" && label) {
-      this.addGasStationSign(holder, root, label);
+    if (kind === "restaurant") {
+      // Drop the raised base platform (the Box001 slab) so the diner sits on the
+      // ground like a normal storefront rather than on a plinth.
+      for (const mesh of root.getChildMeshes()) {
+        if (/Box001/.test(mesh.name)) mesh.dispose();
+      }
+    }
+    if (label && (kind === "gas_station" || kind === "restaurant")) {
+      // Both models bake mirrored roof lettering; overlay a legible name on the
+      // roof board. The diner's board sits lower than the station's tall
+      // billboard, so it searches from a lower height.
+      this.addRoofSign(holder, root, label, kind === "gas_station" ? 4 : 1.4);
     }
     return true;
   }
 
   /**
-   * Draws the station's name onto the model's blank roof billboard (its
-   * authored "QUICK STOP" lettering was mirrored and got stripped from the
-   * glb). The board is found geometrically — the largest elevated thin plate —
-   * in holder space so the search works at any yaw, then a text plane is laid
-   * over each of its two big faces.
+   * Overlays a legible name on a model's roof board — used where the glb bakes
+   * mirrored roof lettering (the gas station, the diner). The board is found
+   * geometrically (the largest elevated thin plate above `minCentreY`, in holder
+   * space so the search works at any yaw), then a text plane is laid over each of
+   * its two big faces so the readable name covers the mirrored original.
    */
-  private addGasStationSign(
+  private addRoofSign(
     holder: TransformNode,
     root: TransformNode,
     label: string,
+    minCentreY: number,
   ): void {
     holder.computeWorldMatrix(true);
     const toHolder = Matrix.Invert(holder.getWorldMatrix());
@@ -4428,7 +4439,7 @@ class BabylonGameSession {
       const thin = Math.min(spanX, spanZ);
       const wide = Math.max(spanX, spanZ);
       const centreY = (min.y + max.y) / 2;
-      if (centreY > 4 && spanY > 1.4 && thin < 1.3 && wide > 3) {
+      if (centreY > minCentreY && spanY > 1.2 && thin < 2.2 && wide > 3) {
         const area = wide * spanY;
         if (!board || area > board.area) board = { area, min, max };
       }
@@ -5691,7 +5702,7 @@ class BabylonGameSession {
           makeMaterial(scene, `${venue.id}-roof`, new Color3(0.95, 0.82, 0.3)),
           parent,
         );
-      });
+      }, venue.name);
     }
 
     for (const landmark of mapPack.geometry.landmarks) {
