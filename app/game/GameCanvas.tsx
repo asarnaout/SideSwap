@@ -113,6 +113,19 @@ import {
   type NpcPathSegment as NpcPathSegmentData,
 } from "./npcPaths";
 import {
+  splitMarkingAtCrossings,
+  type MarkingPoint,
+} from "./roadMarkings";
+
+/** Marking styles that run along a road, and so break where one crosses. */
+const LANE_PAINT_STYLES = new Set([
+  "centre_solid",
+  "centre_dashed",
+  "lane_solid",
+  "lane_dashed",
+  "edge_solid",
+]);
+import {
   buildCyclistVisual,
   buildPedestrianVisual,
   characterModelUrls,
@@ -5482,37 +5495,48 @@ class BabylonGameSession {
       for (const marking of surface.markings) {
         const material =
           marking.color === "yellow" ? yellowMarkingMaterial : laneMaterial;
-        if (
-          marking.style === "centre_dashed" ||
-          marking.style === "lane_dashed" ||
-          marking.style === "give_way"
-        ) {
-          this.createDashedPath(
-            `road-marking-${surface.id}-${marking.id}`,
-            marking.points,
-            marking.style === "give_way" ? 0.24 : 0.11,
+        // Give-way bars and box junctions belong *to* a junction; everything
+        // else is lane paint, which stops at one.
+        const runs = LANE_PAINT_STYLES.has(marking.style)
+          ? splitMarkingAtCrossings(
+              marking.points,
+              roadSurfaces.filter((other) => other.id !== surface.id),
+            )
+          : [marking.points as MarkingPoint[]];
+        for (const [runIndex, run] of runs.entries()) {
+          const name = `road-marking-${surface.id}-${marking.id}-${runIndex}`;
+          if (
+            marking.style === "centre_dashed" ||
+            marking.style === "lane_dashed" ||
+            marking.style === "give_way"
+          ) {
+            this.createDashedPath(
+              name,
+              run,
+              marking.style === "give_way" ? 0.24 : 0.11,
+              0.12,
+              material,
+              marking.style === "centre_dashed"
+                ? 3.2
+                : marking.style === "give_way"
+                  ? 0.65
+                  : 2.2,
+              marking.style === "centre_dashed"
+                ? 4.3
+                : marking.style === "give_way"
+                  ? 0.55
+                  : 3.4,
+            );
+            continue;
+          }
+          this.createSolidPath(
+            name,
+            run,
+            marking.style === "box_junction" ? 0.18 : 0.11,
             0.12,
             material,
-            marking.style === "centre_dashed"
-              ? 3.2
-              : marking.style === "give_way"
-                ? 0.65
-                : 2.2,
-            marking.style === "centre_dashed"
-              ? 4.3
-              : marking.style === "give_way"
-                ? 0.55
-                : 3.4,
           );
-          continue;
         }
-        this.createSolidPath(
-          `road-marking-${surface.id}-${marking.id}`,
-          marking.points,
-          marking.style === "box_junction" ? 0.18 : 0.11,
-          0.12,
-          material,
-        );
       }
     }
     for (const [routeIndex, laneId] of (this.options.lesson?.route ?? []).entries()) {
