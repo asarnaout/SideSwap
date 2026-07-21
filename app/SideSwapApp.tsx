@@ -943,8 +943,8 @@ export default function SideSwapApp() {
         <section className="launcher-page">
           <div className="launcher-copy">
             <p className="eyebrow">READY TO EARN</p>
-            <h1 aria-label="No Experience Required">
-              <>No Experience<br /><em>Required</em></>
+            <h1 aria-label="Rise and Grind">
+              <>Rise and <em>Grind</em></>
             </h1>
 
             <p className="launcher-pick-label">Choose a city</p>
@@ -1108,12 +1108,7 @@ function SettingsView({ progress, onSave, onReset, onBack }: { progress: PlayerP
   return (
     <section className="subpage settings-page">
       <div className="subpage-heading">
-        <div>
-          <p className="eyebrow">SETTINGS</p>
-          <h1>Make the road comfortable to read</h1>
-          <p>Comfort, controls and sound, tuned to how you like to drive.</p>
-        </div>
-        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
+        <button className="secondary-button" type="button" onClick={onBack} style={{ marginLeft: "auto" }}>Back to Homepage</button>
       </div>
       <div className="settings-grid">
         <section className="settings-card" aria-labelledby="driving-preferences-title">
@@ -1180,7 +1175,7 @@ function CreditsView({ onBack }: { onBack: () => void }) {
           <h1>Rules should have receipts.</h1>
           <p>Every assessed rule is tied to an official source and review date. OpenStreetMap supplies geography only.</p>
         </div>
-        <button className="secondary-button" type="button" onClick={onBack}>Back to training</button>
+        <button className="secondary-button" type="button" onClick={onBack}>Back to Homepage</button>
       </div>
       <article className="license-card">
         <h3 className="credits-section-title"><span className="settings-card-dot dot-sage" aria-hidden="true" />Map data — frozen, credited, separate from the law</h3>
