@@ -1,11 +1,8 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ENGINE,
   ENGINE_CYLINDERS,
   GEAR_TOP_MPS,
-  LATERAL_ACCEL_DIVISOR,
-  LATERAL_UNSTABLE_MPS2,
   MAX_SPEED_MPS,
   SHIFT_BANDS,
   approach,
@@ -321,17 +318,16 @@ describe("wind, road and tyres", () => {
     expect(rough.roadHz).toBeLessThan(paved.roadHz);
   });
 
-  it("squeals before the simulation penalises the corner", () => {
-    // Audible warning has to arrive ahead of the penalty to be worth anything.
-    const speedMps = 20;
-    const steer = (LATERAL_UNSTABLE_MPS2 * LATERAL_ACCEL_DIVISOR) / (speedMps * speedMps);
-    expect(run({ speedMps, steer: steer * 0.8 }, 1).out.squealGain).toBeGreaterThan(0);
+  it("squeals on a hard brake at speed", () => {
+    expect(run({ speedMps: 30, brake: 1 }, 1).out.squealGain).toBeGreaterThan(0);
   });
 
-  it("does not stack cornering and braking squeal", () => {
-    const corner = run({ speedMps: 30, steer: 1 }, 1).out.squealGain;
-    const both = run({ speedMps: 30, steer: 1, brake: 1 }, 1).out.squealGain;
-    expect(both).toBeCloseTo(corner, 5);
+  it("does not squeal on cornering — only braking", () => {
+    // The tyre squeal is brake-lockup only; steering hard, however far, stays
+    // silent. Braking through that same corner still squeals — from the brake.
+    expect(run({ speedMps: 30, steer: 1 }, 1).out.squealGain).toBe(0);
+    expect(run({ speedMps: 30, steer: -1 }, 1).out.squealGain).toBe(0);
+    expect(run({ speedMps: 30, steer: 1, brake: 1 }, 1).out.squealGain).toBeGreaterThan(0);
   });
 
   it("squeals the discs only when rolling slowly to a stop", () => {
@@ -430,14 +426,6 @@ describe("parameter safety", () => {
         }
       }
     }
-  });
-
-  it("keeps the squeal formula pinned to the simulation's own physics", () => {
-    // If the handling model moves, the audio must move with it — so read the
-    // simulation source rather than trusting a copied constant.
-    const source = readFileSync("app/game/simulation.ts", "utf8");
-    expect(source).toContain(`* absoluteSpeed) / ${LATERAL_ACCEL_DIVISOR}`);
-    expect(source).toContain(`lateralAcceleration > ${LATERAL_UNSTABLE_MPS2}`);
   });
 });
 

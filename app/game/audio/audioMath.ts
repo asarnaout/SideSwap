@@ -9,9 +9,7 @@
  * curve, no slip. Its physics is a single scalar speed. So the gearbox and rev
  * range below are invented here rather than read from anywhere, chosen to sit
  * plausibly over the sim's real limits (top speed ~40.3 m/s, braking up to
- * 11.5 m/s²). The tyre-squeal threshold is the one exception: it mirrors the
- * simulation's own lateral-acceleration formula so what you hear and what the
- * game penalises cannot drift apart.
+ * 11.5 m/s²).
  */
 import { seededUnit } from "../visuals";
 
@@ -113,11 +111,6 @@ export const WIND_LEVEL = 0.09;
  * does more to sell it as air than any amount of filtering.
  */
 export const WIND_GUST_DEPTH = 0.38;
-
-// Pinned to simulation.ts:1887-1889. If the sim's handling model changes, the
-// squeal must move with it, and the test suite asserts these still match.
-export const LATERAL_ACCEL_DIVISOR = 3.1;
-export const LATERAL_UNSTABLE_MPS2 = 11;
 
 const UPSHIFT_HOLD_S = 0.35;
 /** Shorter than the upshift hold so hard braking can chain 5→1 quickly. */
@@ -448,15 +441,10 @@ export function updateAudioModel(
   out.roadGain = 0.14 * Math.pow(speedNorm, 1.3) * (telemetry.offRoad ? 1.9 : 1);
 
   // --- Tyres ----------------------------------------------------------------
-  // Same formula the simulation scores against, so the warning arrives before
-  // the penalty rather than after it.
-  const lateral = (Math.abs(telemetry.steer) * speed * speed) / LATERAL_ACCEL_DIVISOR;
-  const corner = clamp((lateral - 6.5) / 6.5, 0, 1) * clamp((speed - 4) / 3, 0, 1);
-  const lockup =
+  // Brake-lockup squeal only: a hard brake application at speed. Cornering does
+  // not squeal — the tyres stay quiet through turns however hard you steer.
+  const squeal =
     clamp((telemetry.brake - 0.45) / 0.55, 0, 1) * clamp((speed - 6) / 10, 0, 1);
-  // Max rather than sum: braking into a corner should not double up and drive
-  // the limiter.
-  const squeal = Math.max(corner, lockup);
   out.squealGain = 0.2 * Math.pow(squeal, 1.5);
   out.squealHz = 900 + 500 * squeal;
 
