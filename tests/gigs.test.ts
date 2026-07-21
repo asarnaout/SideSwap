@@ -3,6 +3,7 @@ import {
   advanceGig,
   generateGig,
   generateGigFromPools,
+  MIN_GIG_DISTANCE_M,
   gigTarget,
   pickGigKind,
   selectGigPools,
@@ -125,6 +126,22 @@ describe("gig pickup / drop-off pools", () => {
       const gig = generateGigFromPools(pickups, dropoffs, fare, "GBP", seed)!;
       expect(gig.pickup.kind, `seed ${seed}`).not.toBe("residence");
       expect(dropoffs.map((d) => d.id), `seed ${seed}`).toContain(gig.dropoff.id);
+    }
+  });
+
+  it("skips drop-offs too close to the pickup to be worth driving to", () => {
+    // Dozens of street addresses means some land metres from a pickup, and the
+    // arrival radius is 14 m — such a gig would complete almost the instant it
+    // was offered, for a near-base payout.
+    const nextDoor = { id: "addr-0", name: "2 High St", kind: "residence", x: 4, z: 4 };
+    const pools = [nextDoor, ...addresses];
+    for (let seed = 1; seed <= 40; seed += 1) {
+      const gig = generateGigFromPools([venues[0]], pools, fare, "GBP", seed)!;
+      expect(gig, `seed ${seed}`).not.toBeNull();
+      expect(
+        Math.hypot(gig.pickup.x - gig.dropoff.x, gig.pickup.z - gig.dropoff.z),
+        `seed ${seed}`,
+      ).toBeGreaterThanOrEqual(MIN_GIG_DISTANCE_M);
     }
   });
 

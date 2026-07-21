@@ -54,6 +54,9 @@ export function pickGigKind(seed: number): GigKind {
 /** Venue kinds a meal or a parcel can actually originate from. */
 const PICKUP_SOURCE_KINDS = new Set(["restaurant", "shop", "depot"]);
 
+/** Shortest gig worth offering, pickup to drop-off. */
+export const MIN_GIG_DISTANCE_M = 120;
+
 /**
  * Which places each end of a gig may use.
  *
@@ -104,14 +107,22 @@ export function generateGigFromPools(
 ): Gig | null {
   if (!pickups.length || !dropoffs.length) return null;
   const pickupIndex = Math.floor(hashToUnit(seed) * pickups.length) % pickups.length;
+  const pickup = pickups[pickupIndex];
+  // Walk the drop-off forward past anything too close to be worth driving to.
+  // With dozens of street addresses in the pool, some land a few metres from
+  // the pickup, and the arrival radius is 14 m — such a gig would complete
+  // almost the instant it was offered, for a near-base payout.
   let dropoffIndex =
     Math.floor(hashToUnit(seed + 1) * dropoffs.length) % dropoffs.length;
-  const pickup = pickups[pickupIndex];
-  if (dropoffs[dropoffIndex].id === pickup.id) {
+  for (let attempt = 0; attempt < dropoffs.length; attempt += 1) {
+    const candidate = dropoffs[dropoffIndex];
+    if (candidate.id !== pickup.id && distance(pickup, candidate) >= MIN_GIG_DISTANCE_M) {
+      break;
+    }
     dropoffIndex = (dropoffIndex + 1) % dropoffs.length;
   }
   const dropoff = dropoffs[dropoffIndex];
-  // Only possible when the pools share their single entry.
+  // Every candidate was the pickup itself: the pools share a single entry.
   if (dropoff.id === pickup.id) return null;
   const reward = Math.round(
     fare.base + fare.ratePerM * distance(pickup, dropoff),

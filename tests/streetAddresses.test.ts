@@ -8,6 +8,7 @@ import {
 import { resolveSimulationLaneAnchor } from "../app/game/simulationAdapter";
 import {
   JUNCTION_CLEARANCE_M,
+  MIN_OPPOSITE_KERB_M,
   MIN_SEPARATION_M,
   generateStreetAddresses,
   streetAddressesForMap,
@@ -116,16 +117,58 @@ describe("procedural street addresses", () => {
     }
   });
 
-  it("spaces drop-offs beyond the gig arrival radius", () => {
-    // advanceGig() completes within 14 m, so two stops closer than that would
-    // both be "the one you're at". This also settles the opposite-kerb case.
+  it("spaces drop-offs along a kerb, and never stacks two anywhere", () => {
     for (let i = 0; i < nycAddresses.length; i += 1) {
       for (let j = i + 1; j < nycAddresses.length; j += 1) {
-        expect(
-          distance(nycAddresses[i], nycAddresses[j]),
-          `${nycAddresses[i].name} vs ${nycAddresses[j].name}`,
-        ).toBeGreaterThanOrEqual(MIN_SEPARATION_M);
+        const a = nycAddresses[i];
+        const b = nycAddresses[j];
+        const label = `${a.name} vs ${b.name}`;
+        expect(distance(a, b), label).toBeGreaterThanOrEqual(MIN_OPPOSITE_KERB_M);
+        if (a.roadId === b.roadId && a.side === b.side) {
+          expect(distance(a, b), label).toBeGreaterThanOrEqual(MIN_SEPARATION_M);
+        }
       }
+    }
+  });
+
+  it("puts drop-offs mid-block rather than on the corners", () => {
+    // The walk used to stride from the junction clearance, and NYC's
+    // cross-street lanes are shorter than one stride — so every one of them
+    // produced a single address pinned exactly on the corner.
+    const onTheNose = nycAddresses.filter(
+      (a) => Math.abs(a.distanceAlongM - JUNCTION_CLEARANCE_M) < 1,
+    );
+    expect(onTheNose.map((a) => a.name)).toEqual([]);
+  });
+
+  it("populates both kerbs of the two-way streets", () => {
+    // Separation is measured at the lane point and opposing carriageways are
+    // only ~3.4 m apart, so a single distance rule let whichever lane the walk
+    // reached first claim the entire street.
+    const twoWay = [
+      "nyc-west-end",
+      "nyc-broadway",
+      "nyc-west-72",
+      "nyc-west-79",
+      "nyc-west-86",
+    ];
+    for (const roadId of twoWay) {
+      const sides = new Set(
+        nycAddresses.filter((a) => a.roadId === roadId).map((a) => a.side),
+      );
+      expect(sides, roadId).toEqual(new Set([-1, 1]));
+    }
+  });
+
+  it("numbers houses the way Manhattan does", () => {
+    for (const address of nycAddresses) {
+      const number = Number(address.name.split(" ")[0]);
+      // Even down the west side of an avenue and the south side of a cross
+      // street — the negative side on both axes.
+      const negativeSide = address.side === -1;
+      expect(number % 2 === 0, `${address.name} (side ${address.side})`).toBe(
+        negativeSide,
+      );
     }
   });
 

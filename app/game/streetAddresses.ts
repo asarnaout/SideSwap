@@ -78,6 +78,10 @@ export interface StreetAddress {
   /** Display name, e.g. "214 Amsterdam Ave". */
   readonly name: string;
   readonly kind: GigVenueKind;
+  /** The street this address is on (`LaneSegment.roadId`). */
+  readonly roadId: string;
+  /** Which kerb of that street: the two sides are -1 and +1. */
+  readonly side: -1 | 1;
   readonly laneId: string;
   readonly distanceAlongM: number;
   /** Lane-centreline point — the gig arrival target, matching authored venues. */
@@ -169,12 +173,25 @@ const FRONTAGE_PROBE_M = [12, 15, 18, 22] as const;
 export const JUNCTION_CLEARANCE_M = 32;
 
 /**
- * Minimum gap between two addresses. Comfortably larger than the 14 m gig
- * arrival radius so two stops can never both be "the one you're at" — which
- * also settles the opposite-kerb case, where two addresses facing each other
- * across a street would otherwise sit ~10 m apart.
+ * Minimum gap between two addresses **on the same kerb** — roughly a couple of
+ * brownstone frontages, so a street reads as a street rather than a row of
+ * pins.
  */
 export const MIN_SEPARATION_M = 40;
+
+/**
+ * Minimum gap between any two addresses regardless of side.
+ *
+ * This is deliberately much smaller than {@link MIN_SEPARATION_M}, because
+ * separation is measured at the *lane* point and the two carriageways of a
+ * two-way street are only ~3.4 m apart. Judging both kerbs by the same 40 m
+ * rule meant whichever lane the walk reached first claimed the whole street and
+ * the opposite kerb was left nearly empty. Two addresses facing each other
+ * across a road is exactly what real streets look like, and it is harmless
+ * here: only one address is ever the live gig target, so they cannot compete
+ * over the arrival radius.
+ */
+export const MIN_OPPOSITE_KERB_M = 12;
 
 /** How far an address must stay from an authored venue or a gas station. */
 const POI_CLEARANCE_M = 30;
@@ -197,6 +214,10 @@ interface StreetProfile {
   /** -1 when numbers count down as the axis rises (Manhattan's cross streets
    * number up as they run *west*, away from Central Park). */
   readonly axisSign?: -1 | 1;
+  /** House numbers per metre. Cross streets number far faster than avenues:
+   * a cross street covers one short block per number run, an avenue covers
+   * fourteen. */
+  readonly numbersPerM: number;
 }
 
 /**
@@ -205,14 +226,14 @@ interface StreetProfile {
  * it, and the cross streets start from the park and count west.
  */
 const STREET_PROFILES: Record<string, StreetProfile> = {
-  "nyc-west-end": { name: "West End Ave", axis: "z", baseNumber: 500 },
-  "nyc-broadway": { name: "Broadway", axis: "z", baseNumber: 2150 },
-  "nyc-amsterdam": { name: "Amsterdam Ave", axis: "z", baseNumber: 2050 },
-  "nyc-columbus": { name: "Columbus Ave", axis: "z", baseNumber: 1950 },
-  "nyc-central-park-west": { name: "Central Park West", axis: "z", baseNumber: 300 },
-  "nyc-west-72": { name: "W 72nd St", axis: "x", baseNumber: 200, axisSign: -1 },
-  "nyc-west-79": { name: "W 79th St", axis: "x", baseNumber: 200, axisSign: -1 },
-  "nyc-west-86": { name: "W 86th St", axis: "x", baseNumber: 200, axisSign: -1 },
+  "nyc-west-end": { name: "West End Ave", axis: "z", baseNumber: 500, numbersPerM: 0.3 },
+  "nyc-broadway": { name: "Broadway", axis: "z", baseNumber: 2150, numbersPerM: 0.3 },
+  "nyc-amsterdam": { name: "Amsterdam Ave", axis: "z", baseNumber: 2050, numbersPerM: 0.3 },
+  "nyc-columbus": { name: "Columbus Ave", axis: "z", baseNumber: 1950, numbersPerM: 0.3 },
+  "nyc-central-park-west": { name: "Central Park West", axis: "z", baseNumber: 300, numbersPerM: 0.3 },
+  "nyc-west-72": { name: "W 72nd St", axis: "x", baseNumber: 200, axisSign: -1, numbersPerM: 0.55 },
+  "nyc-west-79": { name: "W 79th St", axis: "x", baseNumber: 200, axisSign: -1, numbersPerM: 0.55 },
+  "nyc-west-86": { name: "W 86th St", axis: "x", baseNumber: 200, axisSign: -1, numbersPerM: 0.55 },
 };
 
 /** What a block's zoning makes the people living on its frontage. */
@@ -252,10 +273,11 @@ function houseNumber(
 ): number {
   const along = (profile.axis === "z" ? point.z : point.x) * (profile.axisSign ?? 1);
   const across = profile.axis === "z" ? kerb.x - point.x : kerb.z - point.z;
-  const raw = profile.baseNumber + Math.round(along / 4);
+  const raw = profile.baseNumber + Math.round(along * profile.numbersPerM);
   const number = Math.max(2, raw);
-  // Even on one side of the carriageway, odd on the other.
-  const wantEven = across > 0;
+  // Manhattan's convention: even numbers run down the west side of an avenue
+  // and the south side of a cross street — the negative side on both axes.
+  const wantEven = across < 0;
   return number % 2 === (wantEven ? 0 : 1) ? number : number + 1;
 }
 
@@ -285,13 +307,21 @@ export function generateStreetAddresses(
   for (const lane of lanes) {
     const profile = STREET_PROFILES[lane.roadId ?? ""];
     const length = polylineLength(lane.centerline);
-    if (length <= JUNCTION_CLEARANCE_M * 2) continue;
+    const usable = length - JUNCTION_CLEARANCE_M * 2;
+    if (usable <= 0) continue;
 
-    for (
-      let distance = JUNCTION_CLEARANCE_M;
-      distance <= length - JUNCTION_CLEARANCE_M;
-      distance += spacing * (0.75 + rng() * 0.5)
-    ) {
+    // Spread the block's addresses evenly across its usable run and centre them
+    // in their own share of it, rather than starting at the junction clearance
+    // and striding off. Striding put every short lane's single address at
+    // exactly JUNCTION_CLEARANCE_M — a rigid ring of drop-offs on the corners,
+    // since NYC's cross-street lanes are shorter than one stride.
+    const count = Math.max(1, Math.round(usable / spacing));
+    const step = usable / count;
+    for (let index = 0; index < count; index += 1) {
+      const distance =
+        JUNCTION_CLEARANCE_M +
+        step * (index + 0.5) +
+        (rng() - 0.5) * step * 0.5;
       const pose = resolveSimulationLaneAnchor([lane], {
         laneId: lane.id,
         distanceAlongM: distance,
@@ -331,13 +361,21 @@ export function generateStreetAddresses(
       // Parks and museum grounds have frontage but nobody lives there.
       if (input.landmarks.some((landmark) => isInsideRect(kerb, landmark))) continue;
 
-      if (
-        accepted.some(
-          (existing) => Math.hypot(existing.x - pose.x, existing.z - pose.z) < MIN_SEPARATION_M,
-        )
-      ) {
-        continue;
-      }
+      // Which kerb of the street this is: -1 and +1 are the two sides.
+      const side =
+        profile.axis === "z"
+          ? Math.sign(kerb.x - pose.x)
+          : Math.sign(kerb.z - pose.z);
+      const crowded = accepted.some((existing) => {
+        const gap = Math.hypot(existing.x - pose.x, existing.z - pose.z);
+        if (gap < MIN_OPPOSITE_KERB_M) return true;
+        return (
+          existing.roadId === lane.roadId &&
+          existing.side === side &&
+          gap < MIN_SEPARATION_M
+        );
+      });
+      if (crowded) continue;
       if (
         (input.occupiedPoints ?? []).some(
           (occupied) => Math.hypot(occupied.x - pose.x, occupied.z - pose.z) < POI_CLEARANCE_M,
@@ -359,6 +397,8 @@ export function generateStreetAddresses(
         id: `addr-${lane.roadId}-${number}`,
         name,
         kind: kinds[Math.floor(rng() * kinds.length)] ?? "residence",
+        roadId: lane.roadId ?? "",
+        side: side === 0 ? 1 : side < 0 ? -1 : 1,
         laneId: lane.id,
         distanceAlongM: distance,
         x: pose.x,
