@@ -854,6 +854,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     defaultSteeringSide: "left",
     speedUnit: "mph",
     currency: { code: "USD", symbol: "$", minorUnits: 2 },
+    centreLineColor: "yellow",
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
@@ -879,6 +880,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     defaultSteeringSide: "right",
     speedUnit: "mph",
     currency: { code: "GBP", symbol: "£", minorUnits: 2 },
+    centreLineColor: "white",
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
@@ -904,6 +906,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     defaultSteeringSide: "left",
     speedUnit: "kmh",
     currency: { code: "EUR", symbol: "€", minorUnits: 2 },
+    centreLineColor: "white",
     lanePolicy: {
       keepSide: "right",
       passingSide: "left",
@@ -929,6 +932,7 @@ export const COUNTRY_PROFILES: readonly CountryProfile[] = [
     defaultSteeringSide: "right",
     speedUnit: "kmh",
     currency: { code: "JPY", symbol: "¥", minorUnits: 0 },
+    centreLineColor: "white",
     lanePolicy: {
       keepSide: "left",
       passingSide: "right",
@@ -1347,15 +1351,20 @@ export const MAP_PACKS: readonly MapPack[] = [
       worldSize: point(760, 1080),
       roadWidth: 11,
       shoulderWidth: 1.5,
+      // US paint: yellow between opposing streams, white between lanes running
+      // the same way. So the six two-way roads all take a solid yellow centre
+      // line and only Amsterdam and Columbus — genuinely one-way — get white
+      // dashes. Before this the crosstown streets wore white centre lines and
+      // were indistinguishable from the one-way avenues (issue #5).
       roadSurfaces: [
         roadSurface("nyc-west-72", [nycNodes.we72.position, nycNodes.bw72.position, nycNodes.amst72.position, nycNodes.col72.position, nycNodes.cpw72.position], 10.4, ["nyc-72-e-1", "nyc-72-e-2", "nyc-72-e-3", "nyc-72-e-4", "nyc-72-w-1", "nyc-72-w-2", "nyc-72-w-3", "nyc-72-w-4"], "standard", [
-          roadMarking("nyc-72-centre", "centre_dashed", [nycNodes.we72.position, nycNodes.cpw72.position], "white"),
+          roadMarking("nyc-72-centre", "centre_solid", [nycNodes.we72.position, nycNodes.cpw72.position], "yellow"),
         ]),
         roadSurface("nyc-west-79", [nycNodes.we79.position, nycNodes.bw79.position, nycNodes.amst79.position, nycNodes.col79.position, nycNodes.cpw79.position], 10.4, ["nyc-79-e-1", "nyc-79-e-2", "nyc-79-e-3", "nyc-79-e-4", "nyc-79-w-1", "nyc-79-w-2", "nyc-79-w-3", "nyc-79-w-4"], "standard", [
-          roadMarking("nyc-79-centre", "centre_dashed", [nycNodes.we79.position, nycNodes.cpw79.position], "white"),
+          roadMarking("nyc-79-centre", "centre_solid", [nycNodes.we79.position, nycNodes.cpw79.position], "yellow"),
         ]),
         roadSurface("nyc-west-86", [nycNodes.we86.position, nycNodes.bw86.position, nycNodes.amst86.position, nycNodes.col86.position, nycNodes.cpw86.position], 10.4, ["nyc-86-e-1", "nyc-86-e-2", "nyc-86-e-3", "nyc-86-e-4", "nyc-86-w-1", "nyc-86-w-2", "nyc-86-w-3", "nyc-86-w-4"], "standard", [
-          roadMarking("nyc-86-centre", "centre_dashed", [nycNodes.we86.position, nycNodes.cpw86.position], "white"),
+          roadMarking("nyc-86-centre", "centre_solid", [nycNodes.we86.position, nycNodes.cpw86.position], "yellow"),
         ]),
         roadSurface("nyc-west-end", [nycNodes.we72.position, nycNodes.we79.position, nycNodes.we86.position], 11, ["nyc-we-n-1", "nyc-we-n-2", "nyc-we-s-1", "nyc-we-s-2"], "standard", [
           roadMarking("nyc-west-end-centre", "centre_solid", [nycNodes.we72.position, nycNodes.we86.position], "yellow"),
