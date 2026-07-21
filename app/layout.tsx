@@ -31,7 +31,7 @@ export async function generateMetadata(): Promise<Metadata> {
     openGraph: {
       title: "Curbside Rush",
       description:
-        "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
+        "Rise and grind — run gig deliveries and fares across low-poly cities from London to Tokyo.",
       type: "website",
       siteName: "Curbside Rush",
       url: origin,
@@ -48,7 +48,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title: "Curbside Rush",
       description:
-        "Pick up, drop off, repeat — run deliveries and fares from London to Tokyo.",
+        "Rise and grind — run gig deliveries and fares across low-poly cities from London to Tokyo.",
       images: [imageUrl],
     },
   };
