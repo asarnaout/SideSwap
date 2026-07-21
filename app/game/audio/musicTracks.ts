@@ -23,7 +23,7 @@ const BASE = "/audio/music";
 
 export const MUSIC_TRACKS: readonly MusicTrack[] = [
   { id: "nyc-upper-west-glide", title: "Upper West Glide", url: `${BASE}/nyc-upper-west-glide.mp3`, destinationId: "us-nyc" },
-  { id: "nyc-midnight-manhattan", title: "Midnight Manhattan", url: `${BASE}/nyc-midnight-manhattan.mp3`, destinationId: "us-nyc" },
+  { id: "nyc-west-end-glide", title: "West End Glide", url: `${BASE}/nyc-west-end-glide.mp3`, destinationId: "us-nyc" },
   { id: "london-exhibition-road-glide-1", title: "Exhibition Road Glide", url: `${BASE}/london-exhibition-road-glide-1.mp3`, destinationId: "uk-london" },
   { id: "london-exhibition-road-glide-2", title: "Exhibition Road Glide (II)", url: `${BASE}/london-exhibition-road-glide-2.mp3`, destinationId: "uk-london" },
   { id: "calais-coast-run-1", title: "Calais Coast Run", url: `${BASE}/calais-coast-run-1.mp3`, destinationId: "fr-calais" },

@@ -126,7 +126,7 @@ provided its licence text travels with the fonts (included alongside them):
   (`app/game/audio/`). No sample, recording, or third-party audio asset is used
   or shipped, so there is nothing here to license.
 - **`public/audio/music/*.mp3`** (8 background tracks) — generated with
-  [Suno](https://suno.com) on 2026-07-19 by the project owner while subscribed
+  [Suno](https://suno.com) on 2026-07-19 and 2026-07-21 by the project owner while subscribed
   to a paid (Pro/Premier) plan. Suno assigns the subscriber all of its right,
   title and interest in output generated during the subscription term, including
   commercial use, and that grant survives the subscription ending. See Suno's
@@ -142,7 +142,7 @@ provided its licence text travels with the fonts (included alongside them):
   | File | Title | City | Source |
   |---|---|---|---|
   | `nyc-upper-west-glide.mp3` | Upper West Glide | NYC | track1 |
-  | `nyc-midnight-manhattan.mp3` | Midnight Manhattan | NYC | track7 |
+  | `nyc-west-end-glide.mp3` | West End Glide | NYC | West End Glide |
   | `london-exhibition-road-glide-1.mp3` | Exhibition Road Glide | London | track2 |
   | `london-exhibition-road-glide-2.mp3` | Exhibition Road Glide | London | track3 |
   | `calais-coast-run-1.mp3` | Calais Coast Run | Calais | track4 |
