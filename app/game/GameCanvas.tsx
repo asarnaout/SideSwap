@@ -4474,7 +4474,11 @@ class BabylonGameSession {
     holder.position.set(x, config.groundY ?? 0, z);
     holder.rotation.y = heading + config.yawOffset;
     root.parent = holder;
-    root.scaling.setAll(config.scale);
+    root.scaling.set(
+      config.mirrorX ? -config.scale : config.scale,
+      config.scale,
+      config.scale,
+    );
     if (config.stripMeshPattern) {
       // Drop a diorama base slab so the building sits on the ground like a
       // normal storefront rather than on a plinth.
