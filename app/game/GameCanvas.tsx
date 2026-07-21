@@ -106,6 +106,7 @@ import {
   type BuildingSetId,
   type StreetPropConfig,
 } from "./buildingSets";
+import { orientMergedFacesOutward } from "./buildingWinding";
 import {
   buildCyclistVisual,
   buildPedestrianVisual,
@@ -4623,6 +4624,10 @@ class BabylonGameSession {
         : null;
       root.dispose(false, false);
       if (master) {
+        // The merge bakes the loader's reflection into the vertices, which leaves
+        // some models inside-out (street-facing walls back-face culled → hollow).
+        // Reverse the winding of just those; see buildingWinding.ts.
+        orientMergedFacesOutward(master);
         master.isVisible = false;
         master.isPickable = false;
       }
