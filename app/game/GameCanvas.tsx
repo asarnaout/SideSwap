@@ -1705,21 +1705,11 @@ const PROP_SIGN: PropKindConfig = {
   faceRoad: true,
 };
 
-// The background sidewalk crowd. Each is a character glb baked to a static
-// bind-pose mesh (via the building merged-master path) and drawn as one cheap
-// instance — no skeleton/animation cost — so the count can be high. A small
-// number of animated walkers (buildScenarioTraffic) supplies the motion up close.
-const CROWD_CHARACTER_SCALE = 0.374;
-const CROWD_CHARACTER_YAW = Math.PI;
-const CROWD_CHARACTER_URLS: readonly string[] = [
-  "/models/characters/person-a.glb",
-  "/models/characters/person-b.glb",
-  "/models/characters/person-c.glb",
-  "/models/characters/person-woman-a.glb",
-  "/models/characters/person-woman-b.glb",
-];
-/** Cap the instanced crowd so a dense grid can't run away; thinned on low-spec. */
-const CROWD_MAX = 150;
+// The sidewalk crowd is spawned as real animated (skinned) pedestrians — those
+// have proper cycling legs, but each is a unique skinned clone with its own
+// materials, so they're the expensive kind. Cap the count for the frame budget
+// (halved again on low-spec). Tunable if the target hardware has headroom.
+const CROWD_MAX = 16;
 
 /** Per-map roadside dressing: shared basics plus locally recognisable extras. */
 function roadsidePropKindsForMap(
@@ -1762,7 +1752,7 @@ function roadsidePropKindsForMap(
           jitterM: 4,
           lateralMarginM: 2.6,
           bothSides: true,
-          variants: CROWD_CHARACTER_URLS.length,
+          variants: 1,
           faceRoad: true,
         },
       ];
@@ -2625,34 +2615,15 @@ class BabylonGameSession {
   private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
   /** Sidewalk vendor carts to instantiate once their glbs preload. */
   private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
-  /** Background sidewalk crowd (instanced static characters) to build post-preload. */
-  private readonly pendingCrowd: { url: string; x: number; z: number; yaw: number }[] = [];
-  /** Character glbs the instanced crowd needs preloaded (city maps only). */
-  private crowdModelUrls: string[] = [];
-  /** Live background crowd: each is a static posed instance translated back and
-   * forth along the sidewalk (no skeleton), so it reads as walking cheaply. */
-  private readonly crowdMembers: {
-    inst: AbstractMesh;
-    ox: number;
-    oz: number;
-    dirX: number;
-    dirZ: number;
-    speed: number;
-    halfSpan: number;
-    offset: number;
-    sign: number;
-    facing: number;
-  }[] = [];
+  /** Sidewalk positions (+ toward-road yaw) for the distributed animated crowd,
+   * spawned as pedestrians once the character glbs preload. */
+  private readonly pendingCrowd: { x: number; z: number; yaw: number }[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
    * instead of ~15 — the fix for the culling spike on fast/turning driving.
    * null = merge failed for that url (falls back to the multi-mesh path). */
   private readonly buildingMasters = new Map<string, Mesh | null>();
-  /** Per-url crowd master: a character glb with its bind pose baked into static
-   * vertices (applySkeleton) then merged to one mesh, so each background person
-   * is a single cheap instance with no skeleton. null = build failed. */
-  private readonly crowdMasters = new Map<string, Mesh | null>();
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -3127,7 +3098,6 @@ class BabylonGameSession {
         ...characterModelUrls(),
         ...propModelUrls(),
         ...this.buildingModelUrls,
-        ...this.crowdModelUrls,
       ]);
     } catch {
       // Preload failed (e.g. offline / blocked). Proceed anyway so the loading
@@ -3353,7 +3323,6 @@ class BabylonGameSession {
     this.processSimulationEvents(events);
     if (events.length === 0) this.publishSimulationCoachMessage(snapshot);
     this.animatePedestrians(dt);
-    this.animateCrowd(dt);
     this.reportVulnerableRoadUserCollision();
     this.evaluateAuthoredProgress();
   }
@@ -4662,56 +4631,6 @@ class BabylonGameSession {
     return master;
   }
 
-  /**
-   * Like getBuildingMaster but for a rigged character: bake the skeleton's bind
-   * pose into each mesh's vertices (applySkeleton) before merging, so the
-   * multi-part rig doesn't scatter when the skeleton is dropped. The result is a
-   * static posed person, drawn as one instance with zero skeleton/animation
-   * cost — the whole point of the cheap background crowd.
-   */
-  private getCrowdMaster(url: string): Mesh | null {
-    const cached = this.crowdMasters.get(url);
-    if (cached !== undefined) return cached;
-    let master: Mesh | null = null;
-    const instance = instantiateModel(this.scene, url);
-    const root = instance?.rootNodes[0] as TransformNode | undefined;
-    if (instance && root) {
-      root.computeWorldMatrix(true);
-      const skeleton = instance.skeletons[0];
-      // Sample a mid-stride frame of the Walk clip so the baked pose reads as a
-      // person walking (one leg forward) once we translate them along the walk.
-      const walk = instance.animationGroups.find((g) => /walk/i.test(g.name));
-      if (walk) {
-        walk.play(true);
-        walk.goToFrame(walk.from + (walk.to - walk.from) * 0.3);
-        walk.pause();
-      }
-      skeleton?.prepare();
-      const meshes = root
-        .getChildMeshes(false)
-        .filter((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
-      for (const mesh of meshes) {
-        mesh.computeWorldMatrix(true);
-        if (skeleton && mesh.skeleton) {
-          mesh.applySkeleton(skeleton); // bake the sampled pose into the vertices
-          mesh.skeleton = null;
-        }
-      }
-      master = meshes.length
-        ? Mesh.MergeMeshes(meshes, true, true, undefined, false, true)
-        : null;
-      for (const group of instance.animationGroups) group.dispose();
-      root.dispose(false, false);
-      skeleton?.dispose();
-      if (master) {
-        master.isVisible = false;
-        master.isPickable = false;
-      }
-    }
-    this.crowdMasters.set(url, master);
-    return master;
-  }
-
   private buildInstancedBuildings() {
     if (this.visualPalette?.night) this.applyBuildingNightGlow();
     for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
@@ -4778,65 +4697,46 @@ class BabylonGameSession {
     }
     this.pendingVendors.length = 0;
 
-    // Background crowd: each character glb baked to a static bind-pose mesh
-    // (merged master) and drawn as one instance — no skeleton/animation cost.
-    // Thinned by the same low-spec keep-fraction as buildings.
-    const crowdBudget = Math.floor(this.pendingCrowd.length * this.buildingKeepFraction);
-    let crowdIndex = 0;
-    for (const person of this.pendingCrowd) {
-      if (crowdIndex >= crowdBudget) break;
-      const master = this.getCrowdMaster(person.url);
-      if (!master) continue;
-      const inst = master.createInstance(`crowd-${crowdIndex}`);
-      // person.yaw faces the road; walk along it (± perpendicular), alternating.
-      const side = crowdIndex % 2 === 0 ? 1 : -1;
-      const walkHeading = person.yaw + (side * Math.PI) / 2;
-      const facing = walkHeading + CROWD_CHARACTER_YAW;
-      const offset = ((crowdIndex % 7) - 3) * 1.6;
-      inst.rotation.y = offset >= 0 ? facing : facing + Math.PI;
-      inst.position.set(person.x, 0.05, person.z);
-      inst.scaling.setAll(CROWD_CHARACTER_SCALE);
-      inst.isPickable = false;
-      // Not frozen — these translate each frame (but never re-skin, so it stays
-      // cheap). One glide direction/speed spread so they don't march in lockstep.
-      this.crowdMembers.push({
-        inst,
-        ox: person.x,
-        oz: person.z,
-        dirX: Math.sin(walkHeading),
-        dirZ: Math.cos(walkHeading),
-        speed: 0.85 + (crowdIndex % 5) * 0.12,
-        halfSpan: 6,
-        offset,
-        sign: offset >= 0 ? 1 : -1,
-        facing,
+    // Sidewalk crowd: real animated (skinned) pedestrians distributed along the
+    // sidewalks — proper cycling legs, correct facing — added to `pedestrians`
+    // so animatePedestrians walks them. Skinned people are the expensive kind,
+    // so the count is capped (CROWD_MAX) and halved on low-spec devices; the
+    // handful of crosswalk peds from buildScenarioTraffic stay on top.
+    const pedCap = Math.floor(
+      Math.min(CROWD_MAX, this.pendingCrowd.length) * this.buildingKeepFraction,
+    );
+    const crowdClothing = [
+      new Color3(0.82, 0.21, 0.15),
+      new Color3(0.2, 0.35, 0.6),
+      new Color3(0.3, 0.5, 0.35),
+      new Color3(0.7, 0.66, 0.5),
+      new Color3(0.55, 0.3, 0.5),
+    ];
+    for (let i = 0; i < pedCap; i += 1) {
+      const person = this.pendingCrowd[i];
+      // person.yaw faces the road; walk along it (± perpendicular).
+      const walkHeading = person.yaw + ((i % 2 === 0 ? 1 : -1) * Math.PI) / 2;
+      const node = new TransformNode(`crowd-ped-${i}`, this.scene);
+      node.position.set(person.x, 0.08, person.z);
+      node.rotation.y = walkHeading;
+      const clothing = crowdClothing[i % crowdClothing.length];
+      const speed = 1.0 + (i % 5) * 0.12;
+      const visual = this.buildRoadUserVisual(node, `crowd-ped-${i}`, false, i, clothing, speed);
+      this.pedestrians.push({
+        node,
+        phase: (i * 2.3) % 18,
+        speed,
+        z: person.z,
+        origin: { x: person.x, z: person.z },
+        heading: walkHeading,
+        span: 12,
+        kind: "pedestrian",
+        visual,
+        variant: i,
+        clothingColor: clothing,
       });
-      crowdIndex += 1;
     }
     this.pendingCrowd.length = 0;
-  }
-
-  /**
-   * Walk the background crowd: translate each posed instance back and forth
-   * along its stretch of sidewalk, flipping its facing at each end. No skeleton
-   * work — just a position + occasional rotation per person, so ~150 of them
-   * stay cheap.
-   */
-  private animateCrowd(dt: number) {
-    for (const m of this.crowdMembers) {
-      m.offset += m.speed * dt * m.sign;
-      if (m.offset > m.halfSpan) {
-        m.offset = m.halfSpan;
-        m.sign = -1;
-        m.inst.rotation.y = m.facing + Math.PI;
-      } else if (m.offset < -m.halfSpan) {
-        m.offset = -m.halfSpan;
-        m.sign = 1;
-        m.inst.rotation.y = m.facing;
-      }
-      m.inst.position.x = m.ox + m.dirX * m.offset;
-      m.inst.position.z = m.oz + m.dirZ * m.offset;
-    }
   }
 
   /**
@@ -5663,9 +5563,6 @@ class BabylonGameSession {
       ...buildingSetUrls(setIds),
       ...(setIds.length ? nycVendorUrls() : []),
     ];
-    // The instanced crowd's character glbs (kept out of buildingModelUrls so the
-    // night-glow pass never tints people).
-    this.crowdModelUrls = setIds.length ? [...CROWD_CHARACTER_URLS] : [];
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(
@@ -6714,10 +6611,8 @@ class BabylonGameSession {
         continue;
       }
       if (placement.kind === "crowd") {
-        if (this.pendingCrowd.length < CROWD_MAX) {
-          const url = CROWD_CHARACTER_URLS[placement.variant % CROWD_CHARACTER_URLS.length];
-          this.pendingCrowd.push({ url, x: placement.x, z: placement.z, yaw: placement.rotationY });
-        }
+        // Collect sidewalk positions; capped when spawned as animated peds.
+        this.pendingCrowd.push({ x: placement.x, z: placement.z, yaw: placement.rotationY });
         continue;
       }
       const parts = partsFor(placement.kind, placement.variant);
