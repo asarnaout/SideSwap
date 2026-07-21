@@ -129,8 +129,12 @@ import {
   buildCyclistVisual,
   buildPedestrianVisual,
   characterModelUrls,
+  CHARACTER_MODELS,
   type CharacterVisual,
 } from "./characterMeshes";
+import { CrowdRenderer } from "./crowdRenderer";
+import { createCrowdSim, type CrowdSim } from "./crowdWalkers";
+import { buildPavementGraph } from "./pavementPaths";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -1843,11 +1847,37 @@ const PROP_SIGN: PropKindConfig = {
   faceRoad: true,
 };
 
-// The sidewalk crowd is spawned as real animated (skinned) pedestrians — those
-// have proper cycling legs, but each is a unique skinned clone with its own
-// materials, so they're the expensive kind. Cap the count for the frame budget
-// (halved again on low-spec). Tunable if the target hardware has headroom.
-const CROWD_MAX = 16;
+// The ambient sidewalk crowd: walkers simulated on the pavement rail graph
+// (crowdWalkers) inside a bubble around the player, drawn as GPU-animated thin
+// instances (crowdRenderer). Counts are per map — the whole crowd costs a few
+// meshes regardless, so these are set by how busy each city should feel, not
+// by a draw-call budget. Radii track each map's fog: recycling happens beyond
+// what the player can see. Maps absent here (the orientation yard, the two
+// cities being retired) have no ambient crowd.
+const AMBIENT_CROWD_CONFIG: Readonly<
+  Record<
+    string,
+    {
+      count: number;
+      innerRadiusM: number;
+      outerRadiusM: number;
+      recycleRadiusM: number;
+    }
+  >
+> = {
+  "nyc-upper-west-side": { count: 96, innerRadiusM: 25, outerRadiusM: 130, recycleRadiusM: 170 },
+  "tokyo-setagaya": { count: 56, innerRadiusM: 18, outerRadiusM: 100, recycleRadiusM: 140 },
+  "london-south-kensington": { count: 64, innerRadiusM: 20, outerRadiusM: 120, recycleRadiusM: 160 },
+};
+
+/** Clothing tints shared by the crowd and the scenario/yard pedestrians. */
+const CROWD_CLOTHING_COLORS = [
+  { r: 0.82, g: 0.21, b: 0.15 },
+  { r: 0.2, g: 0.35, b: 0.6 },
+  { r: 0.3, g: 0.5, b: 0.35 },
+  { r: 0.7, g: 0.66, b: 0.5 },
+  { r: 0.55, g: 0.3, b: 0.5 },
+];
 
 /** Per-map roadside dressing: shared basics plus locally recognisable extras. */
 function roadsidePropKindsForMap(
@@ -1881,18 +1911,6 @@ function roadsidePropKindsForMap(
           bothSides: false,
           alternateSides: true,
           variants: Math.max(1, NYC_VENDORS.length),
-          faceRoad: true,
-        },
-        // Background pedestrian crowd on both sidewalks (routed to pendingCrowd,
-        // built as instanced static characters). faceRoad gives a road-relative
-        // rotation the crowd walk direction is derived from.
-        {
-          kind: "crowd",
-          spacingM: 12,
-          jitterM: 4,
-          lateralMarginM: 2.6,
-          bothSides: true,
-          variants: 1,
           faceRoad: true,
         },
       ];
@@ -2763,7 +2781,10 @@ class BabylonGameSession {
   private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
   /** Sidewalk positions (+ toward-road yaw) for the distributed animated crowd,
    * spawned as pedestrians once the character glbs preload. */
-  private readonly pendingCrowd: { x: number; z: number; yaw: number }[] = [];
+  private crowdSim: CrowdSim | null = null;
+  private crowdRenderer: CrowdRenderer | null = null;
+  private crowdDirty = false;
+  private readonly crowdProbePoint = new Vector3();
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -3229,6 +3250,9 @@ class BabylonGameSession {
     this.riderVisual?.dispose();
     this.riderNode?.dispose(false, false);
     this.gigMarkerNode?.dispose(false, true);
+    this.crowdRenderer?.dispose();
+    this.crowdRenderer = null;
+    this.crowdSim = null;
     disposeModels(this.scene);
     this.scene.dispose();
     this.engine.dispose();
@@ -3257,6 +3281,7 @@ class BabylonGameSession {
     this.upgradeRoadUsersToModels();
     this.upgradePropsToModels();
     this.buildInstancedBuildings();
+    this.buildAmbientCrowd();
     // Freeze the dense scenery once the first frame has computed its matrices.
     this.scene.onAfterRenderObservable.addOnce(() => this.freezeStaticScenery());
     // Compile every shader + upload every buffer now, while the loading gate is
@@ -3354,6 +3379,71 @@ class BabylonGameSession {
         pedestrian.speed,
       );
     }
+  }
+
+  /**
+   * Stands up the ambient sidewalk crowd: the pavement rail graph, the walker
+   * bubble simulation, and the VAT thin-instance renderer. Map-gated by
+   * AMBIENT_CROWD_CONFIG; any failure (models missing, bake produced no
+   * motion) simply leaves the map without an ambient crowd.
+   */
+  private buildAmbientCrowd() {
+    const mapPack = this.options.mapPack;
+    const config = mapPack ? AMBIENT_CROWD_CONFIG[mapPack.id] : undefined;
+    if (!mapPack || !config) return;
+    const surfaces = mapPack.geometry.roadSurfaces;
+    if (!surfaces?.length) return;
+    const palette = resolveMapVisualPalette(mapPack.id);
+    // The exact sidewalk band the environment renders, so walkers stay on it.
+    const sidewalkWidthM = palette.paved
+      ? PAVED_SIDEWALK_WIDTH
+      : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+    const graph = buildPavementGraph(surfaces, { sidewalkWidthM });
+    const sim = createCrowdSim(graph, {
+      count: Math.floor(config.count * this.buildingKeepFraction),
+      seed: hashStringToSeed(`${mapPack.id}-crowd`),
+      innerRadiusM: config.innerRadiusM,
+      outerRadiusM: config.outerRadiusM,
+      recycleRadiusM: config.recycleRadiusM,
+      minSpeedMps: 0.9,
+      maxSpeedMps: 1.7,
+      turnPauseSeconds: 1,
+      modelCount: CHARACTER_MODELS.length,
+      tintCount: CROWD_CLOTHING_COLORS.length,
+    });
+    if (!sim) return;
+    // Prime the pool around the spawn point so the street is already lived-in
+    // when the loading gate lifts.
+    sim.step(0, { x: this.playerState.x, z: this.playerState.z }, () => true);
+    const renderer = new CrowdRenderer(this.scene);
+    if (!renderer.build(sim.walkers, CROWD_CLOTHING_COLORS)) {
+      renderer.dispose();
+      return;
+    }
+    this.crowdSim = sim;
+    this.crowdRenderer = renderer;
+  }
+
+  /** Whether a disc on the ground is inside the camera frustum. One frame
+   * stale after a camera cut; the bubble's radius condition covers that. */
+  private readonly crowdVisibility = (x: number, z: number, radiusM: number): boolean => {
+    const planes = this.scene.frustumPlanes;
+    if (!planes) return true;
+    this.crowdProbePoint.set(x, 1, z);
+    for (const plane of planes) {
+      if (plane.dotCoordinate(this.crowdProbePoint) < -radiusM) return false;
+    }
+    return true;
+  };
+
+  private stepAmbientCrowd(dt: number) {
+    if (!this.crowdSim || !this.crowdRenderer) return;
+    this.crowdSim.step(
+      dt,
+      { x: this.playerState.x, z: this.playerState.z },
+      this.crowdVisibility,
+    );
+    this.crowdDirty = true;
   }
 
   /**
@@ -3464,6 +3554,14 @@ class BabylonGameSession {
       }
     }
 
+    if (this.crowdRenderer) {
+      if (!this.paused) this.crowdRenderer.advanceTime(frameSeconds);
+      if (this.crowdDirty && this.crowdSim) {
+        this.crowdRenderer.writeFrame(this.crowdSim.walkers);
+        this.crowdDirty = false;
+      }
+    }
+
     const interpolation = this.paused ? 1 : this.accumulator / FIXED_STEP;
     this.updatePlayerVisuals(interpolation);
     this.updateGuidanceVisuals();
@@ -3533,6 +3631,7 @@ class BabylonGameSession {
     this.processSimulationEvents(events);
     if (events.length === 0) this.publishSimulationCoachMessage(snapshot);
     this.animatePedestrians(dt);
+    this.stepAmbientCrowd(dt);
     this.reportVulnerableRoadUserCollision();
     this.evaluateAuthoredProgress();
   }
@@ -3564,6 +3663,32 @@ class BabylonGameSession {
           : "Brake early and yield until the crossing is completely clear.",
         {
           roadUserType: cyclist ? "cyclist" : "pedestrian",
+          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+        },
+      );
+      if (!reported) return;
+      const snapshot = this.simulation.getSnapshot();
+      this.applySimulationSnapshot(snapshot);
+      this.processSimulationEvents(this.simulation.drainEvents());
+      return;
+    }
+    // The ambient crowd walks the pavement, so hitting one means the car is
+    // up on the kerb — the same offence the old clone crowd reported.
+    if (!this.crowdSim) return;
+    for (const walker of this.crowdSim.walkers) {
+      if (
+        Math.hypot(
+          this.playerState.x - walker.x,
+          this.playerState.z - walker.z,
+        ) >= 1.55
+      ) {
+        continue;
+      }
+      const reported = this.simulation.reportExternalCollision(
+        "Your vehicle struck a pedestrian on the pavement.",
+        "Keep the car off the kerb and clear of people on foot.",
+        {
+          roadUserType: "pedestrian",
           impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
         },
       );
@@ -4897,46 +5022,6 @@ class BabylonGameSession {
     }
     this.pendingVendors.length = 0;
 
-    // Sidewalk crowd: real animated (skinned) pedestrians distributed along the
-    // sidewalks — proper cycling legs, correct facing — added to `pedestrians`
-    // so animatePedestrians walks them. Skinned people are the expensive kind,
-    // so the count is capped (CROWD_MAX) and halved on low-spec devices; the
-    // handful of crosswalk peds from buildScenarioTraffic stay on top.
-    const pedCap = Math.floor(
-      Math.min(CROWD_MAX, this.pendingCrowd.length) * this.buildingKeepFraction,
-    );
-    const crowdClothing = [
-      new Color3(0.82, 0.21, 0.15),
-      new Color3(0.2, 0.35, 0.6),
-      new Color3(0.3, 0.5, 0.35),
-      new Color3(0.7, 0.66, 0.5),
-      new Color3(0.55, 0.3, 0.5),
-    ];
-    for (let i = 0; i < pedCap; i += 1) {
-      const person = this.pendingCrowd[i];
-      // person.yaw faces the road; walk along it (± perpendicular).
-      const walkHeading = person.yaw + ((i % 2 === 0 ? 1 : -1) * Math.PI) / 2;
-      const node = new TransformNode(`crowd-ped-${i}`, this.scene);
-      node.position.set(person.x, 0.08, person.z);
-      node.rotation.y = walkHeading;
-      const clothing = crowdClothing[i % crowdClothing.length];
-      const speed = 1.0 + (i % 5) * 0.12;
-      const visual = this.buildRoadUserVisual(node, `crowd-ped-${i}`, false, i, clothing, speed);
-      this.pedestrians.push({
-        node,
-        phase: (i * 2.3) % 18,
-        speed,
-        z: person.z,
-        origin: { x: person.x, z: person.z },
-        heading: walkHeading,
-        span: 12,
-        kind: "pedestrian",
-        visual,
-        variant: i,
-        clothingColor: clothing,
-      });
-    }
-    this.pendingCrowd.length = 0;
   }
 
   /**
@@ -6836,11 +6921,6 @@ class BabylonGameSession {
         }
         continue;
       }
-      if (placement.kind === "crowd") {
-        // Collect sidewalk positions; capped when spawned as animated peds.
-        this.pendingCrowd.push({ x: placement.x, z: placement.z, yaw: placement.rotationY });
-        continue;
-      }
       const parts = partsFor(placement.kind, placement.variant);
       const sin = Math.sin(placement.rotationY);
       const cos = Math.cos(placement.rotationY);
@@ -7445,7 +7525,35 @@ class BabylonGameSession {
         totalMeshes: this.scene.meshes.length,
         activeMeshes: this.scene.getActiveMeshes().length,
         materials: this.scene.materials.length,
+        // Cumulative since page load (no per-frame reset without scene
+        // instrumentation) — meaningful as a delta between two polls.
+        drawCallsCumulative:
+          (this.engine as unknown as { _drawCalls?: { current: number } })
+            ._drawCalls?.current ?? null,
+        crowdInstances: this.crowdRenderer?.instanceCount ?? 0,
+        crowdMeshes: this.crowdRenderer?.meshCount ?? 0,
       });
+      // Walker states + bubble, so the capture harness can assert the crowd
+      // moves smoothly and never pops in or out on screen.
+      debugWindow.__sideswapCrowdDebug = () => {
+        const round = (value: number) => Math.round(value * 100) / 100;
+        return {
+          total: this.crowdSim?.walkers.length ?? 0,
+          byModel: this.crowdRenderer?.modelCounts ?? [],
+          vatTime: round(this.crowdRenderer?.vatTime ?? 0),
+          walkers:
+            this.crowdSim?.walkers.map((walker) => ({
+              x: round(walker.x),
+              z: round(walker.z),
+              edge: walker.edgeId,
+              s: round(walker.s),
+              dir: walker.dir,
+              state: walker.state,
+              speed: round(walker.speedMps),
+              recycled: walker.justRecycled,
+            })) ?? [],
+        };
+      };
     }
   }
 
