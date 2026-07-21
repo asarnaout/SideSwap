@@ -122,6 +122,13 @@ export interface CountryProfile {
   readonly defaultSteeringSide: SteeringSide;
   readonly speedUnit: SpeedUnit;
   readonly currency: CurrencyProfile;
+  /**
+   * Colour this country paints between *opposing* streams of traffic. North
+   * America uses yellow and reserves white for lanes running the same way, so
+   * a white centre line there reads as "this street is one-way"; Europe and
+   * Japan paint both in white. Lane dividers are white everywhere.
+   */
+  readonly centreLineColor: "white" | "yellow";
   readonly lanePolicy: LanePolicy;
   readonly roundaboutPolicy: RoundaboutPolicy;
   readonly priorityPolicy: string;

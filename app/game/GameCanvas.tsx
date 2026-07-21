@@ -109,6 +109,23 @@ import {
 import { orientMergedFacesOutward } from "./buildingWinding";
 import { streetAddressesForMap } from "./streetAddresses";
 import {
+  buildConnectedNpcPath,
+  type NpcPathSegment as NpcPathSegmentData,
+} from "./npcPaths";
+import {
+  splitMarkingAtCrossings,
+  type MarkingPoint,
+} from "./roadMarkings";
+
+/** Marking styles that run along a road, and so break where one crosses. */
+const LANE_PAINT_STYLES = new Set([
+  "centre_solid",
+  "centre_dashed",
+  "lane_solid",
+  "lane_dashed",
+  "edge_solid",
+]);
+import {
   buildCyclistVisual,
   buildPedestrianVisual,
   characterModelUrls,
@@ -1125,12 +1142,7 @@ interface PlayerState {
   indicator: TurnIndicator;
 }
 
-interface NpcPathSegment {
-  readonly laneId: string;
-  readonly start: GameCanvasPoint;
-  readonly end: GameCanvasPoint;
-  readonly length: number;
-}
+type NpcPathSegment = NpcPathSegmentData;
 
 interface NpcRenderSnapshot {
   readonly x: number;
@@ -1157,6 +1169,8 @@ interface NpcVehicle {
   pathSegments?: readonly NpcPathSegment[];
   active?: boolean;
   loop?: boolean;
+  /** Segment the circuit restarts from once the route's run-in is done. */
+  loopStartSegment?: number;
   currentSpeed?: number;
   respawnAfterSeconds?: number;
   spawnIndex?: number;
@@ -4135,49 +4149,12 @@ class BabylonGameSession {
     mapPack: GameCanvasMapPack,
     startLaneId: string,
     branchOffset: number,
-  ): { segments: NpcPathSegment[]; loop: boolean } {
-    const lanes = new Map(mapPack.laneGraph.lanes.map((lane) => [lane.id, lane]));
-    const segments: NpcPathSegment[] = [];
-    const visited = new Set<string>();
-    let laneId: string | undefined = startLaneId;
-    let loop = false;
-    for (let hop = 0; laneId && hop < 24; hop += 1) {
-      const lane = lanes.get(laneId);
-      if (!lane || lane.centerline.length < 2) break;
-      if (visited.has(lane.id)) {
-        const first = segments[0];
-        const last = segments.at(-1);
-        loop = Boolean(
-          first &&
-          last &&
-          Math.hypot(last.end.x - first.start.x, last.end.z - first.start.z) < 1.5,
-        );
-        break;
-      }
-      visited.add(lane.id);
-      for (let index = 0; index < lane.centerline.length - 1; index += 1) {
-        const start = lane.centerline[index];
-        const end = lane.centerline[index + 1];
-        const length = Math.hypot(end.x - start.x, end.z - start.z);
-        if (length > 0.01) segments.push({ laneId: lane.id, start, end, length });
-      }
-      const successors = lane.successors ?? [];
-      if (successors.length === 0) break;
-      const successorId = successors[(branchOffset + hop) % successors.length];
-      const successor = lanes.get(successorId);
-      const last = segments.at(-1);
-      const firstSuccessorPoint = successor?.centerline[0];
-      if (
-        !successor ||
-        !last ||
-        !firstSuccessorPoint ||
-        Math.hypot(last.end.x - firstSuccessorPoint.x, last.end.z - firstSuccessorPoint.z) > 2.5
-      ) {
-        break;
-      }
-      laneId = successorId;
-    }
-    return { segments, loop };
+  ): { segments: NpcPathSegment[]; loop: boolean; loopStartSegment: number } {
+    return buildConnectedNpcPath(
+      mapPack.laneGraph.lanes,
+      startLaneId,
+      branchOffset,
+    );
   }
 
   private isNpcPositionSafe(
@@ -4317,7 +4294,9 @@ class BabylonGameSession {
         distance -= segment.length;
         segmentIndex += 1;
         if (segmentIndex >= segments.length) {
-          if (npc.loop) segmentIndex = 0;
+          // Back to the top of the circuit — not to the top of the route, which
+          // may begin with an approach the car only ever drives once.
+          if (npc.loop) segmentIndex = npc.loopStartSegment ?? 0;
           else {
             npc.active = false;
             npc.respawnAfterSeconds = 2.5;
@@ -5516,37 +5495,48 @@ class BabylonGameSession {
       for (const marking of surface.markings) {
         const material =
           marking.color === "yellow" ? yellowMarkingMaterial : laneMaterial;
-        if (
-          marking.style === "centre_dashed" ||
-          marking.style === "lane_dashed" ||
-          marking.style === "give_way"
-        ) {
-          this.createDashedPath(
-            `road-marking-${surface.id}-${marking.id}`,
-            marking.points,
-            marking.style === "give_way" ? 0.24 : 0.11,
+        // Give-way bars and box junctions belong *to* a junction; everything
+        // else is lane paint, which stops at one.
+        const runs = LANE_PAINT_STYLES.has(marking.style)
+          ? splitMarkingAtCrossings(
+              marking.points,
+              roadSurfaces.filter((other) => other.id !== surface.id),
+            )
+          : [marking.points as MarkingPoint[]];
+        for (const [runIndex, run] of runs.entries()) {
+          const name = `road-marking-${surface.id}-${marking.id}-${runIndex}`;
+          if (
+            marking.style === "centre_dashed" ||
+            marking.style === "lane_dashed" ||
+            marking.style === "give_way"
+          ) {
+            this.createDashedPath(
+              name,
+              run,
+              marking.style === "give_way" ? 0.24 : 0.11,
+              0.12,
+              material,
+              marking.style === "centre_dashed"
+                ? 3.2
+                : marking.style === "give_way"
+                  ? 0.65
+                  : 2.2,
+              marking.style === "centre_dashed"
+                ? 4.3
+                : marking.style === "give_way"
+                  ? 0.55
+                  : 3.4,
+            );
+            continue;
+          }
+          this.createSolidPath(
+            name,
+            run,
+            marking.style === "box_junction" ? 0.18 : 0.11,
             0.12,
             material,
-            marking.style === "centre_dashed"
-              ? 3.2
-              : marking.style === "give_way"
-                ? 0.65
-                : 2.2,
-            marking.style === "centre_dashed"
-              ? 4.3
-              : marking.style === "give_way"
-                ? 0.55
-                : 3.4,
           );
-          continue;
         }
-        this.createSolidPath(
-          `road-marking-${surface.id}-${marking.id}`,
-          marking.points,
-          marking.style === "box_junction" ? 0.18 : 0.11,
-          0.12,
-          material,
-        );
       }
     }
     for (const [routeIndex, laneId] of (this.options.lesson?.route ?? []).entries()) {
@@ -8450,6 +8440,7 @@ class BabylonGameSession {
         spawnPathDistance: initialDistance,
         spawnIndex: index % Math.max(1, vehicleSpawns.length),
         loop: connectedPath.loop,
+        loopStartSegment: connectedPath.loopStartSegment,
         active: true,
       };
       const safeAtStart = this.isNpcPositionSafe(npc, x, z, heading, false);
