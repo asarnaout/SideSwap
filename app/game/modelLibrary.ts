@@ -232,7 +232,7 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
   // Enlarged from 0.045 to read at a realistic size next to the avenue buildings.
   // groundY drops it back onto the road after GameCanvas strips its raised base
   // platform (see instantiateProp): its body sits ~11.7 native units up, ×0.07.
-  restaurant: { url: `${P}/restaurant.glb`, scale: 0.07, yawOffset: Math.PI / 2, groundY: -0.75 },
+  restaurant: { url: `${P}/restaurant.glb`, scale: 0.085, yawOffset: Math.PI / 2, groundY: -0.92 },
   shop: { url: `${P}/shop.glb`, scale: 4, yawOffset: Math.PI / 2 },
   residence: { url: `${P}/residence.glb`, scale: 2.6, yawOffset: Math.PI / 2 },
   office: { url: `${P}/office.glb`, scale: 2.8, yawOffset: Math.PI / 2 },

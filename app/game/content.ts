@@ -1406,7 +1406,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 18.7 },
       ],
       gigVenues: [
-        { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 240 }, footprint: point(16, 12), name: "Amsterdam Diner" },
+        { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 262 }, footprint: point(28, 20), name: "Amsterdam Diner", setbackM: 18 },
         { id: "nyc-v2", kind: "shop", anchor: { laneId: "nyc-86-e-3", distanceAlongM: 70 }, footprint: point(16, 12), name: "West 86th Grocers" },
         { id: "nyc-v3", kind: "residence", anchor: { laneId: "nyc-col-s-1b", distanceAlongM: 445 }, footprint: point(14, 12), name: "Columbus Apartments" },
         { id: "nyc-v4", kind: "office", anchor: { laneId: "nyc-we-n-2", distanceAlongM: 240 }, footprint: point(16, 14), name: "West End Offices" },
