@@ -106,6 +106,7 @@ import {
   type BuildingSetId,
   type StreetPropConfig,
 } from "./buildingSets";
+import { orientMergedFacesOutward } from "./buildingWinding";
 import {
   buildCyclistVisual,
   buildPedestrianVisual,
@@ -1734,8 +1735,10 @@ function roadsidePropKindsForMap(
         // computed here but the carts are glb instances (routed out of the
         // procedural-prop loop into pendingVendors), not master boxes.
         {
+          // Sparser than one-per-frontage: a dumpster/cart every ~130 m curbside,
+          // not outside every building (which read as unrealistic clutter).
           kind: "vendor",
-          spacingM: 82,
+          spacingM: 130,
           jitterM: 24,
           lateralMarginM: 1.4,
           bothSides: false,
@@ -4623,6 +4626,10 @@ class BabylonGameSession {
         : null;
       root.dispose(false, false);
       if (master) {
+        // The merge bakes the loader's reflection into the vertices, which leaves
+        // some models inside-out (street-facing walls back-face culled → hollow).
+        // Reverse the winding of just those; see buildingWinding.ts.
+        orientMergedFacesOutward(master);
         master.isVisible = false;
         master.isPickable = false;
       }

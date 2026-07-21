@@ -47,16 +47,20 @@ const PLACEMENTS: Record<string, BuildingPlacementConfig> = {
   "nyc-midrise-b": { scale: 8, groundY: 0, footprintM: 18, frontOffset: 0 },
   "nyc-midrise-low": { scale: 9, groundY: 0, footprintM: 6, frontOffset: 0 },
   // Brownstone / rowhouse (scaled by width so heights vary for a real rowhouse run)
-  "nyc-brownstone-a": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: 0 },
-  "nyc-brownstone-b": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: 0 },
-  "nyc-brownstone-c": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: 0 },
-  "nyc-brownstone-d": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: 0 },
-  "nyc-tenement": { scale: 1.1, groundY: 0, footprintM: 12, frontOffset: 0 },
+  // These low-poly kits author their facade (windows/awning/fire escape) on
+  // local +Z, not the -Z the slotting assumes — so they need a half-turn to
+  // face the street (verified per-model from a 4-side render).
+  "nyc-brownstone-a": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: Math.PI },
+  "nyc-brownstone-b": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: Math.PI },
+  "nyc-brownstone-c": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: Math.PI },
+  "nyc-brownstone-d": { scale: 5.5, groundY: 0, footprintM: 11, frontOffset: Math.PI },
+  "nyc-tenement": { scale: 1.1, groundY: 0, footprintM: 12, frontOffset: Math.PI },
   // Detached houses
+  // house-a's door is on local -Z (already faces the street); house-b's is on +Z.
   "nyc-house-a": { scale: 0.095, groundY: 0.11, footprintM: 11, frontOffset: 0 },
-  "nyc-house-b": { scale: 0.44, groundY: 0, footprintM: 11, frontOffset: 0 },
-  // Ground-floor retail
-  "nyc-shop-corner": { scale: 7.5, groundY: 0, footprintM: 10, frontOffset: 0 },
+  "nyc-house-b": { scale: 0.44, groundY: 0, footprintM: 11, frontOffset: Math.PI },
+  // Ground-floor retail (storefront on local +Z)
+  "nyc-shop-corner": { scale: 7.5, groundY: 0, footprintM: 10, frontOffset: Math.PI },
 };
 
 export type BuildingSetId =
