@@ -130,7 +130,7 @@ afterEach(() => {
 
 const findTagline = () =>
   screen.findByRole("heading", {
-    name: /Pick up\. Drop off\. Repeat\./i,
+    name: /Rise and Grind/i,
   });
 
 const startButton = (destinationId: Parameters<typeof getDestinationProfile>[0]) =>
@@ -208,7 +208,7 @@ describe("gig launcher", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Settings$/i }));
     expect(
-      await screen.findByRole("heading", { name: /comfortable to read/i }),
+      await screen.findByRole("heading", { name: /driving preferences/i }),
     ).toBeVisible();
   });
 
