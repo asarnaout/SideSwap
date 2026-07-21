@@ -111,6 +111,37 @@ export function missingBuildingConfigs(): string[] {
   return [...missing];
 }
 
+/** A street-life prop (vendor cart) placed on the sidewalk, instanced like a
+ * building. Scale/groundY derived from each glb's measured native bounds. */
+export interface StreetPropConfig {
+  readonly url: string;
+  readonly scale: number;
+  readonly groundY: number;
+  /** Post-scale footprint (m) — used to keep vendors clear of each other. */
+  readonly footprintM: number;
+}
+
+const VENDOR_CONFIGS: Record<string, Omit<StreetPropConfig, "url">> = {
+  "vendor-stand": { scale: 2.1, groundY: 0, footprintM: 2.5 },
+  "vendor-cart": { scale: 2.4, groundY: 0, footprintM: 2.2 },
+  "vendor-food": { scale: 0.8, groundY: 1.2, footprintM: 3.6 },
+};
+
+/** Light street-vendor carts placed along the sidewalks (market-stalls is left
+ * out here — it's a heavy cluster, reserved for the odd hero spot). */
+export const NYC_VENDORS: readonly StreetPropConfig[] = Object.entries(
+  VENDOR_CONFIGS,
+)
+  .map(([id, cfg]) => {
+    const url = URL_BY_ID.get(id);
+    return url ? { url, ...cfg } : null;
+  })
+  .filter((v): v is StreetPropConfig => v !== null);
+
+export function nycVendorUrls(): string[] {
+  return NYC_VENDORS.map((v) => v.url);
+}
+
 /** De-duplicated glb URLs referenced by the given sets (for map-scoped preload). */
 export function buildingSetUrls(setIds: readonly BuildingSetId[]): string[] {
   const urls = new Set<string>();

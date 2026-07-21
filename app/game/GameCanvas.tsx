@@ -100,8 +100,11 @@ import {
 import {
   buildingSetUrls,
   isBuildingSetId,
+  NYC_VENDORS,
+  nycVendorUrls,
   slotBlockBuildings,
   type BuildingSetId,
+  type StreetPropConfig,
 } from "./buildingSets";
 import {
   buildCyclistVisual,
@@ -1702,6 +1705,12 @@ const PROP_SIGN: PropKindConfig = {
   faceRoad: true,
 };
 
+// The sidewalk crowd is spawned as real animated (skinned) pedestrians — those
+// have proper cycling legs, but each is a unique skinned clone with its own
+// materials, so they're the expensive kind. Cap the count for the frame budget
+// (halved again on low-spec). Tunable if the target hardware has headroom.
+const CROWD_MAX = 16;
+
 /** Per-map roadside dressing: shared basics plus locally recognisable extras. */
 function roadsidePropKindsForMap(
   key: ReturnType<typeof resolveMapVisualKey>,
@@ -1721,6 +1730,31 @@ function roadsidePropKindsForMap(
           faceRoad: true,
         },
         PROP_SIGN,
+        // Street vendor carts, curbside and alternating sides. The placement is
+        // computed here but the carts are glb instances (routed out of the
+        // procedural-prop loop into pendingVendors), not master boxes.
+        {
+          kind: "vendor",
+          spacingM: 82,
+          jitterM: 24,
+          lateralMarginM: 1.4,
+          bothSides: false,
+          alternateSides: true,
+          variants: Math.max(1, NYC_VENDORS.length),
+          faceRoad: true,
+        },
+        // Background pedestrian crowd on both sidewalks (routed to pendingCrowd,
+        // built as instanced static characters). faceRoad gives a road-relative
+        // rotation the crowd walk direction is derived from.
+        {
+          kind: "crowd",
+          spacingM: 12,
+          jitterM: 4,
+          lateralMarginM: 2.6,
+          bothSides: true,
+          variants: 1,
+          faceRoad: true,
+        },
       ];
     case "london":
       // Street lamps are hand-placed for South Kensington; scattered props
@@ -2579,6 +2613,11 @@ class BabylonGameSession {
   /** Keep-out circles (gas station + gig-venue lots) so the block street wall
    * never drops a scenery building on top of an interactive POI. */
   private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
+  /** Sidewalk vendor carts to instantiate once their glbs preload. */
+  private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
+  /** Sidewalk positions (+ toward-road yaw) for the distributed animated crowd,
+   * spawned as pedestrians once the character glbs preload. */
+  private readonly pendingCrowd: { x: number; z: number; yaw: number }[] = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -4640,6 +4679,64 @@ class BabylonGameSession {
       if (placed === 0) buildFallback();
     }
     this.pendingBuildingBlocks.length = 0;
+
+    // Sidewalk vendor carts: glb instances via the same merged-master path, so
+    // each cart is one cheap scene mesh. Frozen alongside the rest of the
+    // static scenery.
+    let vendorIndex = 0;
+    for (const vendor of this.pendingVendors) {
+      const master = this.getBuildingMaster(vendor.config.url);
+      if (!master) continue;
+      const inst = master.createInstance(`vendor-${vendorIndex}`);
+      vendorIndex += 1;
+      inst.position.set(vendor.x, vendor.config.groundY + BUILDING_GROUND_LIFT, vendor.z);
+      inst.rotation.y = vendor.yaw;
+      inst.scaling.setAll(vendor.config.scale);
+      inst.isPickable = false;
+      this.staticSceneryFreeze.push(inst);
+    }
+    this.pendingVendors.length = 0;
+
+    // Sidewalk crowd: real animated (skinned) pedestrians distributed along the
+    // sidewalks — proper cycling legs, correct facing — added to `pedestrians`
+    // so animatePedestrians walks them. Skinned people are the expensive kind,
+    // so the count is capped (CROWD_MAX) and halved on low-spec devices; the
+    // handful of crosswalk peds from buildScenarioTraffic stay on top.
+    const pedCap = Math.floor(
+      Math.min(CROWD_MAX, this.pendingCrowd.length) * this.buildingKeepFraction,
+    );
+    const crowdClothing = [
+      new Color3(0.82, 0.21, 0.15),
+      new Color3(0.2, 0.35, 0.6),
+      new Color3(0.3, 0.5, 0.35),
+      new Color3(0.7, 0.66, 0.5),
+      new Color3(0.55, 0.3, 0.5),
+    ];
+    for (let i = 0; i < pedCap; i += 1) {
+      const person = this.pendingCrowd[i];
+      // person.yaw faces the road; walk along it (± perpendicular).
+      const walkHeading = person.yaw + ((i % 2 === 0 ? 1 : -1) * Math.PI) / 2;
+      const node = new TransformNode(`crowd-ped-${i}`, this.scene);
+      node.position.set(person.x, 0.08, person.z);
+      node.rotation.y = walkHeading;
+      const clothing = crowdClothing[i % crowdClothing.length];
+      const speed = 1.0 + (i % 5) * 0.12;
+      const visual = this.buildRoadUserVisual(node, `crowd-ped-${i}`, false, i, clothing, speed);
+      this.pedestrians.push({
+        node,
+        phase: (i * 2.3) % 18,
+        speed,
+        z: person.z,
+        origin: { x: person.x, z: person.z },
+        heading: walkHeading,
+        span: 12,
+        kind: "pedestrian",
+        visual,
+        variant: i,
+        clothingColor: clothing,
+      });
+    }
+    this.pendingCrowd.length = 0;
   }
 
   /**
@@ -5459,12 +5556,13 @@ class BabylonGameSession {
       placeFacadeGrid(block, material);
     }
     // Preload just this map's building-set glbs (not every map's) off the
-    // critical path; buildInstancedBuildings consumes them once ready.
-    this.buildingModelUrls = buildingSetUrls([
-      ...new Set(
-        this.pendingBuildingBlocks.map((entry) => entry.setId),
-      ),
-    ]);
+    // critical path; buildInstancedBuildings consumes them once ready. City
+    // maps (those with building sets) also get the sidewalk vendor carts.
+    const setIds = [...new Set(this.pendingBuildingBlocks.map((e) => e.setId))];
+    this.buildingModelUrls = [
+      ...buildingSetUrls(setIds),
+      ...(setIds.length ? nycVendorUrls() : []),
+    ];
 
     for (const service of mapPack.geometry.servicePoints ?? []) {
       const pose = resolveSimulationLaneAnchor(
@@ -6504,6 +6602,19 @@ class BabylonGameSession {
 
     let instanceIndex = 0;
     for (const placement of placements) {
+      if (placement.kind === "vendor") {
+        // glb cart, not a procedural master — instantiate later once preloaded.
+        const config = NYC_VENDORS[placement.variant % NYC_VENDORS.length];
+        if (config) {
+          this.pendingVendors.push({ config, x: placement.x, z: placement.z, yaw: placement.rotationY });
+        }
+        continue;
+      }
+      if (placement.kind === "crowd") {
+        // Collect sidewalk positions; capped when spawned as animated peds.
+        this.pendingCrowd.push({ x: placement.x, z: placement.z, yaw: placement.rotationY });
+        continue;
+      }
       const parts = partsFor(placement.kind, placement.variant);
       const sin = Math.sin(placement.rotationY);
       const cos = Math.cos(placement.rotationY);
