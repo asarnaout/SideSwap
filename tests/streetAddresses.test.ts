@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { MAP_PACKS } from "../app/game/content";
+import {
+  generateGigFromPools,
+  pickGigKind,
+  selectGigPools,
+} from "../app/game/gigs";
 import { resolveSimulationLaneAnchor } from "../app/game/simulationAdapter";
 import {
   JUNCTION_CLEARANCE_M,
@@ -183,6 +188,53 @@ describe("procedural street addresses", () => {
     for (const pack of MAP_PACKS.filter((p) => p.id !== nyc.id)) {
       expect(generateStreetAddresses(inputFor(pack)), pack.id).toEqual([]);
     }
+  });
+
+  /**
+   * The point of all this. Four venues gave twelve possible ordered pairs on
+   * the whole map, so every run felt like the same two errands. This is the
+   * assertion that would fail if addresses ever stopped reaching the gig pool.
+   */
+  it("spreads real gigs across the map instead of the same few points", () => {
+    const venues = (nyc.geometry.gigVenues ?? []).flatMap((venue) => {
+      const pose = resolveSimulationLaneAnchor(nyc.laneGraph.lanes, venue.anchor);
+      return pose
+        ? [{ id: venue.id, name: venue.name, kind: venue.kind, x: pose.x, z: pose.z }]
+        : [];
+    });
+    const addresses = nycAddresses.map((a) => ({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      x: a.x,
+      z: a.z,
+    }));
+
+    const dropoffs = new Set<string>();
+    const pickups = new Set<string>();
+    for (let seed = 1; seed <= 400; seed += 1) {
+      const kind = pickGigKind(seed);
+      const pools = selectGigPools(venues, addresses, kind);
+      const gig = generateGigFromPools(
+        pools.pickups,
+        pools.dropoffs,
+        { base: 4, ratePerM: 0.012 },
+        "USD",
+        seed,
+        kind,
+      );
+      if (!gig) continue;
+      dropoffs.add(gig.dropoff.id);
+      pickups.add(gig.pickup.id);
+      // A delivery must never start at somebody's flat.
+      if (kind === "delivery") {
+        expect(["restaurant", "shop", "depot"], `seed ${seed}`).toContain(
+          gig.pickup.kind,
+        );
+      }
+    }
+    expect(dropoffs.size).toBeGreaterThan(30);
+    expect(pickups.size).toBeGreaterThan(10);
   });
 });
 

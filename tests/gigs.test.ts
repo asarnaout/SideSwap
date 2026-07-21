@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   advanceGig,
   generateGig,
+  generateGigFromPools,
   gigTarget,
   pickGigKind,
+  selectGigPools,
 } from "../app/game/gigs";
 
 const venues = [
@@ -85,5 +87,51 @@ describe("gig generation + state machine", () => {
     );
     expect(kinds.has("delivery")).toBe(true);
     expect(kinds.has("passenger")).toBe(true);
+  });
+});
+
+/**
+ * The two ends of a gig are not interchangeable. Before pools existed, a
+ * delivery could just as easily start at somebody's flat and finish at a
+ * restaurant, which reads backwards. These pin the direction down.
+ */
+describe("gig pickup / drop-off pools", () => {
+  const addresses = [
+    { id: "addr-1", name: "1 High St", kind: "residence", x: 10, z: 10 },
+    { id: "addr-2", name: "3 High St", kind: "office", x: 90, z: 90 },
+  ];
+
+  it("loads deliveries at a business and unloads them at an address", () => {
+    const { pickups, dropoffs } = selectGigPools(venues, addresses, "delivery");
+    expect(pickups.map((p) => p.kind).sort()).toEqual(["restaurant", "shop"]);
+    expect(dropoffs).toEqual(addresses);
+  });
+
+  it("lets a fare start and finish anywhere", () => {
+    const { pickups, dropoffs } = selectGigPools(venues, addresses, "passenger");
+    expect(pickups).toHaveLength(venues.length + addresses.length);
+    expect(dropoffs).toEqual(pickups);
+  });
+
+  it("falls back to the authored venues on maps with no addresses", () => {
+    const { pickups, dropoffs } = selectGigPools(venues, [], "delivery");
+    expect(dropoffs).toEqual(venues);
+    expect(pickups.length).toBeGreaterThan(0);
+  });
+
+  it("draws each end from its own pool", () => {
+    for (let seed = 1; seed <= 30; seed += 1) {
+      const { pickups, dropoffs } = selectGigPools(venues, addresses, "delivery");
+      const gig = generateGigFromPools(pickups, dropoffs, fare, "GBP", seed)!;
+      expect(gig.pickup.kind, `seed ${seed}`).not.toBe("residence");
+      expect(dropoffs.map((d) => d.id), `seed ${seed}`).toContain(gig.dropoff.id);
+    }
+  });
+
+  it("returns null rather than a gig that starts where it ends", () => {
+    const only = [venues[0]];
+    expect(generateGigFromPools(only, only, fare, "GBP", 1)).toBeNull();
+    expect(generateGigFromPools([], addresses, fare, "GBP", 1)).toBeNull();
+    expect(generateGigFromPools(venues, [], fare, "GBP", 1)).toBeNull();
   });
 });

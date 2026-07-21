@@ -51,30 +51,68 @@ export function pickGigKind(seed: number): GigKind {
   return hashToUnit(seed * 2 + 0x1f) < 0.4 ? "passenger" : "delivery";
 }
 
+/** Venue kinds a meal or a parcel can actually originate from. */
+const PICKUP_SOURCE_KINDS = new Set(["restaurant", "shop", "depot"]);
+
 /**
- * Generates one gig (a parcel delivery or a passenger fare) from the map's
- * venues (≥2 required). Pickup and drop-off are two distinct venues chosen
- * deterministically from `seed`; the reward is the base fare plus a per-metre
- * rate over the Euclidean distance. Returns null when there aren't enough
- * venues. `kind` only labels the gig — the pickup→drop-off machine is identical
- * for both — so callers pass the matching fare table for that kind.
+ * Which places each end of a gig may use.
+ *
+ * A parcel or a meal comes from a business and goes to somebody's door, so
+ * deliveries load at a restaurant or shop and unload at a street address. A
+ * fare is symmetric — people hail rides from their homes and offices as
+ * readily as from a restaurant — so passengers may start and end anywhere.
+ *
+ * Both ends fall back to the authored venues whenever the preferred pool is
+ * empty, which is what keeps the four compact city maps (no generated
+ * addresses, and only one venue of each kind) working exactly as before.
  */
-export function generateGig(
+export function selectGigPools(
   venues: readonly GigVenuePosition[],
+  addresses: readonly GigVenuePosition[],
+  kind: GigKind,
+): {
+  readonly pickups: readonly GigVenuePosition[];
+  readonly dropoffs: readonly GigVenuePosition[];
+} {
+  if (kind === "passenger") {
+    const everywhere = [...venues, ...addresses];
+    return { pickups: everywhere, dropoffs: everywhere };
+  }
+  const sources = venues.filter((venue) => PICKUP_SOURCE_KINDS.has(venue.kind));
+  return {
+    pickups: sources.length ? sources : venues,
+    dropoffs: addresses.length ? addresses : venues,
+  };
+}
+
+/**
+ * Generates one gig from separate pickup and drop-off pools.
+ *
+ * The two ends of a gig are not interchangeable: a curry comes from a kitchen,
+ * not from someone's front door, while the door is exactly where it is going.
+ * Callers therefore hand in the places each end may legally use, and this only
+ * decides which ones the seed lands on. Returns null when either pool is empty
+ * or the two would have to be the same place.
+ */
+export function generateGigFromPools(
+  pickups: readonly GigVenuePosition[],
+  dropoffs: readonly GigVenuePosition[],
   fare: GigFare,
   currencyCode: string,
   seed: number,
   kind: GigKind = "delivery",
 ): Gig | null {
-  if (venues.length < 2) return null;
-  const pickupIndex = Math.floor(hashToUnit(seed) * venues.length) % venues.length;
+  if (!pickups.length || !dropoffs.length) return null;
+  const pickupIndex = Math.floor(hashToUnit(seed) * pickups.length) % pickups.length;
   let dropoffIndex =
-    Math.floor(hashToUnit(seed + 1) * venues.length) % venues.length;
-  if (dropoffIndex === pickupIndex) {
-    dropoffIndex = (dropoffIndex + 1) % venues.length;
+    Math.floor(hashToUnit(seed + 1) * dropoffs.length) % dropoffs.length;
+  const pickup = pickups[pickupIndex];
+  if (dropoffs[dropoffIndex].id === pickup.id) {
+    dropoffIndex = (dropoffIndex + 1) % dropoffs.length;
   }
-  const pickup = venues[pickupIndex];
-  const dropoff = venues[dropoffIndex];
+  const dropoff = dropoffs[dropoffIndex];
+  // Only possible when the pools share their single entry.
+  if (dropoff.id === pickup.id) return null;
   const reward = Math.round(
     fare.base + fare.ratePerM * distance(pickup, dropoff),
   );
@@ -87,6 +125,24 @@ export function generateGig(
     currencyCode,
     state: "enroute_pickup",
   };
+}
+
+/**
+ * Generates one gig (a parcel delivery or a passenger fare) from a single pool
+ * of venues (≥2 required), where either end may use any of them. Pickup and
+ * drop-off are two distinct venues chosen deterministically from `seed`; the
+ * reward is the base fare plus a per-metre rate over the Euclidean distance.
+ * `kind` only labels the gig — the pickup→drop-off machine is identical for
+ * both — so callers pass the matching fare table for that kind.
+ */
+export function generateGig(
+  venues: readonly GigVenuePosition[],
+  fare: GigFare,
+  currencyCode: string,
+  seed: number,
+  kind: GigKind = "delivery",
+): Gig | null {
+  return generateGigFromPools(venues, venues, fare, currencyCode, seed, kind);
 }
 
 /**

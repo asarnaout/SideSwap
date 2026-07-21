@@ -48,8 +48,15 @@ import {
 import { Minimap } from "./game/MinimapCanvas";
 import { primeAudioContext, suspendAudioContext } from "./game/audio/audioContext";
 import { useDriveMusic } from "./game/audio/musicPlayer";
-import { advanceGig, generateGig, gigTarget, pickGigKind } from "./game/gigs";
+import {
+  advanceGig,
+  generateGigFromPools,
+  gigTarget,
+  pickGigKind,
+  selectGigPools,
+} from "./game/gigs";
 import type { Gig, GigVenuePosition } from "./game/gigs";
+import { generateStreetAddresses } from "./game/streetAddresses";
 import type {
   CameraMode,
   CountryProfile,
@@ -208,9 +215,51 @@ function resolveGigVenues(
 }
 
 /**
+ * Every place a gig can touch on a map: the authored venues plus the addresses
+ * derived from its streets. Derivation walks the whole lane graph, so it is
+ * cached per map — a drive asks for this on every payout.
+ */
+const stopsByMap = new Map<
+  string,
+  { venues: GigVenuePosition[]; addresses: GigVenuePosition[] }
+>();
+
+function resolveGigStops(map: ReturnType<typeof getMapPack>): {
+  venues: GigVenuePosition[];
+  addresses: GigVenuePosition[];
+} {
+  const cached = stopsByMap.get(map.id);
+  if (cached) return cached;
+  const addresses = generateStreetAddresses({
+    mapId: map.id,
+    lanes: map.laneGraph.lanes,
+    blocks: map.geometry.blocks,
+    landmarks: map.geometry.landmarks,
+    roadSurfaces: map.geometry.roadSurfaces,
+    occupiedPoints: [
+      ...(map.geometry.gigVenues ?? []),
+      ...(map.geometry.servicePoints ?? []),
+    ].flatMap((poi) => {
+      const pose = resolveSimulationLaneAnchor(map.laneGraph.lanes, poi.anchor);
+      return pose ? [{ x: pose.x, z: pose.z }] : [];
+    }),
+  }).map((address) => ({
+    id: address.id,
+    name: address.name,
+    kind: address.kind,
+    x: address.x,
+    z: address.z,
+  }));
+  const resolved = { venues: resolveGigVenues(map), addresses };
+  stopsByMap.set(map.id, resolved);
+  return resolved;
+}
+
+/**
  * Builds the next gig for a drive: picks delivery vs. passenger deterministically
  * from the seed, then draws from the matching fare table so rides pay their
- * premium. Returns null when the map has too few venues.
+ * premium. Returns null when the map has too few places to work with. Which
+ * places each end may use is `selectGigPools`' call.
  */
 function nextGigFor(
   map: ReturnType<typeof getMapPack>,
@@ -222,8 +271,11 @@ function nextGigFor(
     kind === "passenger"
       ? PASSENGER_FARE_BY_COUNTRY[country.id]
       : GIG_FARE_BY_COUNTRY[country.id];
-  return generateGig(
-    resolveGigVenues(map),
+  const { venues, addresses } = resolveGigStops(map);
+  const { pickups, dropoffs } = selectGigPools(venues, addresses, kind);
+  return generateGigFromPools(
+    pickups,
+    dropoffs,
     fare,
     country.currency.code,
     seed,
