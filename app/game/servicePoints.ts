@@ -8,7 +8,7 @@
  * which is why that maths lives here rather than being repeated per caller.
  */
 import type { WorldPoint } from "./types";
-import { resolveSimulationLaneAnchor } from "./simulationAdapter";
+import { resolveSimulationLaneAnchor } from "./laneAnchors";
 
 /**
  * The only lane fields anchor resolution needs. Both the authored `LaneSegment`

@@ -1555,7 +1555,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "mk-v1", kind: "shop", anchor: { laneId: "uk-dual-n-east", distanceAlongM: 48 }, footprint: point(16, 12), name: "Grafton Retail Park" },
         { id: "mk-v2", kind: "residence", anchor: { laneId: "uk-west-south", distanceAlongM: 48 }, footprint: point(14, 12), name: "Oldbrook Houses" },
         { id: "mk-v3", kind: "restaurant", anchor: { laneId: "uk-exit-south", distanceAlongM: 46 }, footprint: point(14, 10), name: "South Grafton Kitchen" },
-        { id: "mk-v4", kind: "office", anchor: { laneId: "uk-entry-south", distanceAlongM: 68 }, footprint: point(16, 14), name: "Midsummer Office" },
+        // Set back off the wide walkable shoulder band: at the default 13 the
+        // office's measured front stood mid-band (walkers clipped through it,
+        // and its collider read as an invisible wall on open grass).
+        { id: "mk-v4", kind: "office", anchor: { laneId: "uk-entry-south", distanceAlongM: 68 }, footprint: point(16, 14), name: "Midsummer Office", setbackM: 16 },
       ],
       landmarks: [
         // The island must sit fully inside the roundabout's inner kerb, not

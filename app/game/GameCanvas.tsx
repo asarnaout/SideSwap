@@ -52,6 +52,7 @@ import {
 import {
   buildSimulationCoreConfig,
   resolveSimulationLaneAnchor,
+  resolveVenuePlacement,
 } from "./simulationAdapter";
 import {
   DEFAULT_SERVICE_SETBACK_M,
@@ -5972,17 +5973,20 @@ class BabylonGameSession {
       depot: new Color3(0.5, 0.5, 0.55),
     };
     for (const venue of mapPack.geometry.gigVenues ?? []) {
-      const pose = resolveSimulationLaneAnchor(
-        mapPack.laneGraph.lanes,
-        venue.anchor,
-      );
-      if (!pose) continue;
-      // Set the building back off the road so its footprint + base sit on the
-      // verge, not the carriageway. Per-site `setbackM` pulls a venue off a
-      // neighbouring lot it would otherwise intersect; 13 is the default.
-      const setback = venue.setbackM ?? 13;
-      const px = pose.x + Math.cos(pose.heading) * setback;
-      const pz = pose.z - Math.sin(pose.heading) * setback;
+      // Shared with the collider builder: on paved city maps the building's
+      // measured front face lines up just behind the walkable pavement (the
+      // street-wall look), elsewhere the authored setback stands. Keeping the
+      // one resolver on both sides is what stops the visible building and its
+      // collision from ever drifting apart again.
+      const placement = resolveVenuePlacement(mapPack, venue);
+      if (!placement) continue;
+      const pose = {
+        x: placement.anchorX,
+        z: placement.anchorZ,
+        heading: placement.heading,
+      };
+      const px = placement.x;
+      const pz = placement.z;
       // Keep scenery buildings off the gig venue's own lot.
       this.buildingExclusions.push({
         x: px,

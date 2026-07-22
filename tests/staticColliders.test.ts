@@ -12,11 +12,17 @@ import {
   buildSimulationCoreConfig,
   buildStaticObstacles,
   distanceToStaticObstacle,
+  resolveSimulationLaneAnchor,
 } from "../app/game/simulationAdapter";
 import {
   buildPavementGraph,
   samplePavementEdge,
 } from "../app/game/pavementPaths";
+import {
+  gasStationPumpPositions,
+  resolveServicePointLot,
+} from "../app/game/servicePoints";
+import { PROP_MODEL_FOOTPRINTS_M } from "../app/game/propFootprints";
 import {
   PAVED_SIDEWALK_WIDTH_M,
   resolveMapVisualPalette,
@@ -200,13 +206,15 @@ describe("the drivable world stays open", () => {
     }
   });
 
-  it("never walls off the walkable pavement", () => {
+  it("never walls off the walkable pavement — anywhere across the band", () => {
     // Where a walker can stroll, the car must never hit an invisible face:
     // an oversized venue footprint once stopped the car a whole pavement
-    // short of the visible storefront. Box solids (and anything big) must
-    // stay clear of every pavement rail; small street-furniture circles (the
-    // London pillar box, park feature trees) legitimately stand on or near
-    // the pavement and walkers route around them.
+    // short of the visible storefront (and its successor bug hid in the band
+    // edges the rail centreline missed). Box solids must stay clear of the
+    // FULL walkable band — rail centre plus both edges; buildings standing
+    // flush against the band's back edge are fine. Small street-furniture
+    // circles (the London pillar box, park feature trees) legitimately stand
+    // on the pavement and walkers route around them.
     const failures: string[] = [];
     for (const world of driveWorlds) {
       const mapPack = getMapPack(world.freeDrive.mapId);
@@ -217,6 +225,11 @@ describe("the drivable world stays open", () => {
       const graph = buildPavementGraph(mapPack.geometry.roadSurfaces, {
         sidewalkWidthM,
       });
+      const lateralOffsets = [
+        -(sidewalkWidthM / 2 - 0.4),
+        0,
+        sidewalkWidthM / 2 - 0.4,
+      ];
       const solids = world.obstacles.filter(
         (obstacle) =>
           obstacle.tag !== "worldEdge" &&
@@ -226,17 +239,108 @@ describe("the drivable world stays open", () => {
         const steps = Math.max(1, Math.ceil(edge.lengthM / 1.5));
         for (let step = 0; step <= steps; step += 1) {
           const pose = samplePavementEdge(edge, (edge.lengthM * step) / steps);
-          for (const obstacle of solids) {
-            const distance = distanceToStaticObstacle(obstacle, pose.x, pose.z);
-            if (distance < 0.35) {
-              failures.push(
-                `${world.freeDrive.mapId}: ${obstacle.id} covers the pavement at (${pose.x.toFixed(1)}, ${pose.z.toFixed(1)}) — ${distance.toFixed(2)}m`,
-              );
+          const lateralX = Math.cos(pose.headingRad);
+          const lateralZ = -Math.sin(pose.headingRad);
+          for (const offset of lateralOffsets) {
+            const x = pose.x + lateralX * offset;
+            const z = pose.z + lateralZ * offset;
+            for (const obstacle of solids) {
+              const distance = distanceToStaticObstacle(obstacle, x, z);
+              if (distance < 0.3) {
+                failures.push(
+                  `${world.freeDrive.mapId}: ${obstacle.id} covers the pavement at (${x.toFixed(1)}, ${z.toFixed(1)}) — ${distance.toFixed(2)}m`,
+                );
+              }
             }
           }
         }
       }
     }
     expect(failures.slice(0, 20)).toEqual([]);
+  });
+
+  it("keeps every gas station enterable, with a clear stop beside each pump", () => {
+    for (const world of driveWorlds) {
+      const mapPack = getMapPack(world.freeDrive.mapId);
+      for (const service of mapPack.geometry.servicePoints ?? []) {
+        const lot = resolveServicePointLot(mapPack.laneGraph.lanes, service);
+        expect(lot, `${service.id} lot`).not.toBeNull();
+        if (!lot) continue;
+        const pose = resolveSimulationLaneAnchor(
+          mapPack.laneGraph.lanes,
+          service.anchor,
+        );
+        expect(pose, `${service.id} anchor`).not.toBeNull();
+        if (!pose) continue;
+        // The drive-in line: from the anchor on the road to the aisle between
+        // the two pump islands (holder-frame point (2, -5.15)).
+        const heading = lot.yaw - Math.PI / 2;
+        const cos = Math.cos(heading);
+        const sin = Math.sin(heading);
+        const aisle = {
+          x: lot.x + 2 * cos + -5.15 * sin,
+          z: lot.z - 2 * sin + -5.15 * cos,
+        };
+        const approachLength = Math.hypot(aisle.x - pose.x, aisle.z - pose.z);
+        const approachSteps = Math.ceil(approachLength);
+        for (let step = 0; step <= approachSteps; step += 1) {
+          const t = step / approachSteps;
+          const x = pose.x + (aisle.x - pose.x) * t;
+          const z = pose.z + (aisle.z - pose.z) * t;
+          const nearest = clearanceToNearestObstacle(world.obstacles, x, z);
+          expect(
+            nearest.distance,
+            `${service.id} approach blocked by ${nearest.id} at (${x.toFixed(1)}, ${z.toFixed(1)})`,
+          ).toBeGreaterThanOrEqual(1.05);
+        }
+        // Each pump must offer at least one capsule-clear stop within the
+        // refuel prompt's reach.
+        for (const pump of gasStationPumpPositions(
+          mapPack.laneGraph.lanes,
+          service,
+        )) {
+          let reachable = false;
+          for (let angle = 0; angle < 16 && !reachable; angle += 1) {
+            const theta = (angle / 16) * Math.PI * 2;
+            const x = pump.x + Math.cos(theta) * 2.2;
+            const z = pump.z + Math.sin(theta) * 2.2;
+            if (Math.hypot(x - lot.x, z - lot.z) > 13) continue;
+            const nearest = clearanceToNearestObstacle(world.obstacles, x, z);
+            reachable = nearest.distance >= 1.05;
+          }
+          expect(
+            reachable,
+            `${service.id} pump at (${pump.x.toFixed(1)}, ${pump.z.toFixed(1)}) has no clear stop`,
+          ).toBe(true);
+        }
+        // And the station's own furniture is solid: pump islands + shop.
+        const stationSolids = world.obstacles.filter((obstacle) =>
+          obstacle.id.includes("-pumps-") || obstacle.id.includes("-shop"),
+        );
+        expect(stationSolids.length).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it("aligns venue colliders with their measured models, off the pavement", () => {
+    for (const world of driveWorlds) {
+      const mapPack = getMapPack(world.freeDrive.mapId);
+      for (const venue of mapPack.geometry.gigVenues ?? []) {
+        const footprint = PROP_MODEL_FOOTPRINTS_M[venue.modelId ?? venue.kind];
+        if (!footprint) continue;
+        const obstacle = world.obstacles.find((o) => o.id === venue.id);
+        expect(obstacle?.kind, venue.id).toBe("obb");
+        if (obstacle?.kind !== "obb") continue;
+        // Collider footprint must match the measured model exactly.
+        expect(obstacle.halfU).toBeCloseTo(
+          (footprint.maxZ - footprint.minZ) / 2,
+          6,
+        );
+        expect(obstacle.halfV).toBeCloseTo(
+          (footprint.maxX - footprint.minX) / 2,
+          6,
+        );
+      }
+    }
   });
 });

@@ -25,6 +25,16 @@ import {
   PAVED_SIDEWALK_WIDTH_M,
   resolveMapVisualPalette,
 } from "./visuals";
+import {
+  resolveSimulationLaneAnchor,
+  type ResolvedSimulationAnchor,
+} from "./laneAnchors";
+import { resolveServicePointLot } from "./servicePoints";
+import {
+  GAS_STATION_SLAB_HALF_M,
+  GAS_STATION_SOLIDS_M,
+  PROP_MODEL_FOOTPRINTS_M,
+} from "./propFootprints";
 
 const DEFAULT_LANE_WIDTH_M = 3.5;
 // The car's top speed models a real vehicle, not a governor pinned to the
@@ -43,12 +53,6 @@ export interface SimulationAdapterOptions {
   readonly trafficSide: TrafficSide;
   readonly speedUnit: CanvasSpeedUnit;
   readonly touchFirst?: boolean;
-}
-
-export interface ResolvedSimulationAnchor extends SimulationPoint {
-  readonly heading: number;
-  readonly segmentIndex: number;
-  readonly distanceOnSegment: number;
 }
 
 const degreesToRadians = (degrees: number): number =>
@@ -70,33 +74,13 @@ const laneLength = (lane: GameCanvasLane): number =>
     0,
   );
 
-export function resolveSimulationLaneAnchor(
-  lanes: readonly GameCanvasLane[],
-  anchor: { readonly laneId: string; readonly distanceAlongM: number },
-): ResolvedSimulationAnchor | null {
-  const lane = lanes.find((candidate) => candidate.id === anchor.laneId);
-  if (!lane || lane.centerline.length < 2) return null;
-  let remaining = Math.max(0, anchor.distanceAlongM);
-  for (let index = 0; index < lane.centerline.length - 1; index += 1) {
-    const start = lane.centerline[index];
-    const end = lane.centerline[index + 1];
-    const length = Math.hypot(end.x - start.x, end.z - start.z);
-    if (length < 0.001) continue;
-    if (remaining <= length || index === lane.centerline.length - 2) {
-      const distanceOnSegment = Math.min(remaining, length);
-      const amount = distanceOnSegment / length;
-      return {
-        x: start.x + (end.x - start.x) * amount,
-        z: start.z + (end.z - start.z) * amount,
-        heading: Math.atan2(end.x - start.x, end.z - start.z),
-        segmentIndex: index,
-        distanceOnSegment,
-      };
-    }
-    remaining -= length;
-  }
-  return null;
-}
+// Moved to its own leaf module so servicePoints (and anything else placement
+// math depends on) can share it without importing this adapter; re-exported
+// here so existing importers keep working.
+export {
+  resolveSimulationLaneAnchor,
+  type ResolvedSimulationAnchor,
+} from "./laneAnchors";
 
 export function resolveSimulationStartPose(
   lesson: GameCanvasLesson | undefined,
@@ -778,6 +762,154 @@ const DEFAULT_VENUE_SETBACK_M = 13;
 const WORLD_EDGE_STANDOFF_M = 8;
 const WORLD_EDGE_THICKNESS_M = 6;
 
+interface AxisRect {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/** base minus cut, as up to four axis-aligned remainders; slivers under half
+ * a metre are dropped (nothing drivable fits in them anyway). */
+function subtractRect(base: AxisRect, cut: AxisRect): AxisRect[] {
+  const overlapMinX = Math.max(base.minX, cut.minX);
+  const overlapMaxX = Math.min(base.maxX, cut.maxX);
+  const overlapMinZ = Math.max(base.minZ, cut.minZ);
+  const overlapMaxZ = Math.min(base.maxZ, cut.maxZ);
+  if (overlapMinX >= overlapMaxX || overlapMinZ >= overlapMaxZ) return [base];
+  const pieces: AxisRect[] = [
+    { minX: base.minX, maxX: base.maxX, minZ: overlapMaxZ, maxZ: base.maxZ },
+    { minX: base.minX, maxX: base.maxX, minZ: base.minZ, maxZ: overlapMinZ },
+    { minX: base.minX, maxX: overlapMinX, minZ: overlapMinZ, maxZ: overlapMaxZ },
+    { minX: overlapMaxX, maxX: base.maxX, minZ: overlapMinZ, maxZ: overlapMaxZ },
+  ];
+  return pieces.filter(
+    (piece) => piece.maxX - piece.minX > 0.5 && piece.maxZ - piece.minZ > 0.5,
+  );
+}
+
+function sidewalkWidthForMap(mapPack: GameCanvasMapPack): number {
+  return resolveMapVisualPalette(mapPack.id).paved
+    ? PAVED_SIDEWALK_WIDTH_M
+    : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+}
+
+type VenueLike = NonNullable<
+  GameCanvasMapPack["geometry"]["gigVenues"]
+>[number];
+
+/**
+ * Distance from an anchor pose to the outer edge of the walkable pavement
+ * band along its road, measured along the given right normal. Null when the
+ * lane belongs to no authored road surface.
+ */
+function pavementOuterFromPose(
+  mapPack: GameCanvasMapPack,
+  laneId: string,
+  pose: { x: number; z: number },
+  rightX: number,
+  rightZ: number,
+): number | null {
+  const surface = (mapPack.geometry.roadSurfaces ?? []).find((candidate) =>
+    candidate.laneIds.includes(laneId),
+  );
+  if (!surface) return null;
+  let closestX = pose.x;
+  let closestZ = pose.z;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const line = surface.centerline;
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const ax = line[index].x;
+    const az = line[index].z;
+    const dx = line[index + 1].x - ax;
+    const dz = line[index + 1].z - az;
+    const lengthSq = dx * dx + dz * dz;
+    const t =
+      lengthSq > 1e-9
+        ? Math.max(
+            0,
+            Math.min(1, ((pose.x - ax) * dx + (pose.z - az) * dz) / lengthSq),
+          )
+        : 0;
+    const px = ax + dx * t;
+    const pz = az + dz * t;
+    const distance = Math.hypot(pose.x - px, pose.z - pz);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      closestX = px;
+      closestZ = pz;
+    }
+  }
+  const laneOffsetTowardVenue =
+    (pose.x - closestX) * rightX + (pose.z - closestZ) * rightZ;
+  return (
+    surface.widthM / 2 + sidewalkWidthForMap(mapPack) - laneOffsetTowardVenue
+  );
+}
+
+/** Clearance kept between the pavement's outer edge and a building front. */
+const VENUE_PAVEMENT_GAP_M = 0.4;
+
+/** Mirrors servicePoints' GAS_STATION_YAW_OFFSET: the measured station frame
+ * is the holder at heading 0, i.e. rotated by exactly this much less than the
+ * lot's yaw. */
+const GAS_STATION_HOLDER_YAW_OFFSET = Math.PI / 2;
+
+export interface VenuePlacement {
+  /** Where the building holder stands (what placeProp receives). */
+  readonly x: number;
+  readonly z: number;
+  /** The anchor pose the placement was derived from. */
+  readonly anchorX: number;
+  readonly anchorZ: number;
+  readonly heading: number;
+  /** Holder distance from the anchor along the driver-right normal. */
+  readonly setbackM: number;
+}
+
+/**
+ * The single source of truth for where a gig venue's building stands — used
+ * by the renderer to place the model AND by the collider builder, so the two
+ * can never drift apart again.
+ *
+ * On paved city maps, venues with a measured model footprint are pulled
+ * forward so the model's front face sits just behind the walkable pavement,
+ * aligning the venue with the street wall around it (the authored setback
+ * only says which lot it belongs to). Everywhere else the authored setback
+ * stands, and the measured footprint still shapes the collider.
+ */
+export function resolveVenuePlacement(
+  mapPack: GameCanvasMapPack,
+  venue: VenueLike,
+): VenuePlacement | null {
+  const pose = resolveSimulationLaneAnchor(mapPack.laneGraph.lanes, venue.anchor);
+  if (!pose) return null;
+  const rightX = Math.cos(pose.heading);
+  const rightZ = -Math.sin(pose.heading);
+  let setback = venue.setbackM ?? DEFAULT_VENUE_SETBACK_M;
+  const footprint = PROP_MODEL_FOOTPRINTS_M[venue.modelId ?? venue.kind];
+  if (footprint && resolveMapVisualPalette(mapPack.id).paved) {
+    const pavementOuter = pavementOuterFromPose(
+      mapPack,
+      venue.anchor.laneId,
+      pose,
+      rightX,
+      rightZ,
+    );
+    if (pavementOuter !== null) {
+      setback = pavementOuter + VENUE_PAVEMENT_GAP_M - footprint.minX;
+    }
+  }
+  return {
+    x: pose.x + rightX * setback,
+    z: pose.z + rightZ * setback,
+    anchorX: pose.x,
+    anchorZ: pose.z,
+    heading: pose.heading,
+    setbackM: setback,
+  };
+}
+
 /**
  * The solid, movement-blocking world the core resolves the player car against.
  * Sources are exactly the authored map-pack fields the renderer builds visuals
@@ -785,16 +917,18 @@ const WORLD_EDGE_THICKNESS_M = 6;
  *
  * - blocks -> their full rect (the street wall / facade grid hugs the edges;
  *   interiors and the 1.6 m building gaps are narrower than the car anyway).
- *   London museum blocks mirror the renderer's two-wing layout instead, so the
- *   forecourt gap between the wings stays open.
+ *   London museum blocks mirror the renderer's two-wing layout instead, and
+ *   gas-station lots are carved out of any block rect they overlap so the
+ *   forecourt entrance is open ground.
  * - building-like landmarks (station/terminal/shops as drawn boxes, tower as
  *   its cylinder) -> solid; parks keep only their centre feature tree; railway
  *   rails and roundabout-island pads stay drivable.
- * - gig venues -> their footprint box at the renderer's setback pose.
+ * - gig venues -> the measured footprint of the actual placed model (falling
+ *   back to the authored footprint box, clamped off the pavement, for kinds
+ *   without a measured model) at the shared resolveVenuePlacement position.
+ * - gas stations -> the lot slab stays drivable, but the shop building and
+ *   the two pump islands (pumps + kerb + canopy pillars) are solid.
  * - world edges -> fences just outside the bounds.
- *
- * Gas-station lots are deliberately NOT solid: the car must drive onto the
- * forecourt to refuel.
  */
 export function buildStaticObstacles(
   mapPack: GameCanvasMapPack,
@@ -802,6 +936,41 @@ export function buildStaticObstacles(
 ): StaticObstacle[] {
   const obstacles: StaticObstacle[] = [];
   const london = mapPack.id.includes("london");
+
+  // Gas-station lots (the full base slab plus a margin) are carved out of any
+  // block rect they overlap: the visual street wall is already excluded from
+  // the lot, and leaving the block collider there walled off the forecourt.
+  const stationLots: { lot: { x: number; z: number; yaw: number }; carve: AxisRect }[] = [];
+  for (const service of mapPack.geometry.servicePoints ?? []) {
+    const lot = resolveServicePointLot(mapPack.laneGraph.lanes, service);
+    if (!lot) continue;
+    const spanM =
+      GAS_STATION_SLAB_HALF_M *
+      (Math.abs(Math.cos(lot.yaw)) + Math.abs(Math.sin(lot.yaw)));
+    stationLots.push({
+      lot,
+      carve: {
+        minX: lot.x - spanM - 1,
+        maxX: lot.x + spanM + 1,
+        minZ: lot.z - spanM - 1,
+        maxZ: lot.z + spanM + 1,
+      },
+    });
+  }
+  const pushBlockRect = (id: string, rect: AxisRect) => {
+    let pieces = [rect];
+    for (const { carve } of stationLots) {
+      pieces = pieces.flatMap((piece) => subtractRect(piece, carve));
+    }
+    for (const [index, piece] of pieces.entries()) {
+      obstacles.push({
+        kind: "aabb",
+        id: pieces.length === 1 ? id : `${id}-part-${index}`,
+        tag: "building",
+        ...piece,
+      });
+    }
+  };
 
   for (const block of mapPack.geometry.blocks) {
     if (london && block.material.endsWith("-museum")) {
@@ -812,10 +981,7 @@ export function buildStaticObstacles(
       const wingDepth = block.size.z * 0.82;
       for (const side of [-1, 1]) {
         const wingX = block.center.x + side * block.size.x * 0.37;
-        obstacles.push({
-          kind: "aabb",
-          id: `${block.id}-wing-${side}`,
-          tag: "building",
+        pushBlockRect(`${block.id}-wing-${side}`, {
           minX: wingX - wingWidth / 2,
           maxX: wingX + wingWidth / 2,
           minZ: block.center.z - wingDepth / 2,
@@ -824,15 +990,35 @@ export function buildStaticObstacles(
       }
       continue;
     }
-    obstacles.push({
-      kind: "aabb",
-      id: block.id,
-      tag: "building",
+    pushBlockRect(block.id, {
       minX: block.center.x - block.size.x / 2,
       maxX: block.center.x + block.size.x / 2,
       minZ: block.center.z - block.size.z / 2,
       maxZ: block.center.z + block.size.z / 2,
     });
+  }
+
+  // The station's own solid furniture: shop building and the two pump
+  // islands, measured from the glb and placed with the exact transform the
+  // renderer (and gasStationPumpPositions) use.
+  for (const [stationIndex, { lot }] of stationLots.entries()) {
+    const cos = Math.cos(lot.yaw - GAS_STATION_HOLDER_YAW_OFFSET);
+    const sin = Math.sin(lot.yaw - GAS_STATION_HOLDER_YAW_OFFSET);
+    for (const solid of GAS_STATION_SOLIDS_M) {
+      const centerX = (solid.minX + solid.maxX) / 2;
+      const centerZ = (solid.minZ + solid.maxZ) / 2;
+      obstacles.push({
+        kind: "obb",
+        id: `station-${stationIndex}-${solid.id}`,
+        tag: "landmark",
+        x: lot.x + centerX * cos + centerZ * sin,
+        z: lot.z - centerX * sin + centerZ * cos,
+        ux: cos,
+        uz: -sin,
+        halfU: (solid.maxX - solid.minX) / 2,
+        halfV: (solid.maxZ - solid.minZ) / 2,
+      });
+    }
   }
 
   for (const landmark of mapPack.geometry.landmarks) {
@@ -879,82 +1065,47 @@ export function buildStaticObstacles(
     }
   }
 
-  // The walkable pavement band along a venue's anchor road: authored venue
-  // footprints are generous fallback boxes, and on a couple of sites the
-  // road-side face landed across the pavement — an invisible wall metres
-  // before the visible storefront. Clamp each venue collider's near face to
-  // start beyond the pavement (the far face stays put), matching what the
-  // renderer actually draws walkable.
-  const sidewalkWidthM = resolveMapVisualPalette(mapPack.id).paved
-    ? PAVED_SIDEWALK_WIDTH_M
-    : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
-  const surfaceByLaneId = new Map<
-    string,
-    { centerline: readonly { x: number; z: number }[]; widthM: number }
-  >();
-  for (const surface of mapPack.geometry.roadSurfaces ?? []) {
-    for (const laneId of surface.laneIds) {
-      surfaceByLaneId.set(laneId, surface);
-    }
-  }
-
   for (const venue of mapPack.geometry.gigVenues ?? []) {
-    const pose = resolveSimulationLaneAnchor(
-      mapPack.laneGraph.lanes,
-      venue.anchor,
+    const placement = resolveVenuePlacement(mapPack, venue);
+    if (!placement) continue;
+    const rightX = Math.cos(placement.heading);
+    const rightZ = -Math.sin(placement.heading);
+    const alongX = Math.sin(placement.heading);
+    const alongZ = Math.cos(placement.heading);
+    const footprint = PROP_MODEL_FOOTPRINTS_M[venue.modelId ?? venue.kind];
+    if (footprint) {
+      // The collider is exactly the measured model box at the shared
+      // placement: what stops the car is what the player can see.
+      const depthCenter = (footprint.minX + footprint.maxX) / 2;
+      const alongCenter = (footprint.minZ + footprint.maxZ) / 2;
+      obstacles.push({
+        kind: "obb",
+        id: venue.id,
+        tag: "venue",
+        x: placement.x + rightX * depthCenter + alongX * alongCenter,
+        z: placement.z + rightZ * depthCenter + alongZ * alongCenter,
+        ux: alongX,
+        uz: alongZ,
+        halfU: (footprint.maxZ - footprint.minZ) / 2,
+        halfV: (footprint.maxX - footprint.minX) / 2,
+      });
+      continue;
+    }
+    // No measured model (procedural fallback box): the authored footprint is
+    // the visual, clamped so its road-side face never covers the pavement.
+    let nearFace = placement.setbackM - venue.footprint.z / 2;
+    const farFace = placement.setbackM + venue.footprint.z / 2;
+    const pavementOuter = pavementOuterFromPose(
+      mapPack,
+      venue.anchor.laneId,
+      { x: placement.anchorX, z: placement.anchorZ },
+      rightX,
+      rightZ,
     );
-    if (!pose) continue;
-    // Mirrors the renderer's venue placement: the building centre sits off the
-    // anchor along the driver's-right normal, facade (footprint.x) parallel to
-    // the road, depth (footprint.z) extending away from it.
-    const setback = venue.setbackM ?? DEFAULT_VENUE_SETBACK_M;
-    const rightX = Math.cos(pose.heading);
-    const rightZ = -Math.sin(pose.heading);
-    let nearFace = setback - venue.footprint.z / 2;
-    const farFace = setback + venue.footprint.z / 2;
-    const surface = surfaceByLaneId.get(venue.anchor.laneId);
-    if (surface) {
-      // Signed offset of the anchor lane from its road-surface centreline,
-      // positive toward the venue: the pavement's outer edge sits at
-      // halfRoad + sidewalk beyond the surface centre.
-      let closestX = pose.x;
-      let closestZ = pose.z;
-      let bestDistance = Number.POSITIVE_INFINITY;
-      const line = surface.centerline;
-      for (let index = 0; index < line.length - 1; index += 1) {
-        const ax = line[index].x;
-        const az = line[index].z;
-        const bx = line[index + 1].x;
-        const bz = line[index + 1].z;
-        const dx = bx - ax;
-        const dz = bz - az;
-        const lengthSq = dx * dx + dz * dz;
-        const t =
-          lengthSq > 1e-9
-            ? Math.max(
-                0,
-                Math.min(
-                  1,
-                  ((pose.x - ax) * dx + (pose.z - az) * dz) / lengthSq,
-                ),
-              )
-            : 0;
-        const px = ax + dx * t;
-        const pz = az + dz * t;
-        const distance = Math.hypot(pose.x - px, pose.z - pz);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          closestX = px;
-          closestZ = pz;
-        }
-      }
-      const laneOffsetTowardVenue =
-        (pose.x - closestX) * rightX + (pose.z - closestZ) * rightZ;
-      const pavementOuterFromLane =
-        surface.widthM / 2 + sidewalkWidthM - laneOffsetTowardVenue;
-      const minNearFace = pavementOuterFromLane + 0.4;
+    if (pavementOuter !== null) {
+      const minNearFace = pavementOuter + VENUE_PAVEMENT_GAP_M;
       if (nearFace < minNearFace) {
-        // Never thin the lot below 3 m so the visible storefront stays solid.
+        // Never thin the lot below 3 m so the visible box stays solid.
         nearFace = Math.min(minNearFace, farFace - 3);
       }
     }
@@ -962,10 +1113,10 @@ export function buildStaticObstacles(
       kind: "obb",
       id: venue.id,
       tag: "venue",
-      x: pose.x + rightX * ((nearFace + farFace) / 2),
-      z: pose.z + rightZ * ((nearFace + farFace) / 2),
-      ux: Math.sin(pose.heading),
-      uz: Math.cos(pose.heading),
+      x: placement.anchorX + rightX * ((nearFace + farFace) / 2),
+      z: placement.anchorZ + rightZ * ((nearFace + farFace) / 2),
+      ux: alongX,
+      uz: alongZ,
       halfU: venue.footprint.x / 2,
       halfV: (farFace - nearFace) / 2,
     });
