@@ -37,6 +37,9 @@ interface CharacterModelConfig {
   readonly url: string;
   /** Material names recoloured to the crowd's clothing colour for variety. */
   readonly clothingMaterialNames: readonly string[];
+  /** Material names taking the per-person complexion instead of the rig's
+   * single baked one (see complexions.ts). */
+  readonly complexionMaterialNames: readonly string[];
   /** Uniform scale to a ~1.8 m person (the rigs are authored ~4.8 u tall). */
   readonly scale: number;
   readonly yawOffset: number;
@@ -53,11 +56,11 @@ const C = "/models/characters";
  * armature split across four skins, which the crowd renderer's shared-
  * skeleton bake cannot carry.) */
 export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
-  { url: `${C}/person-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
-  { url: `${C}/person-b.glb`, clothingMaterialNames: ["Shirt", "Shirt2", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
-  { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
-  { url: `${C}/person-woman-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
-  { url: `${C}/person-woman-b.glb`, clothingMaterialNames: ["Dress"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], complexionMaterialNames: ["Skin"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-b.glb`, clothingMaterialNames: ["Shirt", "Shirt2", "Pants"], complexionMaterialNames: ["Skin"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], complexionMaterialNames: ["Skin"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-woman-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], complexionMaterialNames: ["Skin"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-woman-b.glb`, clothingMaterialNames: ["Dress"], complexionMaterialNames: ["Skin"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
 ];
 
 /** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
@@ -69,18 +72,31 @@ export function characterModelUrls(): string[] {
   return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
 }
 
+/** Which of a model's materials this person overrides, and with what: clothing
+ * for crowd variety, complexion so the rig's one baked value is not the whole
+ * story. Everything else (hair, eyes, bike paint) keeps its authored colour. */
+function materialOverrides(
+  config: CharacterModelConfig,
+  clothing: Color3,
+  complexion: Color3,
+): Map<string, Color3> {
+  const overrides = new Map<string, Color3>();
+  for (const material of config.clothingMaterialNames) overrides.set(material, clothing);
+  for (const material of config.complexionMaterialNames) overrides.set(material, complexion);
+  return overrides;
+}
+
 /**
  * Converts a glb subtree's PBR materials to scene-consistent StandardMaterials,
- * recolouring any material in `clothingNames` to `clothing` (crowd variety) and
- * keeping the rest (skin, hair, bike paint). Returns the created materials so
- * the caller can dispose them without touching shared container materials.
+ * applying any per-material colour `overrides` and keeping the rest as authored.
+ * Returns the created materials so the caller can dispose them without touching
+ * shared container materials.
  */
 function convertMaterials(
   scene: Scene,
   name: string,
   subtree: TransformNode,
-  clothingNames: Set<string>,
-  clothing: Color3,
+  overrides: ReadonlyMap<string, Color3>,
 ): StandardMaterial[] {
   const converted = new Map<Material, StandardMaterial>();
   const owned: StandardMaterial[] = [];
@@ -92,8 +108,9 @@ function convertMaterials(
       standard = new StandardMaterial(`${name}-${source.name}`, scene);
       const texture = readAlbedoTexture(source);
       if (texture) standard.diffuseTexture = texture;
-      standard.diffuseColor = clothingNames.has(source.name)
-        ? clothing
+      const override = overrides.get(source.name);
+      standard.diffuseColor = override
+        ? override.clone()
         : texture
           ? Color3.White()
           : readAlbedo(source).clone();
@@ -157,6 +174,7 @@ export function buildPedestrianVisual(
   name: string,
   variant: number,
   clothing: Color3,
+  complexion: Color3,
   walkSpeedRatio: number,
 ): CharacterVisual | null {
   const config = CHARACTER_MODELS[Math.abs(variant) % CHARACTER_MODELS.length];
@@ -175,8 +193,7 @@ export function buildPedestrianVisual(
     scene,
     name,
     root,
-    new Set(config.clothingMaterialNames),
-    clothing,
+    materialOverrides(config, clothing, complexion),
   );
   addContactShadow(scene, name, root, 0.62, 0.5);
   const walk = playClip(instance.animationGroups, config.walkClip, walkSpeedRatio);
@@ -261,7 +278,7 @@ function setupCyclistPose(riderRoot: TransformNode): (phase: number) => void {
  * A cyclist: the bicycle prop with a rider posed correctly on it — seated, hands
  * on the bars, feet on the pedals, legs pedalling as it moves. The rider is one
  * of the pedestrian character models, skeleton-posed into a riding posture (no
- * cycling clip ships CC0), with clothing recoloured for crowd variety.
+ * cycling clip ships CC0), with clothing and complexion set for crowd variety.
  */
 export function buildCyclistVisual(
   scene: Scene,
@@ -269,6 +286,7 @@ export function buildCyclistVisual(
   name: string,
   variant: number,
   clothing: Color3,
+  complexion: Color3,
 ): CharacterVisual | null {
   const riderConfig = CHARACTER_MODELS[Math.abs(variant) % CHARACTER_MODELS.length];
   if (!isModelReady(scene, BICYCLE_MODEL.url) || !isModelReady(scene, riderConfig.url)) {
@@ -294,7 +312,7 @@ export function buildCyclistVisual(
   bikeWrap.rotation.y = BICYCLE_MODEL.yawOffset;
   bikeRoot.parent = bikeWrap;
   bikeRoot.scaling.setAll(BICYCLE_MODEL.scale);
-  const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Set(), clothing);
+  const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Map());
 
   // Rider faces +Z (rig faces -Z), lifted onto the saddle and skeleton-posed.
   const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
@@ -307,8 +325,7 @@ export function buildCyclistVisual(
     scene,
     `${name}-rider`,
     riderRoot,
-    new Set(riderConfig.clothingMaterialNames),
-    clothing,
+    materialOverrides(riderConfig, clothing, complexion),
   );
   // We pose the skeleton manually, so drop the rider's imported walk/idle clips.
   for (const group of riderInstance.animationGroups) group.dispose();

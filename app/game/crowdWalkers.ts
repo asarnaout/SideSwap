@@ -26,6 +26,8 @@ export interface CrowdWalker {
   readonly variant: number;
   /** Clothing tint slot; fixed for the pool's life, same reason. */
   readonly tintIndex: number;
+  /** Complexion palette slot; fixed for the pool's life, same reason. */
+  readonly complexionIndex: number;
   state: "walk" | "pause";
   pauseRemaining: number;
   /** True only on the step this walker was recycled to a new spot. */
@@ -49,6 +51,7 @@ export interface CrowdConfig {
   readonly turnPauseSeconds: number;
   readonly modelCount: number;
   readonly tintCount: number;
+  readonly complexionCount: number;
 }
 
 export interface CrowdFocus {
@@ -93,6 +96,7 @@ export class CrowdSim {
       speedMps: config.minSpeedMps,
       variant: index % Math.max(1, config.modelCount),
       tintIndex: index % Math.max(1, config.tintCount),
+      complexionIndex: index % Math.max(1, config.complexionCount),
       state: "walk" as const,
       pauseRemaining: 0,
       justRecycled: false,
