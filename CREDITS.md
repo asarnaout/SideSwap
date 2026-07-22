@@ -62,6 +62,11 @@ download.
 - **bicycle.glb** — by **"Poly by Google"** via Poly Pizza
   (<https://poly.pizza/m/eRg_VrQlvXY>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
+  **Modified (issue #121):** the two pedal platforms were split out of the
+  baked frame mesh into their own nodes and the tire meshes re-pivoted about
+  their wheel centres, so the pedals can orbit the crank and the wheels can
+  spin while a rider pedals — see `tools/split-bicycle-pedals.mjs`; re-run it
+  to regenerate from a fresh download. No geometry was added or removed.
 - **props/gas-station.glb** ("Gas Station") — by **Alex Safayan** via Poly Pizza
   (<https://poly.pizza/m/7rUkCX-AIR2>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Gas Station by Alex
