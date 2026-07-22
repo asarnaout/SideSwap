@@ -8096,6 +8096,31 @@ class BabylonGameSession {
         crowdInstances: this.crowdRenderer?.instanceCount ?? 0,
         crowdMeshes: this.crowdRenderer?.meshCount ?? 0,
       });
+      // The interaction cutscene's live state, so QA can assert the scene
+      // actually runs, where its actor is, and that the camera stack and the
+      // control lock restore when it ends.
+      debugWindow.__sideswapCutsceneDebug = () => ({
+        active: this.activeCutscene
+          ? {
+              kind: this.activeCutscene.kind,
+              nonce: this.activeCutscene.nonce,
+              step: this.activeCutscene.stepIndex,
+              action:
+                this.activeCutscene.script[this.activeCutscene.stepIndex]
+                  ?.action ?? null,
+              actorX:
+                Math.round(this.activeCutscene.actorNode.position.x * 100) /
+                100,
+              actorZ:
+                Math.round(this.activeCutscene.actorNode.position.z * 100) /
+                100,
+              actorVisible: this.activeCutscene.actorNode.isEnabled(),
+            }
+          : null,
+        cameraMode: this.cameraMode,
+        activeCamera: this.scene.activeCamera?.name ?? null,
+        dip: Math.round(this.cutsceneDipOffset * 1000) / 1000,
+      });
       // Walker states + bubble, so the capture harness can assert the crowd
       // moves smoothly and never pops in or out on screen.
       debugWindow.__sideswapCrowdDebug = () => {
