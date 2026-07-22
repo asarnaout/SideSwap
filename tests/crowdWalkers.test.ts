@@ -33,6 +33,7 @@ const CONFIG: CrowdConfig = {
   modelCount: 3,
   tintCount: 5,
   complexionCount: 7,
+  hairCount: 11,
 };
 const DT = 1 / 60;
 const CENTRE = { x: 0, z: 0 };
@@ -144,16 +145,55 @@ describe("CrowdSim.step", () => {
     }
   });
 
-  it("keeps variants and tints stable across recycles", () => {
+  it("keeps variants, tints and palette slots stable across recycles", () => {
     const sim = makeSim();
     sim.step(DT, CENTRE, never);
-    const variants = sim.walkers.map((walker) => walker.variant);
-    const tints = sim.walkers.map((walker) => walker.tintIndex);
+    const appearance = sim.walkers.map((walker) => [
+      walker.variant,
+      walker.tintIndex,
+      walker.complexionIndex,
+      walker.hairIndex,
+    ]);
     sim.step(DT, { x: 4_000, z: 4_000 }, never);
     sim.step(DT, CENTRE, never);
-    expect(sim.walkers.map((walker) => walker.variant)).toEqual(variants);
-    expect(sim.walkers.map((walker) => walker.tintIndex)).toEqual(tints);
+    expect(
+      sim.walkers.map((walker) => [
+        walker.variant,
+        walker.tintIndex,
+        walker.complexionIndex,
+        walker.hairIndex,
+      ]),
+    ).toEqual(appearance);
     expect(sim.walkers).toHaveLength(CONFIG.count);
+  });
+
+  it("does not pin a walker's hair to their complexion", () => {
+    // Both slots are drawn from the pool index, so the naive `index % count`
+    // for each would make hair a fixed function of complexion: a crowd would
+    // show only `count` of the possible pairings, and the same complexion
+    // would never appear under two different hair colours.
+    const sim = makeSim({ count: 96, complexionCount: 24, hairCount: 24 });
+    const hairByComplexion = new Map<number, Set<number>>();
+    for (const walker of sim.walkers) {
+      const seen = hairByComplexion.get(walker.complexionIndex) ?? new Set<number>();
+      seen.add(walker.hairIndex);
+      hairByComplexion.set(walker.complexionIndex, seen);
+    }
+    for (const seen of hairByComplexion.values()) {
+      expect(seen.size).toBeGreaterThan(1);
+    }
+    const pairs = new Set(
+      sim.walkers.map((walker) => `${walker.complexionIndex}:${walker.hairIndex}`),
+    );
+    expect(pairs.size).toBeGreaterThan(24);
+
+    // The rotation must still be a permutation per cycle, so weights hold.
+    const counts = new Map<number, number>();
+    for (const walker of sim.walkers) {
+      counts.set(walker.hairIndex, (counts.get(walker.hairIndex) ?? 0) + 1);
+    }
+    expect(counts.size).toBe(24);
+    expect([...counts.values()].every((count) => count === 4)).toBe(true);
   });
 
   it("never bounces straight back off a junction", () => {
