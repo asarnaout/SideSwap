@@ -46,12 +46,18 @@ interface CharacterModelConfig {
 
 const C = "/models/characters";
 
-/** CC0 Quaternius "Animated Men" — one shared HumanArmature rig, flat baseColor
- * materials (easy recolour), each with a Man_Walk clip. */
+/** CC0 Quaternius "Animated Men" + "Animated Women" — the same 31-joint
+ * HumanArmature rig family, flat baseColor materials (easy recolour), each
+ * with a Man_/Female_Walk clip the `/Walk/i` matcher finds. (The repo also
+ * ships person-punk.glb, deliberately unused: it is a different 62-joint
+ * armature split across four skins, which the crowd renderer's shared-
+ * skeleton bake cannot carry.) */
 export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
   { url: `${C}/person-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
   { url: `${C}/person-b.glb`, clothingMaterialNames: ["Shirt", "Shirt2", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
   { url: `${C}/person-c.glb`, clothingMaterialNames: ["Shirt", "Pants", "Details"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-woman-a.glb`, clothingMaterialNames: ["Shirt", "Pants"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
+  { url: `${C}/person-woman-b.glb`, clothingMaterialNames: ["Dress"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
 ];
 
 /** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
