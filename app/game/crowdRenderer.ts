@@ -68,6 +68,14 @@ export interface CrowdTint {
   readonly b: number;
 }
 
+/** The three per-person colour channels. Each is indexed by its own walker
+ * slot, so a person's outfit, complexion and hair vary independently. */
+export interface CrowdPalettes {
+  readonly clothing: readonly CrowdTint[];
+  readonly complexion: readonly CrowdTint[];
+  readonly hair: readonly CrowdTint[];
+}
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -107,11 +115,7 @@ export class CrowdRenderer {
    * its bake is unusable; the game then simply has no ambient crowd, which
    * beats a crowd of frozen mannequins.
    */
-  build(
-    walkers: readonly CrowdWalker[],
-    tints: readonly CrowdTint[],
-    complexions: readonly CrowdTint[],
-  ): boolean {
+  build(walkers: readonly CrowdWalker[], palettes: CrowdPalettes): boolean {
     if (this.built || !walkers.length) return false;
     const partition = partitionWalkersByVariant(
       walkers.map((walker) => walker.variant),
@@ -120,7 +124,7 @@ export class CrowdRenderer {
     const bundles: CrowdModelBundle[] = [];
     for (const [modelIndex, indices] of partition.entries()) {
       if (!indices.length) continue;
-      const bundle = this.buildModel(modelIndex, indices, walkers, tints, complexions);
+      const bundle = this.buildModel(modelIndex, indices, walkers, palettes);
       if (!bundle) {
         for (const built of bundles) this.disposeBundle(built);
         return false;
@@ -152,8 +156,7 @@ export class CrowdRenderer {
     modelIndex: number,
     indices: readonly number[],
     walkers: readonly CrowdWalker[],
-    tints: readonly CrowdTint[],
-    complexions: readonly CrowdTint[],
+    palettes: CrowdPalettes,
   ): CrowdModelBundle | null {
     const config = CHARACTER_MODELS[modelIndex % CHARACTER_MODELS.length];
     if (!isModelReady(this.scene, config.url)) return null;
@@ -217,30 +220,48 @@ export class CrowdRenderer {
     manager.texture = texture;
     manager.setAnimationParameters(0, frames - 1, 0, CLIP_FPS);
 
-    // Shared materials: the clothing and complexion parts go white and take a
-    // per-instance colour (thin-instance "color" multiplies diffuse), from two
-    // separate buffers so a person's outfit and complexion vary independently;
-    // hair and eyes keep their albedo. This is the recolour-per-pedestrian
-    // scheme without the material-per-pedestrian cost.
-    const clothingNames = new Set(config.clothingMaterialNames);
-    const complexionNames = new Set(config.complexionMaterialNames);
+    // Shared materials: every part a person varies — clothing, complexion,
+    // hair — goes white and takes a per-instance colour (thin-instance "color"
+    // multiplies diffuse), each channel from its own buffer so the three vary
+    // independently; eyes and the rest keep their albedo. This is the
+    // recolour-per-pedestrian scheme without the material-per-pedestrian cost.
+    // An empty palette drops its channel, leaving the rig's baked value alone.
+    const channels = [
+      {
+        names: new Set(config.clothingMaterialNames),
+        palette: palettes.clothing,
+        slotOf: (walker: CrowdWalker) => walker.tintIndex,
+      },
+      {
+        names: new Set(config.complexionMaterialNames),
+        palette: palettes.complexion,
+        slotOf: (walker: CrowdWalker) => walker.complexionIndex,
+      },
+      {
+        names: new Set(config.hairMaterialNames),
+        palette: palettes.hair,
+        slotOf: (walker: CrowdWalker) => walker.hairIndex,
+      },
+    ]
+      .filter((channel) => channel.palette.length > 0)
+      .map((channel) => ({
+        ...channel,
+        parts: new Set<Mesh>(),
+        data: new Float32Array(indices.length * 4),
+      }));
     const converted = new Map<Material, StandardMaterial>();
     const ownedMaterials: StandardMaterial[] = [];
-    const clothingParts = new Set<Mesh>();
-    const complexionParts = new Set<Mesh>();
     for (const part of parts) {
       const source = part.material;
       if (source) {
-        const isClothing = clothingNames.has(source.name);
-        // An empty palette leaves the rig's own baked value alone.
-        const isComplexion = complexionNames.has(source.name) && complexions.length > 0;
+        const channel = channels.find((entry) => entry.names.has(source.name));
         let standard = converted.get(source);
         if (!standard) {
           standard = new StandardMaterial(
             `crowd-${modelIndex}-${source.name}`,
             this.scene,
           );
-          standard.diffuseColor = isClothing || isComplexion
+          standard.diffuseColor = channel
             ? Color3.White()
             : readAlbedo(source).clone();
           standard.specularColor = new Color3(0.05, 0.05, 0.05);
@@ -249,8 +270,7 @@ export class CrowdRenderer {
           ownedMaterials.push(standard);
         }
         part.material = standard;
-        if (isClothing) clothingParts.add(part);
-        else if (isComplexion) complexionParts.add(part);
+        channel?.parts.add(part);
       }
       part.bakedVertexAnimationManager = manager;
       part.isPickable = false;
@@ -285,26 +305,19 @@ export class CrowdRenderer {
     const count = indices.length;
     const matrixData = new Float32Array(count * 16);
     const vatData = new Float32Array(count * 4);
-    const tintData = new Float32Array(count * 4);
-    const complexionData = new Float32Array(count * 4);
     for (const [slot, walkerIndex] of indices.entries()) {
       vatData[slot * 4] = 0;
       vatData[slot * 4 + 1] = frames - 1;
       // Spread start phases so the crowd never marches in step.
       vatData[slot * 4 + 2] = (walkerIndex * 7.31) % frames;
       vatData[slot * 4 + 3] = 0;
-      const tint = tints[walkers[walkerIndex].tintIndex % tints.length];
-      tintData[slot * 4] = tint.r;
-      tintData[slot * 4 + 1] = tint.g;
-      tintData[slot * 4 + 2] = tint.b;
-      tintData[slot * 4 + 3] = 1;
-      if (complexions.length) {
-        const complexion =
-          complexions[walkers[walkerIndex].complexionIndex % complexions.length];
-        complexionData[slot * 4] = complexion.r;
-        complexionData[slot * 4 + 1] = complexion.g;
-        complexionData[slot * 4 + 2] = complexion.b;
-        complexionData[slot * 4 + 3] = 1;
+      const walker = walkers[walkerIndex];
+      for (const channel of channels) {
+        const tone = channel.palette[channel.slotOf(walker) % channel.palette.length];
+        channel.data[slot * 4] = tone.r;
+        channel.data[slot * 4 + 1] = tone.g;
+        channel.data[slot * 4 + 2] = tone.b;
+        channel.data[slot * 4 + 3] = 1;
       }
     }
     for (const part of parts) {
@@ -315,11 +328,8 @@ export class CrowdRenderer {
         4,
         false,
       );
-      if (clothingParts.has(part)) {
-        part.thinInstanceSetBuffer("color", tintData, 4, false);
-      } else if (complexionParts.has(part)) {
-        part.thinInstanceSetBuffer("color", complexionData, 4, false);
-      }
+      const channel = channels.find((entry) => entry.parts.has(part));
+      if (channel) part.thinInstanceSetBuffer("color", channel.data, 4, false);
     }
 
     return {

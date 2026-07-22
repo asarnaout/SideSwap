@@ -28,6 +28,8 @@ export interface CrowdWalker {
   readonly tintIndex: number;
   /** Complexion palette slot; fixed for the pool's life, same reason. */
   readonly complexionIndex: number;
+  /** Hair palette slot; fixed for the pool's life, same reason. */
+  readonly hairIndex: number;
   state: "walk" | "pause";
   pauseRemaining: number;
   /** True only on the step this walker was recycled to a new spot. */
@@ -52,6 +54,7 @@ export interface CrowdConfig {
   readonly modelCount: number;
   readonly tintCount: number;
   readonly complexionCount: number;
+  readonly hairCount: number;
 }
 
 export interface CrowdFocus {
@@ -61,6 +64,21 @@ export interface CrowdFocus {
 
 /** True when a disc at (x, z) of the given radius is on screen. */
 export type CrowdVisibilityProbe = (x: number, z: number, radiusM: number) => boolean;
+
+/**
+ * Hair slots rotate by one full cycle of the pool rather than tracking the
+ * index directly: every other slot is `index % count`, so hair would otherwise
+ * be pinned to complexion for the pool's life and a crowd would show only
+ * `count` of the possible pairings. Rotating by a stride coprime with the
+ * palette length permutes within each cycle, so every slot is still drawn
+ * exactly as often as its weight says.
+ */
+const HAIR_CYCLE_ROTATION = 7;
+
+function hairSlot(index: number, hairCount: number): number {
+  const count = Math.max(1, hairCount);
+  return (index + Math.floor(index / count) * HAIR_CYCLE_ROTATION) % count;
+}
 
 const RESPAWN_ATTEMPTS = 12;
 const JUNCTION_PAUSE_CHANCE = 0.3;
@@ -97,6 +115,7 @@ export class CrowdSim {
       variant: index % Math.max(1, config.modelCount),
       tintIndex: index % Math.max(1, config.tintCount),
       complexionIndex: index % Math.max(1, config.complexionCount),
+      hairIndex: hairSlot(index, config.hairCount),
       state: "walk" as const,
       pauseRemaining: 0,
       justRecycled: false,

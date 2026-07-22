@@ -130,9 +130,14 @@ import {
   buildPedestrianVisual,
   characterModelUrls,
   CHARACTER_MODELS,
+  type CharacterColors,
   type CharacterVisual,
 } from "./characterMeshes";
-import { complexionPaletteForMap, type ComplexionTone } from "./complexions";
+import {
+  complexionPaletteForMap,
+  hairPaletteForMap,
+  type CharacterTone,
+} from "./characterPalettes";
 import { CrowdRenderer } from "./crowdRenderer";
 import { createCrowdSim, type CrowdSim } from "./crowdWalkers";
 import { buildPavementGraph, type PavementGraph } from "./pavementPaths";
@@ -1380,8 +1385,7 @@ interface Pedestrian {
   visual?: CharacterVisual | null;
   /** Which character model + clothing, so it can rebuild on model upgrade. */
   variant?: number;
-  clothingColor?: Color3;
-  complexionColor?: Color3;
+  colors?: CharacterColors;
 }
 
 interface AuthoredCheckpoint {
@@ -2803,7 +2807,8 @@ class BabylonGameSession {
   private readonly crowdProbePoint = new Vector3();
   /** Cached per-map pavement graph; null once known to be unavailable. */
   private pavementGraph: PavementGraph | null | undefined;
-  private complexions: readonly ComplexionTone[] | undefined;
+  private complexions: readonly CharacterTone[] | undefined;
+  private hairTones: readonly CharacterTone[] | undefined;
   private roadUserPedSim: CrowdSim | null = null;
   private roadUserCycleSim: CrowdSim | null = null;
   private readonly railRoadUsers: Array<{
@@ -3353,22 +3358,39 @@ class BabylonGameSession {
     }
   }
 
-  /** This map's complexion palette, built once (see complexions.ts). */
-  private complexionPalette(): readonly ComplexionTone[] {
+  /** This map's palettes, built once each (see characterPalettes.ts). */
+  private complexionPalette(): readonly CharacterTone[] {
     if (!this.complexions) {
-      this.complexions = complexionPaletteForMap(
-        this.options.mapPack?.id ?? "orientation-yard",
-      );
+      this.complexions = complexionPaletteForMap(this.paletteMapId());
     }
     return this.complexions;
   }
 
-  /** Palette slot for a road user, by its index among the ones this map spawns.
-   * The palette is pre-shuffled, so even a handful of people spread across it. */
-  private complexionColorAt(index: number): Color3 {
-    const palette = this.complexionPalette();
-    const tone = palette[Math.abs(index) % palette.length];
-    return new Color3(tone.r, tone.g, tone.b);
+  private hairPalette(): readonly CharacterTone[] {
+    if (!this.hairTones) {
+      this.hairTones = hairPaletteForMap(this.paletteMapId());
+    }
+    return this.hairTones;
+  }
+
+  private paletteMapId(): string {
+    return this.options.mapPack?.id ?? "orientation-yard";
+  }
+
+  /** Palette slots for a road user, by its index among the ones this map
+   * spawns. Both palettes are pre-shuffled, so even a handful of people spread
+   * across them; the hair slot is skewed off the complexion slot so the two do
+   * not travel together. */
+  private characterColorsAt(index: number, clothing: Color3): CharacterColors {
+    const at = (palette: readonly CharacterTone[], slot: number) => {
+      const tone = palette[Math.abs(slot) % palette.length];
+      return new Color3(tone.r, tone.g, tone.b);
+    };
+    return {
+      clothing,
+      complexion: at(this.complexionPalette(), index),
+      hair: at(this.hairPalette(), index * 7 + 3),
+    };
   }
 
   /**
@@ -3381,20 +3403,18 @@ class BabylonGameSession {
     name: string,
     isCyclist: boolean,
     variant: number,
-    clothingColor: Color3,
-    complexionColor: Color3,
+    colors: CharacterColors,
     speed: number,
   ): CharacterVisual {
     const scene = this.scene;
     const model = isCyclist
-      ? buildCyclistVisual(scene, node, name, variant, clothingColor, complexionColor)
+      ? buildCyclistVisual(scene, node, name, variant, colors)
       : buildPedestrianVisual(
           scene,
           node,
           name,
           variant,
-          clothingColor,
-          complexionColor,
+          colors,
           // Match the walk cadence to ground speed to cut foot-sliding; the
           // 1.4 divisor is the clip's natural m/s at speedRatio 1 (tunable).
           clamp(speed / 1.4, 0.5, 1.6),
@@ -3414,15 +3434,14 @@ class BabylonGameSession {
    * empty placeholder shown behind the loading gate. */
   private upgradeRoadUsersToModels() {
     for (const pedestrian of this.pedestrians) {
-      if (pedestrian.variant === undefined || !pedestrian.clothingColor) continue;
+      if (pedestrian.variant === undefined || !pedestrian.colors) continue;
       pedestrian.visual?.dispose();
       pedestrian.visual = this.buildRoadUserVisual(
         pedestrian.node,
         pedestrian.node.name,
         pedestrian.kind === "cyclist",
         pedestrian.variant,
-        pedestrian.clothingColor,
-        pedestrian.complexionColor ?? this.complexionColorAt(pedestrian.variant),
+        pedestrian.colors,
         pedestrian.speed,
       );
     }
@@ -3474,13 +3493,19 @@ class BabylonGameSession {
       modelCount: CHARACTER_MODELS.length,
       tintCount: CROWD_CLOTHING_COLORS.length,
       complexionCount: this.complexionPalette().length,
+      hairCount: this.hairPalette().length,
     });
     if (!sim) return;
     // Prime the pool around the spawn point so the street is already lived-in
     // when the loading gate lifts.
     sim.step(0, { x: this.playerState.x, z: this.playerState.z }, () => true);
     const renderer = new CrowdRenderer(this.scene);
-    if (!renderer.build(sim.walkers, CROWD_CLOTHING_COLORS, this.complexionPalette())) {
+    const built = renderer.build(sim.walkers, {
+      clothing: CROWD_CLOTHING_COLORS,
+      complexion: this.complexionPalette(),
+      hair: this.hairPalette(),
+    });
+    if (!built) {
       renderer.dispose();
       return;
     }
@@ -3558,8 +3583,7 @@ class BabylonGameSession {
       `gig-rider-${target}`,
       false,
       target.length,
-      new Color3(0.92, 0.55, 0.2),
-      this.complexionColorAt(hashStringToSeed(target)),
+      this.characterColorsAt(hashStringToSeed(target), new Color3(0.92, 0.55, 0.2)),
       0.6,
     );
   }
@@ -8608,13 +8632,12 @@ class BabylonGameSession {
     const clothes = [new Color3(0.83, 0.38, 0.22), new Color3(0.2, 0.45, 0.72), new Color3(0.68, 0.28, 0.62)];
     for (let index = 0; index < 4; index += 1) {
       const node = new TransformNode(`pedestrian-${index}`, scene);
-      const clothingColor = clothes[index % clothes.length];
-      const complexionColor = this.complexionColorAt(index);
+      const colors = this.characterColorsAt(index, clothes[index % clothes.length]);
       const speed = 1.2 + index * 0.12;
-      const visual = this.buildRoadUserVisual(node, `yard-pedestrian-${index}`, false, index, clothingColor, complexionColor, speed);
+      const visual = this.buildRoadUserVisual(node, `yard-pedestrian-${index}`, false, index, colors, speed);
       const z = index < 2 ? 4.5 : -10.5;
       const distanceM = (index * 4.1) % 16;
-      this.pedestrians.push({ node, distanceM, speed, z, visual, variant: index, clothingColor, complexionColor });
+      this.pedestrians.push({ node, distanceM, speed, z, visual, variant: index, colors });
       node.position.set(-8 + distanceM, 0.08, z);
     }
   }
@@ -8783,6 +8806,7 @@ class BabylonGameSession {
         modelCount: CHARACTER_MODELS.length,
         tintCount: trafficColors.length,
         complexionCount: this.complexionPalette().length,
+        hairCount: this.hairPalette().length,
       });
       sim?.step(0, { x: this.playerState.x, z: this.playerState.z }, () => true);
       return sim;
@@ -8808,8 +8832,10 @@ class BabylonGameSession {
             : (index % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
       const node = new TransformNode(`scenario-road-user-${index}`, scene);
       const variant = index;
-      const clothingColor = trafficColors[(index + 1) % trafficColors.length];
-      const complexionColor = this.complexionColorAt(index);
+      const colors = this.characterColorsAt(
+        index,
+        trafficColors[(index + 1) % trafficColors.length],
+      );
       const speed = walker
         ? walker.speedMps
         : isCyclist
@@ -8820,8 +8846,7 @@ class BabylonGameSession {
         `scenario-road-user-${index}`,
         isCyclist,
         variant,
-        clothingColor,
-        complexionColor,
+        colors,
         speed,
       );
       const span = isCyclist ? 34 : mapPack.geometry.roadWidth + 6;
@@ -8839,8 +8864,7 @@ class BabylonGameSession {
         kind: isCyclist ? "cyclist" : "pedestrian",
         visual,
         variant,
-        clothingColor,
-        complexionColor,
+        colors,
       };
       this.pedestrians.push(pedestrian);
       if (walker) {
