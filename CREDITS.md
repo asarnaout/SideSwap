@@ -25,6 +25,15 @@ Added to dress the NYC map with dense, clustered buildings + street life. Every
 per-model Poly Pizza source URL is recorded in `app/game/buildingCatalog.ts`
 (the catalogue is the single source of truth for these assets).
 
+**Modified — recoloured (issue #120).** These kits ship in bright toy colours
+(saturated primary red, pumpkin orange, teal, cobalt; the tenement's brick is
+pink), which read as a blockset rather than a city. `tools/recolor-nyc-buildings.mjs`
+maps the saturated hues in their textures and materials into a New York facade
+palette — brownstone, terracotta brick, buff, limestone, slate — while leaving
+low-saturation pixels alone so the pale trim, cornices and window surrounds
+survive. CC0 permits modification; re-run the script to regenerate from a fresh
+download.
+
 - **props/nyc-tower-a.glb, nyc-tower-b.glb, nyc-tower-c.glb, nyc-midrise-a.glb,
   nyc-midrise-b.glb, nyc-midrise-low.glb** — low-poly skyscrapers + mid-rise
   buildings by **Kenney** (<https://kenney.nl>) via Poly Pizza, released
