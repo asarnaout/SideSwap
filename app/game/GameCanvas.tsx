@@ -7595,6 +7595,7 @@ class BabylonGameSession {
               dir: walker.dir,
               state: walker.state,
               speed: round(walker.speedMps),
+              down: round(walker.downedRemaining),
               recycled: walker.justRecycled,
             })) ?? [],
         };
