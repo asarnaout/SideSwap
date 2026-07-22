@@ -32,6 +32,7 @@ const CONFIG: CrowdConfig = {
   turnPauseSeconds: 1,
   modelCount: 3,
   tintCount: 5,
+  complexionCount: 7,
 };
 const DT = 1 / 60;
 const CENTRE = { x: 0, z: 0 };
