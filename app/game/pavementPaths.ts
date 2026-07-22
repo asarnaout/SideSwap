@@ -37,6 +37,10 @@ export interface PavementNode {
   readonly edgeIds: readonly number[];
 }
 
+/** What a graph edge is made of: a straight rail run down a pavement band, a
+ * corner link routed round a junction, or a dead-end cap arcing a road tip. */
+export type PavementEdgeKind = "run" | "link" | "cap";
+
 export interface PavementEdge {
   readonly id: number;
   /** Node ids; a ring edge has a === b and wraps rather than turning. */
@@ -47,7 +51,20 @@ export interface PavementEdge {
   readonly cumulativeM: readonly number[];
   readonly lengthM: number;
   readonly closed: boolean;
+  readonly kind: PavementEdgeKind;
 }
+
+/**
+ * How much of a walker's lateral scatter each edge kind affords: the full
+ * band on rail runs, which sit mid-pavement by construction, but less through
+ * dead-end caps and junction corner links, whose arcs curve tightly enough
+ * that a full-band offset could shave the kerb corner.
+ */
+export const EDGE_KIND_SCATTER: Record<PavementEdgeKind, number> = {
+  run: 1,
+  cap: 0.6,
+  link: 0.4,
+};
 
 export interface PavementGraph {
   readonly nodes: readonly PavementNode[];
@@ -766,7 +783,11 @@ export function buildPavementGraph(
     nodes.push({ x: point.x, z: point.z, edgeIds: [] });
     return nodes.length - 1;
   };
-  const addEdge = (rawPoints: readonly PavementPoint[], closed: boolean) => {
+  const addEdge = (
+    rawPoints: readonly PavementPoint[],
+    closed: boolean,
+    kind: PavementEdgeKind,
+  ) => {
     const points: PavementPoint[] = [];
     for (const point of rawPoints) {
       if (!points.length || pointDistance(points.at(-1)!, point) > 1e-6) {
@@ -785,7 +806,7 @@ export function buildPavementGraph(
     const id = edges.length;
     const a = nodeAt(points[0]);
     const b = closed ? a : nodeAt(points.at(-1)!);
-    edges.push({ id, a, b, points, cumulativeM, lengthM, closed });
+    edges.push({ id, a, b, points, cumulativeM, lengthM, closed, kind });
     nodes[a].edgeIds.push(id);
     if (b !== a) nodes[b].edgeIds.push(id);
   };
@@ -798,9 +819,9 @@ export function buildPavementGraph(
         if (rail.closed) {
           const ring = rail.points.map((_, index) => mitredVertex(rail, sigma, index));
           ring.push({ ...ring[0] });
-          addEdge(ring, true);
+          addEdge(ring, true, "run");
         } else {
-          addEdge(runPoints(rail, sigma, 0, rail.length), false);
+          addEdge(runPoints(rail, sigma, 0, rail.length), false, "run");
         }
         continue;
       }
@@ -808,12 +829,12 @@ export function buildPavementGraph(
         let cursor = 0;
         for (const cut of merged) {
           if (cut.start > cursor + 1e-6) {
-            addEdge(runPoints(rail, sigma, cursor, cut.start), false);
+            addEdge(runPoints(rail, sigma, cursor, cut.start), false, "run");
           }
           cursor = Math.max(cursor, cut.end);
         }
         if (cursor < rail.length - 1e-6) {
-          addEdge(runPoints(rail, sigma, cursor, rail.length), false);
+          addEdge(runPoints(rail, sigma, cursor, rail.length), false, "run");
         }
       } else {
         for (let index = 0; index < merged.length; index += 1) {
@@ -822,7 +843,7 @@ export function buildPavementGraph(
           const runEnd =
             index + 1 < merged.length ? nextCut.start : nextCut.start + rail.length;
           if (runEnd > runStart + 1e-6) {
-            addEdge(runPoints(rail, sigma, runStart, runEnd), false);
+            addEdge(runPoints(rail, sigma, runStart, runEnd), false, "run");
           }
         }
       }
@@ -839,6 +860,7 @@ export function buildPavementGraph(
       addEdge(
         cornerLinkPoints(leg, legs[(index + 1) % legs.length], kerbRadius),
         false,
+        "link",
       );
     }
   }
@@ -848,7 +870,7 @@ export function buildPavementGraph(
     if (rail.closed) continue;
     for (const pointIndex of [0, rail.points.length - 1]) {
       if (!junctionMemberKeys.has(`${rail.id}:${pointIndex}`)) {
-        addEdge(deadEndCapPoints(rail, pointIndex === 0), false);
+        addEdge(deadEndCapPoints(rail, pointIndex === 0), false, "cap");
       }
     }
   }
@@ -889,5 +911,87 @@ export function samplePavementEdge(
     z: start.z + (end.z - start.z) * local,
     headingRad: Math.atan2(end.x - start.x, end.z - start.z),
     segmentIndex: segment,
+  };
+}
+
+/** Metres over which a lateral offset fades to zero at each end of an edge,
+ * so walkers funnel back onto the rail line before crossing a node — the
+ * crossing lands exactly on the shared node point, and position stays
+ * continuous no matter at what angle the next edge leaves. */
+export const LATERAL_TAPER_M = 2.5;
+
+/**
+ * Unit lateral (right of travel, heading convention) at vertex `index`,
+ * blending the two adjacent segment normals so an offset path swings smoothly
+ * through the vertex instead of sidestepping. Blended rather than mitred on
+ * purpose: a blended normal undershoots the true parallel-offset corner — a
+ * scattered walker cuts the corner slightly — but can never overshoot the
+ * offset distance into whatever bounds the pavement.
+ */
+function edgeVertexNormal(edge: PavementEdge, index: number): Direction {
+  const segments = edge.points.length - 1;
+  const dirOf = (segment: number): Direction | null => {
+    const start = edge.points[segment];
+    const end = edge.points[segment + 1];
+    return normalizeDirection({ x: end.x - start.x, z: end.z - start.z });
+  };
+  // A closed edge's first and last points coincide, so both blend the same
+  // wrapped pair and the ring's seam gets one shared normal.
+  const before = index > 0 ? index - 1 : edge.closed ? segments - 1 : 0;
+  const after = index < segments ? index : edge.closed ? 0 : segments - 1;
+  const incoming = dirOf(before);
+  const outgoing = dirOf(after);
+  if (!incoming || !outgoing) {
+    const only = incoming ?? outgoing;
+    return only ? lateralOf(only) : { x: 1, z: 0 };
+  }
+  const blended = normalizeDirection({
+    x: incoming.x + outgoing.x,
+    z: incoming.z + outgoing.z,
+  });
+  return blended ? lateralOf(blended) : lateralOf(outgoing);
+}
+
+/**
+ * `samplePavementEdge` with a lateral offset: the pose `lateralM` metres to
+ * the right of the rail line (negative for left), steered by blended vertex
+ * normals mid-edge and tapered to nothing near the ends. This is what lets a
+ * crowd spread across the pavement band instead of walking the rail single
+ * file (issue #127), without any walker ever sidestepping at a vertex or a
+ * node crossing. Heading stays the rail tangent — callers who care about the
+ * true travel direction through a taper ramp sample a stride ahead.
+ */
+export function samplePavementEdgeOffset(
+  edge: PavementEdge,
+  s: number,
+  lateralM: number,
+  segmentHint = 0,
+): { x: number; z: number; headingRad: number; segmentIndex: number } {
+  const base = samplePavementEdge(edge, s, segmentHint);
+  if (lateralM === 0) return base;
+  const clamped = Math.min(Math.max(s, 0), edge.lengthM);
+  const taper = Math.min(
+    1,
+    clamped / LATERAL_TAPER_M,
+    (edge.lengthM - clamped) / LATERAL_TAPER_M,
+  );
+  if (taper <= 0) return base;
+  const offset = lateralM * taper;
+  const segment = base.segmentIndex;
+  const spanStart = edge.cumulativeM[segment];
+  const span = edge.cumulativeM[segment + 1] - spanStart;
+  const local = span > 1e-9 ? (clamped - spanStart) / span : 0;
+  const from = edgeVertexNormal(edge, segment);
+  const to = edgeVertexNormal(edge, segment + 1);
+  const lateral =
+    normalizeDirection({
+      x: from.x + (to.x - from.x) * local,
+      z: from.z + (to.z - from.z) * local,
+    }) ?? to;
+  return {
+    x: base.x + lateral.x * offset,
+    z: base.z + lateral.z * offset,
+    headingRad: base.headingRad,
+    segmentIndex: base.segmentIndex,
   };
 }

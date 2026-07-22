@@ -3,7 +3,10 @@ import { MAP_PACKS } from "../app/game/content";
 import { collectRoadJunctionFills } from "../app/game/GameCanvas";
 import {
   buildPavementGraph,
+  EDGE_KIND_SCATTER,
+  LATERAL_TAPER_M,
   samplePavementEdge,
+  samplePavementEdgeOffset,
   type PavementGraph,
   type PavementPoint,
   type PavementSurface,
@@ -377,5 +380,125 @@ describe("samplePavementEdge", () => {
     const rail = graph.edges.find((edge) => edge.points.length > 2)!;
     const pose = samplePavementEdge(rail, rail.lengthM / 2);
     expect(Math.abs(Math.abs(pose.headingRad) - Math.PI / 2)).toBeLessThan(0.01);
+  });
+});
+
+describe("samplePavementEdgeOffset", () => {
+  it("offsets mid-run by exactly the asked lateral, to the heading's right", () => {
+    const graph = buildPavementGraph([CROSSROADS[0]], { sidewalkWidthM: SIDEWALK });
+    const rail = graph.edges.reduce((longest, candidate) =>
+      candidate.lengthM > longest.lengthM ? candidate : longest,
+    );
+    const s = rail.lengthM / 2;
+    const base = samplePavementEdge(rail, s);
+    for (const lateral of [0.9, -0.6]) {
+      const pose = samplePavementEdgeOffset(rail, s, lateral);
+      // Right of travel is (cos h, -sin h) in the heading convention.
+      expect(pose.x - base.x).toBeCloseTo(Math.cos(base.headingRad) * lateral, 6);
+      expect(pose.z - base.z).toBeCloseTo(-Math.sin(base.headingRad) * lateral, 6);
+      expect(pose.headingRad).toBe(base.headingRad);
+    }
+  });
+
+  it("tapers the offset away at both edge ends", () => {
+    const graph = buildPavementGraph([CROSSROADS[0]], { sidewalkWidthM: SIDEWALK });
+    const rail = graph.edges.reduce((longest, candidate) =>
+      candidate.lengthM > longest.lengthM ? candidate : longest,
+    );
+    const drift = (s: number) => {
+      const base = samplePavementEdge(rail, s);
+      const pose = samplePavementEdgeOffset(rail, s, 1);
+      return Math.hypot(pose.x - base.x, pose.z - base.z);
+    };
+    expect(drift(0)).toBe(0);
+    expect(drift(rail.lengthM)).toBe(0);
+    expect(drift(LATERAL_TAPER_M / 2)).toBeCloseTo(0.5, 6);
+    expect(drift(rail.lengthM - LATERAL_TAPER_M / 2)).toBeCloseTo(0.5, 6);
+    expect(drift(rail.lengthM / 2)).toBeCloseTo(1, 6);
+  });
+
+  it("is hint-independent like the base sampler", () => {
+    const graph = buildPavementGraph(CROSSROADS, { sidewalkWidthM: SIDEWALK });
+    for (const edge of graph.edges) {
+      for (let step = 0; step <= 10; step += 1) {
+        const s = (edge.lengthM * step) / 10;
+        const cold = samplePavementEdgeOffset(edge, s, 0.7);
+        const hinted = samplePavementEdgeOffset(edge, s, 0.7, cold.segmentIndex);
+        expect(hinted).toEqual(cold);
+      }
+    }
+  });
+
+  it("never sidesteps: consecutive samples stay within a stride everywhere", () => {
+    // A naive per-segment normal pops sideways at each polyline vertex — up
+    // to 2·offset·sin(turn/2), ~0.5 m on a fillet arc step. Walked at 5 cm
+    // increments with the full band, the offset path must move smoothly.
+    const graph = buildPavementGraph(CROSSROADS, { sidewalkWidthM: SIDEWALK });
+    const ds = 0.05;
+    for (const edge of graph.edges) {
+      for (const lateral of [0.9, -0.9]) {
+        let previous = samplePavementEdgeOffset(edge, 0, lateral);
+        for (let s = ds; s <= edge.lengthM; s += ds) {
+          const pose = samplePavementEdgeOffset(edge, s, lateral, previous.segmentIndex);
+          const moved = Math.hypot(pose.x - previous.x, pose.z - previous.z);
+          expect(moved, `edge ${edge.id} (${edge.kind}) at s=${s.toFixed(2)}`)
+            .toBeLessThanOrEqual(ds * 2);
+          previous = pose;
+        }
+      }
+    }
+  });
+
+  it("keeps a closed ring's seam continuous under offset", () => {
+    const ring: PavementSurface[] = [
+      {
+        id: "ring",
+        centerline: [
+          { x: 0, z: 20 }, { x: 20, z: 0 }, { x: 0, z: -20 }, { x: -20, z: 0 },
+          { x: 0, z: 20 },
+        ],
+        widthM: 7.2,
+      },
+    ];
+    const graph = buildPavementGraph(ring, { sidewalkWidthM: 1.2 });
+    for (const edge of graph.edges) {
+      expect(edge.closed).toBe(true);
+      const before = samplePavementEdgeOffset(edge, edge.lengthM - 0.05, 0.4);
+      const at = samplePavementEdgeOffset(edge, edge.lengthM, 0.4);
+      const after = samplePavementEdgeOffset(edge, 0.05, 0.4);
+      expect(Math.hypot(before.x - at.x, before.z - at.z)).toBeLessThan(0.1);
+      expect(Math.hypot(after.x - at.x, after.z - at.z)).toBeLessThan(0.1);
+    }
+  });
+
+  it("keeps a fully scattered crowd off every kept map's carriageways", () => {
+    // The whole point of the taper and the per-kind scaling: even a walker
+    // holding the extreme edge of the scatter band, on every edge of every
+    // kept map, never has a foot on the asphalt. Mirrors GameCanvas's
+    // crowdScatterHalfM derivation (band half-width minus standing room).
+    const violations: string[] = [];
+    for (const { pack, sidewalkWidthM } of TARGET_MAPS) {
+      const surfaces = pack.geometry.roadSurfaces;
+      const graph = buildPavementGraph(surfaces, { sidewalkWidthM });
+      const scatterHalf = Math.max(0, sidewalkWidthM / 2 - 0.55);
+      if (scatterHalf === 0) continue;
+      for (const edge of graph.edges) {
+        const band = scatterHalf * EDGE_KIND_SCATTER[edge.kind];
+        for (let s = 0; s <= edge.lengthM; s += 0.75) {
+          for (const sign of [1, -1]) {
+            const pose = samplePavementEdgeOffset(edge, s, sign * band);
+            for (const surface of surfaces) {
+              if (onCarriageway(pose, surface, 0.05)) {
+                violations.push(
+                  `${pack.id} edge ${edge.id} (${edge.kind}) s=${s.toFixed(1)} ` +
+                    `offset ${(sign * band).toFixed(2)} inside ${surface.id}`,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(violations).toEqual([]);
   });
 });
