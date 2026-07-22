@@ -30,13 +30,34 @@ export interface CrowdWalker {
   readonly complexionIndex: number;
   /** Hair palette slot; fixed for the pool's life, same reason. */
   readonly hairIndex: number;
-  state: "walk" | "pause";
+  state: "walk" | "pause" | "downed";
   pauseRemaining: number;
+  /** Seconds left of the knockdown (fall + lie + get-up) while `downed`. */
+  downedRemaining: number;
   /** True only on the step this walker was recycled to a new spot. */
   justRecycled: boolean;
   x: number;
   z: number;
   headingRad: number;
+}
+
+// A struck walker falls, lies, then gets back up and walks on — the family
+// arcade convention. These phase lengths are the contract between the sims
+// (which own timing) and the renderers (which fit their fall/get-up clips to
+// them); walkerDownedPhase derives the phase from the remaining time.
+export const WALKER_FALL_SECONDS = 0.9;
+export const WALKER_LIE_SECONDS = 2.6;
+export const WALKER_RISE_SECONDS = 0.9;
+export const WALKER_DOWNED_TOTAL_SECONDS =
+  WALKER_FALL_SECONDS + WALKER_LIE_SECONDS + WALKER_RISE_SECONDS;
+
+export type WalkerDownedPhase = "falling" | "lying" | "rising";
+
+export function walkerDownedPhase(downedRemaining: number): WalkerDownedPhase {
+  if (downedRemaining > WALKER_LIE_SECONDS + WALKER_RISE_SECONDS) {
+    return "falling";
+  }
+  return downedRemaining > WALKER_RISE_SECONDS ? "lying" : "rising";
 }
 
 export interface CrowdConfig {
@@ -118,11 +139,30 @@ export class CrowdSim {
       hairIndex: hairSlot(index, config.hairCount),
       state: "walk" as const,
       pauseRemaining: 0,
+      downedRemaining: 0,
       justRecycled: false,
       x: 0,
       z: 0,
       headingRad: 0,
     }));
+  }
+
+  /**
+   * Knocks a walker down where it stands: it faces the striker (so the fall
+   * clip's backward drop reads as being knocked away from the car), stops
+   * advancing, and gets back up after the shared phase timings. Consumes no
+   * randomness, so an unstruck run's walker stream is untouched.
+   */
+  strike(walker: CrowdWalker, fromX: number, fromZ: number): void {
+    if (walker.state === "downed") return;
+    walker.state = "downed";
+    walker.downedRemaining = WALKER_DOWNED_TOTAL_SECONDS;
+    walker.pauseRemaining = 0;
+    const dx = fromX - walker.x;
+    const dz = fromZ - walker.z;
+    if (Math.hypot(dx, dz) > 1e-3) {
+      walker.headingRad = Math.atan2(dx, dz);
+    }
   }
 
   step(dt: number, focus: CrowdFocus, isVisible: CrowdVisibilityProbe): void {
@@ -139,7 +179,13 @@ export class CrowdSim {
     }
     for (const walker of this.walkers) {
       walker.justRecycled = false;
-      if (walker.state === "pause") {
+      if (walker.state === "downed") {
+        walker.downedRemaining -= dt;
+        if (walker.downedRemaining <= 0) {
+          walker.state = "walk";
+          walker.downedRemaining = 0;
+        }
+      } else if (walker.state === "pause") {
         walker.pauseRemaining -= dt;
         if (walker.pauseRemaining <= 0) {
           walker.state = "walk";
@@ -269,6 +315,7 @@ export class CrowdSim {
       this.random() * (this.config.maxSpeedMps - this.config.minSpeedMps);
     walker.state = "walk";
     walker.pauseRemaining = 0;
+    walker.downedRemaining = 0;
     walker.justRecycled = true;
     const pose = samplePavementEdge(this.graph.edges[bestEdge], bestS);
     walker.x = pose.x;

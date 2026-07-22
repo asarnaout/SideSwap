@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   createCrowdSim,
+  WALKER_DOWNED_TOTAL_SECONDS,
+  WALKER_FALL_SECONDS,
+  WALKER_LIE_SECONDS,
+  WALKER_RISE_SECONDS,
+  walkerDownedPhase,
   type CrowdConfig,
   type CrowdSim,
 } from "../app/game/crowdWalkers";
@@ -235,5 +240,80 @@ describe("CrowdSim.step", () => {
     first.step(DT, CENTRE, never);
     second.step(DT, CENTRE, never);
     expect(first.walkers).not.toEqual(second.walkers);
+  });
+});
+
+describe("CrowdSim.strike (knockdown)", () => {
+  it("downs the walker facing the striker and holds it in place", () => {
+    const sim = makeSim();
+    sim.step(DT, CENTRE, never);
+    const walker = sim.walkers[3];
+    const beforeX = walker.x;
+    const beforeZ = walker.z;
+    // Struck from the south-west of the walker.
+    sim.strike(walker, walker.x - 3, walker.z - 4);
+    expect(walker.state).toBe("downed");
+    expect(walker.downedRemaining).toBeCloseTo(WALKER_DOWNED_TOTAL_SECONDS, 6);
+    expect(walker.headingRad).toBeCloseTo(Math.atan2(-3, -4), 6);
+    for (let step = 0; step < 60; step += 1) {
+      sim.step(DT, CENTRE, never);
+    }
+    expect(walker.state).toBe("downed");
+    expect(walker.x).toBe(beforeX);
+    expect(walker.z).toBe(beforeZ);
+  });
+
+  it("walks the phases fall -> lie -> rise, then walks on", () => {
+    const sim = makeSim();
+    sim.step(DT, CENTRE, never);
+    const walker = sim.walkers[5];
+    sim.strike(walker, walker.x + 1, walker.z);
+    expect(walkerDownedPhase(walker.downedRemaining)).toBe("falling");
+    const stepSeconds = (seconds: number) => {
+      for (let step = 0; step < Math.round(seconds / DT); step += 1) {
+        sim.step(DT, CENTRE, never);
+      }
+    };
+    stepSeconds(WALKER_FALL_SECONDS + 0.05);
+    expect(walkerDownedPhase(walker.downedRemaining)).toBe("lying");
+    stepSeconds(WALKER_LIE_SECONDS);
+    expect(walkerDownedPhase(walker.downedRemaining)).toBe("rising");
+    stepSeconds(WALKER_RISE_SECONDS + 0.05);
+    expect(walker.state).toBe("walk");
+    const beforeX = walker.x;
+    stepSeconds(1);
+    expect(Math.hypot(walker.x - beforeX, 0)).toBeGreaterThanOrEqual(0);
+    expect(walker.state === "walk" || walker.state === "pause").toBe(true);
+  });
+
+  it("re-striking a downed walker changes nothing", () => {
+    const sim = makeSim();
+    sim.step(DT, CENTRE, never);
+    const walker = sim.walkers[7];
+    sim.strike(walker, walker.x + 1, walker.z);
+    for (let step = 0; step < 30; step += 1) sim.step(DT, CENTRE, never);
+    const remaining = walker.downedRemaining;
+    const heading = walker.headingRad;
+    sim.strike(walker, walker.x - 5, walker.z + 2);
+    expect(walker.downedRemaining).toBe(remaining);
+    expect(walker.headingRad).toBe(heading);
+  });
+
+  it("leaves every other walker's stream untouched (no RNG drift)", () => {
+    const struck = makeSim();
+    const control = makeSim();
+    struck.step(DT, CENTRE, never);
+    control.step(DT, CENTRE, never);
+    struck.strike(struck.walkers[2], struck.walkers[2].x + 1, struck.walkers[2].z);
+    for (let step = 0; step < 600; step += 1) {
+      struck.step(DT, CENTRE, never);
+      control.step(DT, CENTRE, never);
+    }
+    for (let index = 0; index < CONFIG.count; index += 1) {
+      if (index === 2) continue;
+      expect(struck.walkers[index].x).toBe(control.walkers[index].x);
+      expect(struck.walkers[index].z).toBe(control.walkers[index].z);
+      expect(struck.walkers[index].state).toBe(control.walkers[index].state);
+    }
   });
 });

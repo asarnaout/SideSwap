@@ -119,6 +119,53 @@ export function vatFrame(
   return Math.floor(raw % totalFrames);
 }
 
+/**
+ * The exact frame Babylon's bakedVertexAnimation include computes for a
+ * per-instance window [startFrame..endFrame] — including its one-frame
+ * start-up correction, which changes the effective modulus from `len` to
+ * `len - 1` once one full cycle has elapsed. Pinned by tests so the window
+ * juggling for knocked-down walkers can never silently drift off the shader.
+ */
+export function vatFrameWindowed(
+  time: number,
+  fps: number,
+  offset: number,
+  startFrame: number,
+  endFrame: number,
+): number {
+  const totalFrames = endFrame - startFrame + 1;
+  const cycles = (time * fps) / totalFrames;
+  const frameCorrection = cycles < 1 ? 0 : 1;
+  const numOfFrames = totalFrames - frameCorrection;
+  const fract = cycles - Math.floor(cycles);
+  let frame = fract * numOfFrames + offset;
+  frame = frame % numOfFrames;
+  if (frame < 0) frame += numOfFrames;
+  return Math.floor(frame) + startFrame + frameCorrection;
+}
+
+/**
+ * The VAT offset that makes a window [startFrame..endFrame] display its first
+ * frame at wall-clock `time` — how a one-shot (a walker's fall or get-up) is
+ * cut in mid-drive so it starts from its first frame the moment the state
+ * flips, regardless of how long the manager clock has been running.
+ */
+export function alignedVatOffset(
+  time: number,
+  fps: number,
+  startFrame: number,
+  endFrame: number,
+): number {
+  const totalFrames = endFrame - startFrame + 1;
+  if (totalFrames <= 1 || fps === 0) return 0;
+  const cycles = (time * fps) / totalFrames;
+  const frameCorrection = cycles < 1 ? 0 : 1;
+  const numOfFrames = totalFrames - frameCorrection;
+  const fract = cycles - Math.floor(cycles);
+  const offset = (numOfFrames - fract * numOfFrames) % numOfFrames;
+  return offset < 0 ? offset + numOfFrames : offset;
+}
+
 /** Stable per-model index lists; variants never change, so this is computed
  * once and the per-model thin-instance buffers keep a constant size. */
 export function partitionWalkersByVariant(

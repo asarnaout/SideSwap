@@ -35,6 +35,12 @@ export interface CharacterVisual {
   advancePedals?(distanceMeters: number): void;
   /** Pauses/resumes the walk clip so a stopped pedestrian stands still. */
   setMoving?(moving: boolean): void;
+  /** Plays the stylised fall once, fitted to `seconds`, holding the final
+   * lying pose until recovery (pedestrians only). */
+  playKnockdown?(seconds: number): void;
+  /** Stands the character back up over roughly `seconds` and resumes the
+   * walk clip (pedestrians only). */
+  playRecover?(seconds: number): void;
   dispose(): void;
 }
 
@@ -165,24 +171,30 @@ function addContactShadow(
   blob.receiveShadows = false;
 }
 
-/** Plays the first animation group whose name matches `clip`, looping; disposes
- * the rest (each instance clones all 11 clips, so drop the unused ones). */
-function playClip(
+/** glTF clips are keyed on a 60-frames-per-second timeline. */
+const CLIP_TIMELINE_FPS = 60;
+
+/** Starts the walk clip looping and retains the rig's stylised fall clip for
+ * knockdowns; every other group is disposed (each instance clones all 11
+ * clips, so drop the unused ones). */
+function playWalkRetainingFall(
   groups: readonly AnimationGroup[],
-  clip: string,
+  walkClip: string,
   speedRatio: number,
-): AnimationGroup | undefined {
-  const pattern = new RegExp(clip, "i");
-  let chosen: AnimationGroup | undefined;
+): { walk?: AnimationGroup; fall?: AnimationGroup } {
+  const walkPattern = new RegExp(walkClip, "i");
+  let walk: AnimationGroup | undefined;
+  let fall: AnimationGroup | undefined;
   for (const group of groups) {
-    if (!chosen && pattern.test(group.name)) chosen = group;
+    if (!walk && walkPattern.test(group.name)) walk = group;
+    else if (!fall && /death/i.test(group.name)) fall = group;
     else group.dispose();
   }
-  if (chosen) {
-    chosen.speedRatio = speedRatio;
-    chosen.play(true);
+  if (walk) {
+    walk.speedRatio = speedRatio;
+    walk.play(true);
   }
-  return chosen;
+  return { walk, fall };
 }
 
 /**
@@ -216,7 +228,11 @@ export function buildPedestrianVisual(
     materialOverrides(config, colors),
   );
   addContactShadow(scene, name, root, 0.62, 0.5);
-  const walk = playClip(instance.animationGroups, config.walkClip, walkSpeedRatio);
+  const { walk, fall } = playWalkRetainingFall(
+    instance.animationGroups,
+    config.walkClip,
+    walkSpeedRatio,
+  );
 
   let disposed = false;
   let moving = true;
@@ -228,10 +244,32 @@ export function buildPedestrianVisual(
       if (next) walk.play(true);
       else walk.pause();
     },
+    playKnockdown(seconds) {
+      if (disposed || !fall) return;
+      walk?.pause();
+      moving = false;
+      // Fit the clip to the shared knockdown timing; loop=false leaves the
+      // skeleton holding the final lying pose until recovery.
+      const clipSeconds =
+        Math.max(1, fall.to - fall.from) / CLIP_TIMELINE_FPS;
+      fall.stop();
+      fall.start(false, clipSeconds / Math.max(0.2, seconds), fall.from, fall.to, false);
+    },
+    playRecover(seconds) {
+      if (disposed || !walk) return;
+      fall?.stop();
+      // Blend from the lying pose back into the walk cycle: reads as the
+      // character picking themselves up without needing a dedicated clip.
+      walk.enableBlending = true;
+      walk.blendingSpeed = 1 / (CLIP_TIMELINE_FPS * Math.max(0.2, seconds) * 0.5);
+      moving = true;
+      walk.play(true);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       walk?.dispose();
+      fall?.dispose();
       root.dispose(false, false);
       for (const material of owned) material.dispose(true, false);
     },

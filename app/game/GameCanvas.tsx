@@ -141,7 +141,16 @@ import {
   type CharacterTone,
 } from "./characterPalettes";
 import { CrowdRenderer } from "./crowdRenderer";
-import { createCrowdSim, type CrowdSim } from "./crowdWalkers";
+import {
+  createCrowdSim,
+  WALKER_DOWNED_TOTAL_SECONDS,
+  WALKER_FALL_SECONDS,
+  WALKER_LIE_SECONDS,
+  WALKER_RISE_SECONDS,
+  walkerDownedPhase,
+  type CrowdSim,
+  type WalkerDownedPhase,
+} from "./crowdWalkers";
 import { buildPavementGraph, type PavementGraph } from "./pavementPaths";
 import { PED_TURN_PAUSE_S, stepStroll } from "./pedestrianStroll";
 
@@ -1453,6 +1462,10 @@ interface Pedestrian {
   /** Driven by a pavement-rail walker sim instead of the strip stroll. */
   railMode?: boolean;
   kind?: "pedestrian" | "cyclist";
+  /** While set (rule-clock seconds), this road user is knocked down. */
+  downedUntilSeconds?: number;
+  /** Last knockdown phase applied, so one-shots trigger exactly once. */
+  downPhase?: WalkerDownedPhase;
   /** Model (or procedural-fallback) visual under `node`; null before build. */
   visual?: CharacterVisual | null;
   /** Which character model + clothing, so it can rebuild on model upgrade. */
@@ -3682,6 +3695,9 @@ class BabylonGameSession {
       pedestrian.node.position.x = walker.x;
       pedestrian.node.position.z = walker.z;
       pedestrian.node.rotation.y = walker.headingRad;
+      // A knocked-down user's clips are driven by updateDownedRoadUsers;
+      // poking setMoving here would fight the fall/recover one-shots.
+      if (pedestrian.downedUntilSeconds !== undefined) continue;
       const moving = walker.state === "walk";
       pedestrian.visual?.setMoving?.(moving);
       if (moving) pedestrian.visual?.advancePedals?.(walker.speedMps * dt);
@@ -3892,6 +3908,7 @@ class BabylonGameSession {
     this.animatePedestrians(dt);
     this.syncRailRoadUsers(dt);
     this.stepAmbientCrowd(dt);
+    this.updateDownedRoadUsers();
     this.reportVulnerableRoadUserCollision();
     this.checkDestructiblePropCollisions();
     this.evaluateAuthoredProgress();
@@ -3904,7 +3921,9 @@ class BabylonGameSession {
     ) {
       return;
     }
+    const impactSpeedMps = Math.round(this.playerState.speedMps * 10) / 10;
     for (const roadUser of this.pedestrians) {
+      if (roadUser.downedUntilSeconds !== undefined) continue;
       const safetyRadius = roadUser.kind === "cyclist" ? 1.9 : 1.55;
       if (
         Math.hypot(
@@ -3915,7 +3934,7 @@ class BabylonGameSession {
         continue;
       }
       const cyclist = roadUser.kind === "cyclist";
-      const reported = this.simulation.reportExternalCollision(
+      const reported = this.simulation.reportExternalContact(
         cyclist
           ? "Your vehicle collided with a cyclist."
           : roadUser.railMode
@@ -3926,12 +3945,21 @@ class BabylonGameSession {
           : roadUser.railMode
             ? "Keep the car off the kerb and clear of people on foot."
             : "Brake early and yield until the crossing is completely clear.",
+        cyclist ? 0.8 : 0.75,
         {
           roadUserType: cyclist ? "cyclist" : "pedestrian",
-          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+          impactSpeedMps,
         },
       );
       if (!reported) return;
+      this.knockDownRoadUser(roadUser);
+      this.audio?.impact(this.playerState.speedMps * 0.5, eventNow());
+      this.emitImpactBurst(
+        roadUser.node.position.x,
+        0.9,
+        roadUser.node.position.z,
+        10,
+      );
       const snapshot = this.simulation.getSnapshot();
       this.applySimulationSnapshot(snapshot);
       this.processSimulationEvents(this.simulation.drainEvents());
@@ -3941,6 +3969,7 @@ class BabylonGameSession {
     // up on the kerb — the same offence the old clone crowd reported.
     if (!this.crowdSim) return;
     for (const walker of this.crowdSim.walkers) {
+      if (walker.state === "downed") continue;
       if (
         Math.hypot(
           this.playerState.x - walker.x,
@@ -3949,19 +3978,88 @@ class BabylonGameSession {
       ) {
         continue;
       }
-      const reported = this.simulation.reportExternalCollision(
+      const reported = this.simulation.reportExternalContact(
         "Your vehicle struck a pedestrian on the pavement.",
         "Keep the car off the kerb and clear of people on foot.",
+        0.75,
         {
           roadUserType: "pedestrian",
-          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+          impactSpeedMps,
         },
       );
       if (!reported) return;
+      this.crowdSim.strike(walker, this.playerState.x, this.playerState.z);
+      this.crowdDirty = true;
+      this.audio?.impact(this.playerState.speedMps * 0.5, eventNow());
+      this.emitImpactBurst(walker.x, 0.9, walker.z, 10);
       const snapshot = this.simulation.getSnapshot();
       this.applySimulationSnapshot(snapshot);
       this.processSimulationEvents(this.simulation.drainEvents());
       return;
+    }
+  }
+
+  /** Starts a scenario road user's knockdown: the walker sim (if any) halts
+   * in place, pedestrians face the car and play the fitted fall clip, and
+   * cyclists tip over via updateDownedRoadUsers' per-frame roll. */
+  private knockDownRoadUser(roadUser: Pedestrian) {
+    roadUser.downedUntilSeconds =
+      this.ruleElapsedSeconds + WALKER_DOWNED_TOTAL_SECONDS;
+    roadUser.downPhase = "falling";
+    const railEntry = this.railRoadUsers.find(
+      (entry) => entry.pedestrian === roadUser,
+    );
+    if (railEntry) {
+      const sim =
+        railEntry.kind === "cyclist"
+          ? this.roadUserCycleSim
+          : this.roadUserPedSim;
+      const walker = sim?.walkers[railEntry.index];
+      if (sim && walker) {
+        sim.strike(walker, this.playerState.x, this.playerState.z);
+      }
+    }
+    if (roadUser.kind === "cyclist") return;
+    if (!roadUser.railMode) {
+      // Strip strollers own their node yaw; face the car so the fall reads
+      // as being knocked away from it. Rail walkers get this via strike().
+      roadUser.node.rotation.y = Math.atan2(
+        this.playerState.x - roadUser.node.position.x,
+        this.playerState.z - roadUser.node.position.z,
+      );
+    }
+    roadUser.visual?.playKnockdown?.(WALKER_FALL_SECONDS);
+  }
+
+  /** Advances every knocked-down road user's phase: cyclists roll over and
+   * back upright, pedestrians get their one-shot recover, and everyone
+   * resumes walking when the shared knockdown window closes. */
+  private updateDownedRoadUsers() {
+    for (const roadUser of this.pedestrians) {
+      if (roadUser.downedUntilSeconds === undefined) continue;
+      const remaining = roadUser.downedUntilSeconds - this.ruleElapsedSeconds;
+      if (remaining <= 0) {
+        roadUser.downedUntilSeconds = undefined;
+        roadUser.downPhase = undefined;
+        if (roadUser.kind === "cyclist") roadUser.node.rotation.z = 0;
+        else roadUser.visual?.setMoving?.(true);
+        continue;
+      }
+      const phase = walkerDownedPhase(remaining);
+      if (roadUser.kind === "cyclist") {
+        const tilt =
+          phase === "falling"
+            ? 1 -
+              (remaining - WALKER_LIE_SECONDS - WALKER_RISE_SECONDS) /
+                WALKER_FALL_SECONDS
+            : phase === "lying"
+              ? 1
+              : remaining / WALKER_RISE_SECONDS;
+        roadUser.node.rotation.z = -1.35 * clamp(tilt, 0, 1);
+      } else if (phase === "rising" && roadUser.downPhase !== "rising") {
+        roadUser.visual?.playRecover?.(WALKER_RISE_SECONDS);
+      }
+      roadUser.downPhase = phase;
     }
   }
 
@@ -5130,6 +5228,8 @@ class BabylonGameSession {
     for (const pedestrian of this.pedestrians) {
       // Rail-mode road users are positioned by their walker sim instead.
       if (pedestrian.railMode) continue;
+      // Knocked down: hold position and facing until the window closes.
+      if (pedestrian.downedUntilSeconds !== undefined) continue;
       const span = pedestrian.span ?? 16;
       // The sawtooth this replaced covered `span` metres in 18 phase units, so
       // this keeps every road user's ground speed exactly as tuned.
