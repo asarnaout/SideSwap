@@ -38,6 +38,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+  FIXED_STEP_SECONDS,
   isPointInPolygon,
   SimulationCore,
   type NpcVehicleVariant,
@@ -80,8 +81,10 @@ import {
   type VehicleMeshVisual,
 } from "./vehicleMeshes";
 import {
+  policeBeaconLamps,
   resolvePlayerVehicleAppearance,
   resolveTrafficVehicleAppearance,
+  type VehicleAppearance,
 } from "./vehicleVisuals";
 import {
   disposeModels,
@@ -1332,6 +1335,9 @@ interface PlayerState {
 
 type NpcPathSegment = NpcPathSegmentData;
 
+/** How long a patrol strobes after clocking a violation (~6s at 60 Hz). */
+const PATROL_BEACON_TICKS = 360;
+
 interface NpcVehicle {
   node: TransformNode;
   visual: VehicleMeshVisual;
@@ -1350,6 +1356,26 @@ interface NpcVehicle {
   braking?: boolean;
   /** Marked patrol car: its presence turns a nearby violation into a fine. */
   police?: boolean;
+  /**
+   * Simulation tick until which this patrol's light bar strobes. A patrol
+   * cruises dark and lights up only when it clocks you, which is both what real
+   * traffic looks like and immediate feedback that a fine just landed.
+   */
+  beaconUntilTick?: number;
+}
+
+/**
+ * Identity of a built vehicle visual. Any change to it forces a rebuild — the
+ * role is in there because a patrol car and a civilian car can otherwise share
+ * a model and colours yet need entirely different geometry (light bar, livery).
+ */
+function appearanceVisualKey(appearance: VehicleAppearance): string {
+  return [
+    appearance.model,
+    appearance.role,
+    appearance.paintHex,
+    appearance.accentHex,
+  ].join("|");
 }
 
 /**
@@ -4143,13 +4169,14 @@ class BabylonGameSession {
       variant,
       mapId: this.options.mapPack?.id ?? "orientation-yard",
     });
-    const visualKey = [
-      appearance.model,
-      appearance.paintHex,
-      appearance.accentHex,
-    ].join("|");
+    const visualKey = appearanceVisualKey(appearance);
     npc.visualVehicleId = vehicleId;
     npc.visualVariant = variant;
+    // Patrol status travels with the vehicle's identity, so a slot that recycles
+    // from a patrol into a civilian (or a bus) stops being one — and never
+    // inherits the outgoing vehicle's unfinished flash.
+    npc.police = appearance.role === "police";
+    npc.beaconUntilTick = 0;
     if (npc.visualKey === visualKey) return;
     npc.visual.dispose();
     npc.visual = createVehicleMesh(
@@ -4161,52 +4188,20 @@ class BabylonGameSession {
     npc.visualKey = visualKey;
   }
 
-  /**
-   * Bolts a two-lamp emissive light-bar (red + blue) onto a patrol car's roof.
-   * Parented to the persistent NPC node, not the vehicle visual, so it survives
-   * the paint/appearance rebuilds in ensureNpcVehicleVisual.
-   */
-  private attachPoliceLightBar(node: TransformNode, name: string) {
-    const dims = { width: 0.32, height: 0.16, depth: 0.5 };
-    const barY = 1.5;
-    const red = makeMaterial(
-      this.scene,
-      `${name}-police-red`,
-      new Color3(0.8, 0.1, 0.12),
-      new Color3(0.9, 0.05, 0.08),
-    );
-    const blue = makeMaterial(
-      this.scene,
-      `${name}-police-blue`,
-      new Color3(0.1, 0.2, 0.85),
-      new Color3(0.05, 0.1, 0.95),
-    );
-    createBox(
-      this.scene,
-      `${name}-police-red`,
-      dims,
-      new Vector3(-0.22, barY, 0),
-      red,
-      node,
-    );
-    createBox(
-      this.scene,
-      `${name}-police-blue`,
-      dims,
-      new Vector3(0.22, barY, 0),
-      blue,
-      node,
-    );
-  }
-
-  /** True when an active patrol car is within `radiusM` of the player. */
-  private policeNearPlayer(radiusM: number): boolean {
+  /** The closest active patrol car within `radiusM` of the player, if any. */
+  private patrolNearPlayer(radiusM: number): NpcVehicle | null {
     const { x, z } = this.playerState;
+    let closest: NpcVehicle | null = null;
+    let closestDistance = radiusM;
     for (const npc of this.npcVehicles) {
       if (!npc.police || !npc.active) continue;
-      if (Math.hypot(npc.laneX - x, npc.z - z) <= radiusM) return true;
+      const distance = Math.hypot(npc.laneX - x, npc.z - z);
+      if (distance <= closestDistance) {
+        closest = npc;
+        closestDistance = distance;
+      }
     }
-    return false;
+    return closest;
   }
 
   /**
@@ -4647,6 +4642,16 @@ class BabylonGameSession {
         vehicle.state === "yielding" ||
         vehicle.speedMps < previousSpeed - 0.015;
       npc.visual.setBraking(npc.braking);
+      if (npc.police) {
+        const flashing = snapshot.tick < (npc.beaconUntilTick ?? 0);
+        // Offset per vehicle so two patrols never strobe in lockstep.
+        const lamps = flashing
+          ? policeBeaconLamps(
+              snapshot.tick * FIXED_STEP_SECONDS + vehicleIndex * 0.17,
+            )
+          : { red: 0, blue: 0 };
+        npc.visual.setBeacon(lamps.red, lamps.blue);
+      }
       npc.visual.setDetailVisible(
         Math.hypot(
           vehicle.x - snapshot.player.x,
@@ -4737,15 +4742,20 @@ class BabylonGameSession {
       if (event.severity === "critical") {
         this.setPaused(true);
       } else if (
-        this.policeNearPlayer(35) &&
-        (event.code === "wrong_way" ||
-          event.code === "out_of_bounds" ||
-          event.code === "red_light")
+        event.code === "wrong_way" ||
+        event.code === "out_of_bounds" ||
+        event.code === "red_light"
       ) {
-        // A softened violation witnessed by a patrol → the app debits a fine.
-        this.emit("fine", "A patrol clocked the violation.", "warning", {
-          ruleCode: event.code,
-        });
+        const patrol = this.patrolNearPlayer(35);
+        if (patrol) {
+          // A softened violation witnessed by a patrol → the app debits a fine,
+          // and that patrol's light bar strobes so you can see who clocked you.
+          patrol.beaconUntilTick =
+            this.simulationSnapshot.tick + PATROL_BEACON_TICKS;
+          this.emit("fine", "A patrol clocked the violation.", "warning", {
+            ruleCode: event.code,
+          });
+        }
       }
     }
   }
@@ -8025,7 +8035,7 @@ class BabylonGameSession {
       this.npcVehicles.push({
         node,
         visual,
-        visualKey: [appearance.model, appearance.paintHex, appearance.accentHex].join("|"),
+        visualKey: appearanceVisualKey(appearance),
         visualVehicleId: vehicleId,
         visualVariant: initialSnapshot?.variant ?? "car",
         direction,
@@ -8153,7 +8163,7 @@ class BabylonGameSession {
       const npc: NpcVehicle = {
         node,
         visual,
-        visualKey: [appearance.model, appearance.paintHex, appearance.accentHex].join("|"),
+        visualKey: appearanceVisualKey(appearance),
         visualVehicleId: vehicleId,
         visualVariant: initialVariant,
         direction: 1,
@@ -8169,11 +8179,9 @@ class BabylonGameSession {
       node.position.set(x, 0.12, z);
       node.rotation.y = heading;
       node.setEnabled(safeAtStart);
-      // Every fifth car is a patrol; a nearby violation becomes a fine (phase 10).
-      if (index % 5 === 0) {
-        npc.police = true;
-        this.attachPoliceLightBar(node, `scenario-npc-${index}`);
-      }
+      // Patrol status rides on the appearance (light bar + livery are built into
+      // the vehicle visual); a nearby violation becomes a fine (phase 10).
+      npc.police = appearance.role === "police";
       this.npcVehicles.push(npc);
     }
 

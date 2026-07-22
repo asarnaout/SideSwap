@@ -22,7 +22,7 @@ export type VehicleModel =
   | "london-double-decker";
 
 export type TrafficVehicleVariant = "car" | "taxi" | "bus" | "van";
-export type VehicleAppearanceRole = TrafficVehicleVariant | "player";
+export type VehicleAppearanceRole = TrafficVehicleVariant | "player" | "police";
 
 /** Country whose number-plate design a vehicle wears, derived from the map. */
 export type PlateRegion = "uk" | "us" | "fr" | "jp";
@@ -91,6 +91,12 @@ export interface VehicleAppearance {
   readonly plateRegion: PlateRegion;
   /** This vehicle's own registration string, in its region's format. */
   readonly plateNumber: string;
+  /**
+   * Set only on patrol cars: the local force's markings, which the renderer
+   * turns into flank decals and a roof light bar. `null` on every civilian
+   * vehicle, and the single signal that a vehicle is a patrol.
+   */
+  readonly livery: PoliceLivery | null;
 }
 
 export interface TrafficVehicleAppearanceInput {
@@ -134,6 +140,153 @@ const PASSENGER_ACCENTS = [
   "#152d24",
   "#d0bdab",
 ] as const;
+
+// --- Patrol cars ------------------------------------------------------------
+//
+// Every patrol car on a map wears one identical, real-world scheme (issue #124):
+// a force's fleet is uniform, so a randomly-coloured "police car" reads as a
+// civilian car with a light bar on it. The scheme is chosen by the map's country
+// — the same substring convention the plates use — and drives both the body
+// paint and the flank markings the renderer draws.
+
+/** How a force's markings are laid out along the flank. */
+export type PoliceLiveryStyle =
+  /** UK: two rows of alternating blue/yellow squares. */
+  | "battenburg"
+  /** US/FR: one solid belt stripe carrying the force's word mark. */
+  | "stripe"
+  /** JP: the lower body blacked out under a white shell. */
+  | "half-black";
+
+export interface PoliceLivery {
+  /** The force this scheme belongs to; also the decal texture's cache key. */
+  readonly force: string;
+  readonly style: PoliceLiveryStyle;
+  /** Body paint shared by the whole fleet in this country. */
+  readonly bodyHex: string;
+  /** Primary marking colour (the stripe, or the Battenburg blue). */
+  readonly markingHex: string;
+  /** Second Battenburg square; ignored by the other styles. */
+  readonly secondaryHex: string;
+  /** Word mark carried on the doors. */
+  readonly lettering: string;
+  readonly letteringHex: string;
+}
+
+/**
+ * Real-world liveries, keyed by the map's country.
+ *
+ * - us: NYPD RMPs are white with a navy belt stripe and blue "NYPD".
+ * - uk: Met/Thames Valley cars are white under blue-and-yellow Battenburg.
+ * - fr: Police nationale runs white cars with a blue belt band.
+ * - jp: patrol cars ("パトカー") are the white-over-black 白黒 scheme.
+ */
+const POLICE_LIVERIES: Readonly<Record<PlateRegion, PoliceLivery>> = {
+  us: {
+    force: "nypd",
+    style: "stripe",
+    bodyHex: "#eef1f4",
+    markingHex: "#123c78",
+    secondaryHex: "#0d2b57",
+    lettering: "NYPD",
+    letteringHex: "#123c78",
+  },
+  uk: {
+    force: "uk-battenburg",
+    style: "battenburg",
+    bodyHex: "#e9edf0",
+    markingHex: "#0b4ea2",
+    secondaryHex: "#f5d417",
+    lettering: "POLICE",
+    letteringHex: "#0b4ea2",
+  },
+  fr: {
+    force: "police-nationale",
+    style: "stripe",
+    bodyHex: "#f0f2f4",
+    markingHex: "#1b3f92",
+    secondaryHex: "#c8102e",
+    lettering: "POLICE",
+    letteringHex: "#1b3f92",
+  },
+  jp: {
+    force: "keishicho",
+    style: "half-black",
+    bodyHex: "#eceff1",
+    markingHex: "#14181c",
+    secondaryHex: "#14181c",
+    lettering: "POLICE",
+    letteringHex: "#eceff1",
+  },
+};
+
+/** Each force's actual patrol silhouette, so the fleet reads right per country. */
+const POLICE_MODELS: Readonly<Record<PlateRegion, VehicleModel>> = {
+  us: "urban-crossover", // NYPD RMPs are Explorer-shaped SUVs
+  uk: "sport-wagon", // UK response cars are estates and soft-roaders
+  fr: "compact-hatch", // Police nationale runs hatchbacks
+  jp: "electric-fastback", // patrol sedans
+};
+
+/** The livery every patrol car on `mapId` wears. */
+export function policeLiveryForMap(mapId: string): PoliceLivery {
+  return POLICE_LIVERIES[plateRegionForMap(mapId)];
+}
+
+/** One patrol per this many passenger cars, on average. */
+const PATROL_IN_EVERY = 5;
+
+/**
+ * Whether this vehicle is a patrol car. Derived from the vehicle's own identity
+ * rather than its render slot, so a car stays a patrol (or stays civilian) for
+ * as long as it exists — the earlier slot-indexed rule left a light bar bolted
+ * to a slot that later recycled into a bus.
+ */
+export function isPatrolVehicle(input: TrafficVehicleAppearanceInput): boolean {
+  if (input.variant !== "car") return false;
+  const identity = `${normalizedSeed(input.trafficSeed)}|${input.vehicleId}`;
+  return hashAppearanceKey(`${identity}|patrol`) % PATROL_IN_EVERY === 0;
+}
+
+/** Flash cycle length; both lamps blip twice within it. */
+const BEACON_PERIOD_SECONDS = 1.1;
+/** Blip windows within the cycle, as [start, end] fractions of the period. */
+const BEACON_RED_BLIPS: readonly (readonly [number, number])[] = [
+  [0.0, 0.07],
+  [0.13, 0.2],
+];
+const BEACON_BLUE_BLIPS: readonly (readonly [number, number])[] = [
+  [0.5, 0.57],
+  [0.63, 0.7],
+];
+
+function blipOn(
+  phase: number,
+  windows: readonly (readonly [number, number])[],
+): number {
+  for (const [start, end] of windows) {
+    if (phase >= start && phase < end) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Lamp brightness (0 or 1) for each half of a light bar at `seconds` into its
+ * flash. A real bar strobes each side in quick double blips and alternates
+ * sides — not a steady glow, which is what made the old bar read as two lit
+ * boxes rather than emergency lights.
+ */
+export function policeBeaconLamps(seconds: number): {
+  red: number;
+  blue: number;
+} {
+  const cycle = seconds / BEACON_PERIOD_SECONDS;
+  const phase = cycle - Math.floor(cycle);
+  return {
+    red: blipOn(phase, BEACON_RED_BLIPS),
+    blue: blipOn(phase, BEACON_BLUE_BLIPS),
+  };
+}
 
 const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
   "electric-fastback": {
@@ -237,6 +390,7 @@ const PLAYER_APPEARANCE: Omit<VehicleAppearance, "plateRegion" | "plateNumber"> 
   paintHex: "#1b4f8f",
   accentHex: "#0d2436",
   dimensions: VEHICLE_DIMENSIONS["electric-fastback"],
+  livery: null,
 };
 
 /** Stable 32-bit FNV-1a hash; deliberately local to keep this module pure. */
@@ -273,6 +427,28 @@ function passengerAppearance(
     dimensions: VEHICLE_DIMENSIONS[model],
     plateRegion: region,
     plateNumber: plateNumberForVehicle(region, identity),
+    livery: null,
+  };
+}
+
+function policeAppearance(
+  input: TrafficVehicleAppearanceInput,
+): VehicleAppearance {
+  const region = plateRegionForMap(input.mapId);
+  const livery = POLICE_LIVERIES[region];
+  const model = POLICE_MODELS[region];
+  return {
+    model,
+    role: "police",
+    paintHex: livery.bodyHex,
+    accentHex: livery.markingHex,
+    dimensions: VEHICLE_DIMENSIONS[model],
+    plateRegion: region,
+    plateNumber: plateNumberForVehicle(
+      region,
+      `${normalizedSeed(input.trafficSeed)}|${input.vehicleId}`,
+    ),
+    livery,
   };
 }
 
@@ -298,7 +474,11 @@ export function resolveTrafficVehicleAppearance(
   const plateIdentity = `${normalizedSeed(input.trafficSeed)}|${input.vehicleId}`;
   const plateNumber = plateNumberForVehicle(plateRegion, plateIdentity);
 
-  if (input.variant === "car") return passengerAppearance(input);
+  if (input.variant === "car") {
+    return isPatrolVehicle(input)
+      ? policeAppearance(input)
+      : passengerAppearance(input);
+  }
 
   if (input.variant === "taxi") {
     const london = isLondonVehicle(input);
@@ -311,6 +491,7 @@ export function resolveTrafficVehicleAppearance(
       dimensions: VEHICLE_DIMENSIONS["electric-taxi"],
       plateRegion,
       plateNumber,
+      livery: null,
     };
   }
 
@@ -324,6 +505,7 @@ export function resolveTrafficVehicleAppearance(
       dimensions: VEHICLE_DIMENSIONS["delivery-van"],
       plateRegion,
       plateNumber,
+      livery: null,
     };
   }
 
@@ -342,6 +524,7 @@ export function resolveTrafficVehicleAppearance(
       : VEHICLE_DIMENSIONS["city-bus"],
     plateRegion,
     plateNumber,
+    livery: null,
   };
 }
 
