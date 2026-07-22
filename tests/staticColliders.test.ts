@@ -13,6 +13,14 @@ import {
   buildStaticObstacles,
   distanceToStaticObstacle,
 } from "../app/game/simulationAdapter";
+import {
+  buildPavementGraph,
+  samplePavementEdge,
+} from "../app/game/pavementPaths";
+import {
+  PAVED_SIDEWALK_WIDTH_M,
+  resolveMapVisualPalette,
+} from "../app/game/visuals";
 import type {
   FreeDriveDefinition,
   StaticObstacle,
@@ -190,5 +198,45 @@ describe("the drivable world stays open", () => {
         PLAYER_CAPSULE_RADIUS_M + PLAYER_CAPSULE_HALF_LENGTH_M,
       );
     }
+  });
+
+  it("never walls off the walkable pavement", () => {
+    // Where a walker can stroll, the car must never hit an invisible face:
+    // an oversized venue footprint once stopped the car a whole pavement
+    // short of the visible storefront. Box solids (and anything big) must
+    // stay clear of every pavement rail; small street-furniture circles (the
+    // London pillar box, park feature trees) legitimately stand on or near
+    // the pavement and walkers route around them.
+    const failures: string[] = [];
+    for (const world of driveWorlds) {
+      const mapPack = getMapPack(world.freeDrive.mapId);
+      const palette = resolveMapVisualPalette(mapPack.id);
+      const sidewalkWidthM = palette.paved
+        ? PAVED_SIDEWALK_WIDTH_M
+        : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+      const graph = buildPavementGraph(mapPack.geometry.roadSurfaces, {
+        sidewalkWidthM,
+      });
+      const solids = world.obstacles.filter(
+        (obstacle) =>
+          obstacle.tag !== "worldEdge" &&
+          !(obstacle.kind === "circle" && obstacle.radius <= 2.5),
+      );
+      for (const edge of graph.edges) {
+        const steps = Math.max(1, Math.ceil(edge.lengthM / 1.5));
+        for (let step = 0; step <= steps; step += 1) {
+          const pose = samplePavementEdge(edge, (edge.lengthM * step) / steps);
+          for (const obstacle of solids) {
+            const distance = distanceToStaticObstacle(obstacle, pose.x, pose.z);
+            if (distance < 0.35) {
+              failures.push(
+                `${world.freeDrive.mapId}: ${obstacle.id} covers the pavement at (${pose.x.toFixed(1)}, ${pose.z.toFixed(1)}) — ${distance.toFixed(2)}m`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(failures.slice(0, 20)).toEqual([]);
   });
 });

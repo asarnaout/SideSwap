@@ -21,6 +21,10 @@ import type {
   TrafficSide,
 } from "./GameCanvas";
 import { SCORING_CONFIG, getCountryProfile } from "./content";
+import {
+  PAVED_SIDEWALK_WIDTH_M,
+  resolveMapVisualPalette,
+} from "./visuals";
 
 const DEFAULT_LANE_WIDTH_M = 3.5;
 // The car's top speed models a real vehicle, not a governor pinned to the
@@ -875,6 +879,25 @@ export function buildStaticObstacles(
     }
   }
 
+  // The walkable pavement band along a venue's anchor road: authored venue
+  // footprints are generous fallback boxes, and on a couple of sites the
+  // road-side face landed across the pavement — an invisible wall metres
+  // before the visible storefront. Clamp each venue collider's near face to
+  // start beyond the pavement (the far face stays put), matching what the
+  // renderer actually draws walkable.
+  const sidewalkWidthM = resolveMapVisualPalette(mapPack.id).paved
+    ? PAVED_SIDEWALK_WIDTH_M
+    : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+  const surfaceByLaneId = new Map<
+    string,
+    { centerline: readonly { x: number; z: number }[]; widthM: number }
+  >();
+  for (const surface of mapPack.geometry.roadSurfaces ?? []) {
+    for (const laneId of surface.laneIds) {
+      surfaceByLaneId.set(laneId, surface);
+    }
+  }
+
   for (const venue of mapPack.geometry.gigVenues ?? []) {
     const pose = resolveSimulationLaneAnchor(
       mapPack.laneGraph.lanes,
@@ -885,16 +908,66 @@ export function buildStaticObstacles(
     // anchor along the driver's-right normal, facade (footprint.x) parallel to
     // the road, depth (footprint.z) extending away from it.
     const setback = venue.setbackM ?? DEFAULT_VENUE_SETBACK_M;
+    const rightX = Math.cos(pose.heading);
+    const rightZ = -Math.sin(pose.heading);
+    let nearFace = setback - venue.footprint.z / 2;
+    const farFace = setback + venue.footprint.z / 2;
+    const surface = surfaceByLaneId.get(venue.anchor.laneId);
+    if (surface) {
+      // Signed offset of the anchor lane from its road-surface centreline,
+      // positive toward the venue: the pavement's outer edge sits at
+      // halfRoad + sidewalk beyond the surface centre.
+      let closestX = pose.x;
+      let closestZ = pose.z;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      const line = surface.centerline;
+      for (let index = 0; index < line.length - 1; index += 1) {
+        const ax = line[index].x;
+        const az = line[index].z;
+        const bx = line[index + 1].x;
+        const bz = line[index + 1].z;
+        const dx = bx - ax;
+        const dz = bz - az;
+        const lengthSq = dx * dx + dz * dz;
+        const t =
+          lengthSq > 1e-9
+            ? Math.max(
+                0,
+                Math.min(
+                  1,
+                  ((pose.x - ax) * dx + (pose.z - az) * dz) / lengthSq,
+                ),
+              )
+            : 0;
+        const px = ax + dx * t;
+        const pz = az + dz * t;
+        const distance = Math.hypot(pose.x - px, pose.z - pz);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          closestX = px;
+          closestZ = pz;
+        }
+      }
+      const laneOffsetTowardVenue =
+        (pose.x - closestX) * rightX + (pose.z - closestZ) * rightZ;
+      const pavementOuterFromLane =
+        surface.widthM / 2 + sidewalkWidthM - laneOffsetTowardVenue;
+      const minNearFace = pavementOuterFromLane + 0.4;
+      if (nearFace < minNearFace) {
+        // Never thin the lot below 3 m so the visible storefront stays solid.
+        nearFace = Math.min(minNearFace, farFace - 3);
+      }
+    }
     obstacles.push({
       kind: "obb",
       id: venue.id,
       tag: "venue",
-      x: pose.x + Math.cos(pose.heading) * setback,
-      z: pose.z - Math.sin(pose.heading) * setback,
+      x: pose.x + rightX * ((nearFace + farFace) / 2),
+      z: pose.z + rightZ * ((nearFace + farFace) / 2),
       ux: Math.sin(pose.heading),
       uz: Math.cos(pose.heading),
       halfU: venue.footprint.x / 2,
-      halfV: venue.footprint.z / 2,
+      halfV: (farFace - nearFace) / 2,
     });
   }
 

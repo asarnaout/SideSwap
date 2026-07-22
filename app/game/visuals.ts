@@ -55,6 +55,13 @@ export type MapVisualKey =
   | "tokyo"
   | "orientation";
 
+/**
+ * How wide the concrete sidewalk band renders on `paved` maps. Shared by the
+ * renderer (sidewalk strips), the pavement rail graph (walkers), and the
+ * static-collider clamp that keeps venue lots off the walkable band.
+ */
+export const PAVED_SIDEWALK_WIDTH_M = 3.4;
+
 // Warm cinematic low-poly palette. Each sky is a saturated blue zenith that
 // warms into a COLORED horizon (retiring the old near-white haze that washed
 // every map out); fog matches the horizon so distance reads as atmosphere;

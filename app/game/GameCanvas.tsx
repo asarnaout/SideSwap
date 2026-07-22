@@ -70,6 +70,7 @@ import {
   buildPlanarUVs,
   generateRoadsidePropPlacements,
   hashStringToSeed,
+  PAVED_SIDEWALK_WIDTH_M,
   resolveFogRange,
   resolveMapVisualKey,
   resolveMapVisualPalette,
@@ -214,10 +215,6 @@ const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y + 0.0016;
 const ROAD_SHOULDER_Y = 0.045;
 const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
-// On paved ("city") maps the shoulder band becomes a concrete sidewalk: wider
-// than the dirt shoulder so pedestrians, vendors and streetlights have a curb to
-// sit on. It rides the same band + junction-fill machinery as the dirt shoulder.
-const PAVED_SIDEWALK_WIDTH = 3.4;
 // Lift instanced buildings a few cm so a model's flat base plate never sits
 // exactly coplanar with the ground/sidewalk — otherwise the two surfaces
 // z-fight and flicker as the camera moves. Above the sidewalk band (0.045),
@@ -3628,7 +3625,7 @@ class BabylonGameSession {
     const palette = resolveMapVisualPalette(mapPack.id);
     // The exact sidewalk band the environment renders, so walkers stay on it.
     const sidewalkWidthM = palette.paved
-      ? PAVED_SIDEWALK_WIDTH
+      ? PAVED_SIDEWALK_WIDTH_M
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     try {
       this.pavementGraph = buildPavementGraph(surfaces, { sidewalkWidthM });
@@ -5682,7 +5679,7 @@ class BabylonGameSession {
       ? connectedRoadSurfaces
       : authoredRoadSurfaces;
     const shoulderWidth = paved
-      ? PAVED_SIDEWALK_WIDTH
+      ? PAVED_SIDEWALK_WIDTH_M
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     for (const surface of roadSurfaces) {
       const surfaceMaterial =
