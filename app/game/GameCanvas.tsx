@@ -185,6 +185,9 @@ export const GUIDANCE_LATERAL_CLEARANCE_M = 0.3;
 export const WORLD_LAYER_MASK = 0x0fffffff;
 export const GUIDANCE_LAYER_MASK = 0x10000000;
 export const PRIMARY_CAMERA_LAYER_MASK = WORLD_LAYER_MASK | GUIDANCE_LAYER_MASK;
+/** Mirrors the simulation's standstill threshold, for deciding which pedal is
+ * driving and which is braking when the audio reads the controls. */
+const STOPPED_AUDIO_SPEED_MPS = 0.2;
 const ROAD_SURFACE_Y = 0.07;
 // The asphalt junction fill sits a hair ABOVE the carriageway strips so it wins
 // the depth test across the whole crossing: it caps the two coplanar road strips
@@ -840,7 +843,6 @@ export interface GameRuntimeEvent {
   type:
     | "ready"
     | "camera"
-    | "gear"
     | "indicator"
     | "horn"
     | "coaching"
@@ -1277,7 +1279,6 @@ export interface GameCanvasHandle {
   toggleCamera: () => void;
   togglePause: () => void;
   horn: () => void;
-  setGear: (gear: DriveGear) => void;
   setIndicator: (indicator: TurnIndicator) => void;
   focus: () => void;
 }
@@ -1319,6 +1320,8 @@ interface SessionOptions {
 interface AnalogInput {
   throttle: number;
   brake: number;
+  /** "Go backwards" — brakes a car still rolling forwards, reverses once stopped. */
+  reverse: number;
   steer: number;
   quickLook: number;
 }
@@ -2933,9 +2936,9 @@ class BabylonGameSession {
   private hornUntil = 0;
   private audio: DriveAudio | null = null;
   private hornHeld = false;
-  private keyboard: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-  private touch: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-  private gamepad: AnalogInput = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+  private keyboard: AnalogInput = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
+  private touch: AnalogInput = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
+  private gamepad: AnalogInput = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
   private gamepadButtons: boolean[] = [];
   private gamepadConnected = false;
   private readonly inputRouter: AdaptiveInputRouter;
@@ -3179,7 +3182,7 @@ class BabylonGameSession {
   }
 
   clearTouch() {
-    this.touch = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+    this.touch = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
   }
 
   registerTouchInput() {
@@ -3242,23 +3245,6 @@ class BabylonGameSession {
 
   toggleCamera() {
     this.setCameraMode(this.cameraMode === "first" ? "third" : "first");
-  }
-
-  setGear(gear: DriveGear) {
-    const selected = this.simulation.selectGear(gear === "D" ? "drive" : "reverse");
-    const snapshot = this.simulation.getSnapshot();
-    this.applySimulationSnapshot(snapshot);
-    if (!selected) {
-      this.publishSimulationCoachMessage(snapshot);
-      this.publishHud(true);
-      return;
-    }
-    this.emit("gear", gear === "D" ? "Drive selected." : "Reverse selected.");
-    this.publishHud(true);
-  }
-
-  toggleGear() {
-    this.setGear(this.playerState.gear === "D" ? "R" : "D");
   }
 
   setIndicator(indicator: TurnIndicator) {
@@ -3767,13 +3753,28 @@ class BabylonGameSession {
   private updateAudio(frameSeconds: number) {
     if (!this.audio) return;
     const input = this.mergedInput();
+    // Mirror the simulation's pedal rules so the engine revs for whichever
+    // pedal is actually driving and the brake layer plays when the opposite
+    // one is scrubbing speed off.
+    const signed = this.simulationSnapshot.player.signedSpeedMps;
+    const rollingForward = signed > STOPPED_AUDIO_SPEED_MPS;
+    const rollingBack = signed < -STOPPED_AUDIO_SPEED_MPS;
+    const drivePedal = rollingForward
+      ? input.throttle
+      : rollingBack
+        ? input.reverse
+        : Math.max(input.throttle, input.reverse);
+    const brakePedal = Math.max(
+      input.brake,
+      rollingForward ? input.reverse : rollingBack ? input.throttle : 0,
+    );
     this.audio.update({
       dtSeconds: frameSeconds,
       speedMps: this.playerState.speedMps,
       signedSpeedMps: this.simulationSnapshot.player.signedSpeedMps,
       gear: this.playerState.gear,
-      throttle: this.options.outOfFuel ? 0 : input.throttle,
-      brake: input.brake,
+      throttle: this.options.outOfFuel ? 0 : drivePedal,
+      brake: brakePedal,
       steer: clamp(input.steer * this.options.steeringSensitivity, -1, 1),
       offRoad: this.simulationSnapshot.road.offRoad,
       outOfFuel: this.options.outOfFuel,
@@ -3789,6 +3790,7 @@ class BabylonGameSession {
     const simulationInput: SimulationInput = {
       throttle: this.options.outOfFuel ? 0 : input.throttle,
       brake: input.brake,
+      reverse: this.options.outOfFuel ? 0 : input.reverse,
       steer: clamp(
         input.steer * this.options.steeringSensitivity,
         -1,
@@ -3973,6 +3975,11 @@ class BabylonGameSession {
       ),
       brake: clamp(
         Math.max(this.keyboard.brake, this.touch.brake, this.gamepad.brake),
+        0,
+        1,
+      ),
+      reverse: clamp(
+        Math.max(this.keyboard.reverse, this.touch.reverse, this.gamepad.reverse),
         0,
         1,
       ),
@@ -7646,10 +7653,12 @@ class BabylonGameSession {
       debugWindow.__sideswapDriveControl = (input: {
         throttle?: number;
         brake?: number;
+        reverse?: number;
         steer?: number;
       }) => {
         this.touch.throttle = clamp(input.throttle ?? 0, 0, 1);
         this.touch.brake = clamp(input.brake ?? 0, 0, 1);
+        this.touch.reverse = clamp(input.reverse ?? 0, 0, 1);
         this.touch.steer = clamp(input.steer ?? 0, -1, 1);
       };
       // Revs, gear and per-voice levels, so QA can assert the engine actually
@@ -8949,7 +8958,7 @@ class BabylonGameSession {
       const drivingKey = [
         "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space",
         "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "KeyC",
-        "KeyH", "KeyP", "KeyR", "KeyG", "KeyZ", "KeyX", "KeyV", "Escape",
+        "KeyH", "KeyP", "KeyR", "KeyZ", "KeyX", "KeyV", "Escape",
       ].includes(event.code);
       if (drivingKey) event.preventDefault();
       if (drivingKey) this.inputRouter.registerMeaningfulInput("keyboard");
@@ -8960,6 +8969,9 @@ class BabylonGameSession {
           break;
         case "ArrowDown":
         case "KeyS":
+          // Brakes while the car is still rolling forwards, then reverses.
+          this.keyboard.reverse = 1;
+          break;
         case "Space":
           this.keyboard.brake = 1;
           break;
@@ -8999,9 +9011,6 @@ class BabylonGameSession {
         case "KeyR":
           if (!event.repeat) this.reset();
           break;
-        case "KeyG":
-          if (!event.repeat) this.toggleGear();
-          break;
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -9012,6 +9021,8 @@ class BabylonGameSession {
           break;
         case "ArrowDown":
         case "KeyS":
+          this.keyboard.reverse = 0;
+          break;
         case "Space":
           this.keyboard.brake = 0;
           break;
@@ -9128,7 +9139,10 @@ class BabylonGameSession {
       steer: clamp(deadzone(pad.axes[0] ?? 0), -1, 1),
       quickLook: clamp(deadzone(pad.axes[2] ?? 0), -1, 1),
       throttle: pad.buttons[7]?.value ?? 0,
-      brake: pad.buttons[6]?.value ?? 0,
+      // The left trigger is the reverse pedal, same as S: it brakes the car
+      // down and then backs it up, so there is no gear to select.
+      brake: 0,
+      reverse: pad.buttons[6]?.value ?? 0,
     };
 
     const pressed = pad.buttons.map((button) => button.pressed);
@@ -9155,7 +9169,6 @@ class BabylonGameSession {
     if (edge(1)) this.toggleCamera();
     if (edge(2)) this.setIndicator("left");
     if (edge(3)) this.setIndicator("right");
-    if (edge(4)) this.toggleGear();
     if (edge(9)) this.togglePause();
     if (edge(8)) this.reset();
     this.gamepadButtons = pressed;
@@ -9179,9 +9192,9 @@ class BabylonGameSession {
   }
 
   private clearHeldInputs() {
-    this.keyboard = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-    this.touch = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
-    this.gamepad = { throttle: 0, brake: 0, steer: 0, quickLook: 0 };
+    this.keyboard = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
+    this.touch = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
+    this.gamepad = { throttle: 0, brake: 0, reverse: 0, steer: 0, quickLook: 0 };
     // Covers blur, tab hide, pause and reset: without this a keyup that never
     // arrives because the window lost focus leaves the horn blaring.
     this.hornRelease();
@@ -9315,21 +9328,21 @@ const INPUT_GUIDANCE: Record<
 > = {
   keyboard: {
     label: "Keyboard",
-    orientationHint: "W / ↑ drives · S / ↓ brakes · A / D steers",
+    orientationHint: "W / ↑ drives · S / ↓ brakes then reverses · A / D steers",
     details:
-      "W or ↑ drives, S, ↓, or Space brakes, and A/D or ←/→ steers. Q/E signal, C changes camera, G changes gear, H sounds the horn, and P or Escape pauses.",
+      "W or ↑ drives. S or ↓ brakes, and keeps going into reverse once you have stopped. Space is the brake on its own, and A/D or ←/→ steer. Q/E signal, C changes camera, H sounds the horn, and P or Escape pauses.",
   },
   gamepad: {
     label: "Controller",
-    orientationHint: "Left stick steers · right trigger drives · left trigger brakes",
+    orientationHint: "Left stick steers · right trigger drives · left trigger brakes then reverses",
     details:
-      "Use the left stick to steer, right trigger to drive, and left trigger to brake. A sounds the horn, B changes camera, X/Y signal, LB changes gear, and Start pauses.",
+      "Use the left stick to steer and the right trigger to drive. The left trigger brakes, and keeps going into reverse once you have stopped. A sounds the horn, B changes camera, X/Y signal, and Start pauses.",
   },
   touch: {
     label: "Touch",
     orientationHint: "Use the left steering pad and right Drive / Brake pedals",
     details:
-      "Use the left thumb pad to steer and the right Drive and Brake pedals for speed. The upper-right controls handle indicators, camera, horn, gear, and pause. Swipe the road view to look around.",
+      "Use the left thumb pad to steer and the right Drive and Brake pedals for speed; holding Brake after stopping reverses. The upper-right controls handle indicators, camera, horn, and pause. Swipe the road view to look around.",
   },
 };
 
@@ -9555,7 +9568,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         toggleCamera: () => sessionRef.current?.toggleCamera(),
         togglePause: () => sessionRef.current?.togglePause(),
         horn: () => sessionRef.current?.horn(),
-        setGear: (gear) => sessionRef.current?.setGear(gear),
         setIndicator: (indicator) => sessionRef.current?.setIndicator(indicator),
         focus: () => canvasRef.current?.focus(),
       }),
@@ -9832,14 +9844,14 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             <div style={{ position: "absolute", right: "max(18px, env(safe-area-inset-right))", bottom: "max(18px, env(safe-area-inset-bottom))", display: "flex", alignItems: "flex-end", gap: 12 }}>
               <button
                 type="button"
-                aria-label="Brake"
+                aria-label="Brake and reverse"
                 style={{ ...actionButtonStyle, width: 62, height: 80, borderRadius: 20, background: "rgba(126,42,36,.84)" }}
                 onPointerDown={(event) => {
                   event.currentTarget.setPointerCapture(event.pointerId);
-                  sessionRef.current?.setTouchAnalog("brake", 1);
+                  sessionRef.current?.setTouchAnalog("reverse", 1);
                 }}
-                onPointerUp={() => sessionRef.current?.setTouchAnalog("brake", 0)}
-                onPointerCancel={() => sessionRef.current?.setTouchAnalog("brake", 0)}
+                onPointerUp={() => sessionRef.current?.setTouchAnalog("reverse", 0)}
+                onPointerCancel={() => sessionRef.current?.setTouchAnalog("reverse", 0)}
               >
                 BRAKE
               </button>
@@ -9863,7 +9875,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
               <button type="button" style={actionButtonStyle} aria-label="Right indicator" onClick={() => sessionRef.current?.setIndicator("right")}>▶</button>
               <button type="button" style={actionButtonStyle} aria-label="Change camera" onClick={() => sessionRef.current?.toggleCamera()}>CAM</button>
               <button type="button" style={actionButtonStyle} aria-label="Sound horn" onPointerDown={() => sessionRef.current?.horn()} onPointerUp={() => sessionRef.current?.hornRelease()} onPointerCancel={() => sessionRef.current?.hornRelease()} onPointerLeave={() => sessionRef.current?.hornRelease()}>HORN</button>
-              <button type="button" style={actionButtonStyle} aria-label="Toggle Drive and Reverse" onClick={() => sessionRef.current?.toggleGear()}>{hud.gear}</button>
               <button type="button" style={actionButtonStyle} aria-label="Pause" onClick={() => sessionRef.current?.togglePause()}>Ⅱ</button>
             </div>
 
