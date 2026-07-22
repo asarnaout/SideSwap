@@ -134,7 +134,7 @@ import {
 } from "./characterMeshes";
 import { CrowdRenderer } from "./crowdRenderer";
 import { createCrowdSim, type CrowdSim } from "./crowdWalkers";
-import { buildPavementGraph } from "./pavementPaths";
+import { buildPavementGraph, type PavementGraph } from "./pavementPaths";
 import { PED_TURN_PAUSE_S, stepStroll } from "./pedestrianStroll";
 
 export type TrafficSide = "left" | "right";
@@ -1372,6 +1372,8 @@ interface Pedestrian {
   span?: number;
   walkDir?: 1 | -1;
   pauseRemaining?: number;
+  /** Driven by a pavement-rail walker sim instead of the strip stroll. */
+  railMode?: boolean;
   kind?: "pedestrian" | "cyclist";
   /** Model (or procedural-fallback) visual under `node`; null before build. */
   visual?: CharacterVisual | null;
@@ -1872,6 +1874,14 @@ const AMBIENT_CROWD_CONFIG: Readonly<
   "nyc-upper-west-side": { count: 96, innerRadiusM: 25, outerRadiusM: 130, recycleRadiusM: 170 },
   "tokyo-setagaya": { count: 56, innerRadiusM: 18, outerRadiusM: 100, recycleRadiusM: 140 },
   "london-south-kensington": { count: 64, innerRadiusM: 20, outerRadiusM: 120, recycleRadiusM: 160 },
+};
+
+/** Bubble radii for the scenario road users on maps with no crowd config
+ * (Calais, Milton Keynes): they walk the same rails, just fewer of them. */
+const DEFAULT_ROAD_USER_RADII = {
+  innerRadiusM: 18,
+  outerRadiusM: 110,
+  recycleRadiusM: 150,
 };
 
 /** Clothing tints shared by the crowd and the scenario/yard pedestrians. */
@@ -2789,6 +2799,15 @@ class BabylonGameSession {
   private crowdRenderer: CrowdRenderer | null = null;
   private crowdDirty = false;
   private readonly crowdProbePoint = new Vector3();
+  /** Cached per-map pavement graph; null once known to be unavailable. */
+  private pavementGraph: PavementGraph | null | undefined;
+  private roadUserPedSim: CrowdSim | null = null;
+  private roadUserCycleSim: CrowdSim | null = null;
+  private readonly railRoadUsers: Array<{
+    pedestrian: Pedestrian;
+    kind: "pedestrian" | "cyclist";
+    index: number;
+  }> = [];
   /** Per-url merged building master mesh (all submeshes baked into one, keeping
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
@@ -3391,18 +3410,34 @@ class BabylonGameSession {
    * AMBIENT_CROWD_CONFIG; any failure (models missing, bake produced no
    * motion) simply leaves the map without an ambient crowd.
    */
-  private buildAmbientCrowd() {
+  /** The map's pavement rail graph, built once and shared by the ambient
+   * crowd and the scenario road users. Null when the map has no roads (the
+   * orientation yard) or the build fails — callers fall back gracefully. */
+  private ensurePavementGraph(): PavementGraph | null {
+    if (this.pavementGraph !== undefined) return this.pavementGraph;
+    this.pavementGraph = null;
     const mapPack = this.options.mapPack;
-    const config = mapPack ? AMBIENT_CROWD_CONFIG[mapPack.id] : undefined;
-    if (!mapPack || !config) return;
-    const surfaces = mapPack.geometry.roadSurfaces;
-    if (!surfaces?.length) return;
+    const surfaces = mapPack?.geometry.roadSurfaces;
+    if (!mapPack || !surfaces?.length) return null;
     const palette = resolveMapVisualPalette(mapPack.id);
     // The exact sidewalk band the environment renders, so walkers stay on it.
     const sidewalkWidthM = palette.paved
       ? PAVED_SIDEWALK_WIDTH
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
-    const graph = buildPavementGraph(surfaces, { sidewalkWidthM });
+    try {
+      this.pavementGraph = buildPavementGraph(surfaces, { sidewalkWidthM });
+    } catch (error) {
+      console.warn("[crowd] pavement graph build failed", error);
+    }
+    return this.pavementGraph;
+  }
+
+  private buildAmbientCrowd() {
+    const mapPack = this.options.mapPack;
+    const config = mapPack ? AMBIENT_CROWD_CONFIG[mapPack.id] : undefined;
+    if (!mapPack || !config) return;
+    const graph = this.ensurePavementGraph();
+    if (!graph) return;
     const sim = createCrowdSim(graph, {
       count: Math.floor(config.count * this.buildingKeepFraction),
       seed: hashStringToSeed(`${mapPack.id}-crowd`),
@@ -3448,6 +3483,28 @@ class BabylonGameSession {
       this.crowdVisibility,
     );
     this.crowdDirty = true;
+  }
+
+  /** Walks the scenario road users along the pavement rails: same bubble
+   * rules as the crowd, but these stay skinned clones — pedestrians so the
+   * pool keeps its authored variety, cyclists because pedalling legs are
+   * posed on the CPU and cannot ride a baked walk cycle. */
+  private syncRailRoadUsers(dt: number) {
+    if (!this.railRoadUsers.length) return;
+    const focus = { x: this.playerState.x, z: this.playerState.z };
+    this.roadUserPedSim?.step(dt, focus, this.crowdVisibility);
+    this.roadUserCycleSim?.step(dt, focus, this.crowdVisibility);
+    for (const { pedestrian, kind, index } of this.railRoadUsers) {
+      const walker = (kind === "cyclist" ? this.roadUserCycleSim : this.roadUserPedSim)
+        ?.walkers[index];
+      if (!walker) continue;
+      pedestrian.node.position.x = walker.x;
+      pedestrian.node.position.z = walker.z;
+      pedestrian.node.rotation.y = walker.headingRad;
+      const moving = walker.state === "walk";
+      pedestrian.visual?.setMoving?.(moving);
+      if (moving) pedestrian.visual?.advancePedals?.(walker.speedMps * dt);
+    }
   }
 
   /**
@@ -3635,6 +3692,7 @@ class BabylonGameSession {
     this.processSimulationEvents(events);
     if (events.length === 0) this.publishSimulationCoachMessage(snapshot);
     this.animatePedestrians(dt);
+    this.syncRailRoadUsers(dt);
     this.stepAmbientCrowd(dt);
     this.reportVulnerableRoadUserCollision();
     this.evaluateAuthoredProgress();
@@ -3661,10 +3719,14 @@ class BabylonGameSession {
       const reported = this.simulation.reportExternalCollision(
         cyclist
           ? "Your vehicle collided with a cyclist."
-          : "Your vehicle entered an occupied pedestrian crossing.",
+          : roadUser.railMode
+            ? "Your vehicle struck a pedestrian on the pavement."
+            : "Your vehicle entered an occupied pedestrian crossing.",
         cyclist
           ? "Leave more clearance and wait for a safe opportunity to pass."
-          : "Brake early and yield until the crossing is completely clear.",
+          : roadUser.railMode
+            ? "Keep the car off the kerb and clear of people on foot."
+            : "Brake early and yield until the crossing is completely clear.",
         {
           roadUserType: cyclist ? "cyclist" : "pedestrian",
           impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
@@ -5274,6 +5336,8 @@ class BabylonGameSession {
 
   private animatePedestrians(dt: number) {
     for (const pedestrian of this.pedestrians) {
+      // Rail-mode road users are positioned by their walker sim instead.
+      if (pedestrian.railMode) continue;
       const span = pedestrian.span ?? 16;
       // The sawtooth this replaced covered `span` metres in 18 phase units, so
       // this keeps every road user's ground speed exactly as tuned.
@@ -8672,22 +8736,56 @@ class BabylonGameSession {
     const crosswalks = mapPack.laneGraph.controls.filter(
       (control) => control.type === "crosswalk",
     );
+    // On maps with a pavement graph the road users roam it like the ambient
+    // crowd — pedestrians walking, cyclists riding the same rails at bike
+    // pace — instead of pacing a fixed strip back and forth for ever. Two
+    // sims because the two kinds move at different speeds.
+    const graph = this.ensurePavementGraph();
+    const radii = AMBIENT_CROWD_CONFIG[mapPack.id] ?? DEFAULT_ROAD_USER_RADII;
+    const railSimFor = (count: number, tag: string, minSpeedMps: number, maxSpeedMps: number) => {
+      if (!graph || count <= 0) return null;
+      const sim = createCrowdSim(graph, {
+        count,
+        seed: hashStringToSeed(`${mapPack.id}-${tag}`),
+        innerRadiusM: radii.innerRadiusM,
+        outerRadiusM: radii.outerRadiusM,
+        recycleRadiusM: radii.recycleRadiusM,
+        minSpeedMps,
+        maxSpeedMps,
+        turnPauseSeconds: 1,
+        modelCount: CHARACTER_MODELS.length,
+        tintCount: trafficColors.length,
+      });
+      sim?.step(0, { x: this.playerState.x, z: this.playerState.z }, () => true);
+      return sim;
+    };
+    this.roadUserPedSim = railSimFor(requestedPedestrians, "roadusers", 1.1, 1.6);
+    this.roadUserCycleSim = railSimFor(requestedCyclists, "cyclists", 3.2, 4.2);
     const roadUserCount = requestedPedestrians + requestedCyclists;
     for (let index = 0; index < roadUserCount; index += 1) {
       const isCyclist = index >= requestedPedestrians;
+      const slot = isCyclist ? index - requestedPedestrians : index;
+      const walker = (isCyclist ? this.roadUserCycleSim : this.roadUserPedSim)
+        ?.walkers[slot];
       const authored = authoredSpawns[index % Math.max(1, authoredSpawns.length)];
       const authoredPose = authored && "pose" in authored ? authored.pose : undefined;
       const crosswalk = crosswalks[index % Math.max(1, crosswalks.length)];
-      const source = authoredPose?.position ?? crosswalk?.position ?? this.routePoints[index % Math.max(1, this.routePoints.length)] ?? { x: 0, z: 0 };
-      const heading = authoredPose
-        ? degreesToRadians(authoredPose.headingDeg)
-        : crosswalk
-          ? degreesToRadians(crosswalk.headingDeg + 90)
-          : (index % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
+      const source = walker ?? authoredPose?.position ?? crosswalk?.position ?? this.routePoints[index % Math.max(1, this.routePoints.length)] ?? { x: 0, z: 0 };
+      const heading = walker
+        ? walker.headingRad
+        : authoredPose
+          ? degreesToRadians(authoredPose.headingDeg)
+          : crosswalk
+            ? degreesToRadians(crosswalk.headingDeg + 90)
+            : (index % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
       const node = new TransformNode(`scenario-road-user-${index}`, scene);
       const variant = index;
       const clothingColor = trafficColors[(index + 1) % trafficColors.length];
-      const speed = isCyclist ? 3 + random() : 1.2 + random() * 0.5;
+      const speed = walker
+        ? walker.speedMps
+        : isCyclist
+          ? 3 + random()
+          : 1.2 + random() * 0.5;
       const visual = this.buildRoadUserVisual(
         node,
         `scenario-road-user-${index}`,
@@ -8699,19 +8797,28 @@ class BabylonGameSession {
       const span = isCyclist ? 34 : mapPack.geometry.roadWidth + 6;
       node.position.set(source.x, 0.08, source.z);
       node.rotation.y = heading;
-      this.pedestrians.push({
+      const pedestrian: Pedestrian = {
         node,
-        distanceM: random() * span,
+        distanceM: walker ? 0 : random() * span,
         speed,
         z: source.z,
-        origin: { x: source.x, z: source.z },
+        origin: walker ? undefined : { x: source.x, z: source.z },
         heading,
         span,
+        railMode: Boolean(walker),
         kind: isCyclist ? "cyclist" : "pedestrian",
         visual,
         variant,
         clothingColor,
-      });
+      };
+      this.pedestrians.push(pedestrian);
+      if (walker) {
+        this.railRoadUsers.push({
+          pedestrian,
+          kind: isCyclist ? "cyclist" : "pedestrian",
+          index: slot,
+        });
+      }
     }
   }
 
