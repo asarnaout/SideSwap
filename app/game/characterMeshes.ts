@@ -7,16 +7,21 @@
  */
 import {
   AnimationGroup,
-  Axis,
   Color3,
   type Material,
   MeshBuilder,
-  Quaternion,
   Scene,
   StandardMaterial,
   TransformNode,
   Vector3,
 } from "@babylonjs/core";
+import {
+  BIKE_SCALE,
+  PEDAL_CRANK_RATE,
+  WHEEL_ROLL_RATE,
+  poseCyclist,
+  setupCyclistPose,
+} from "./cyclistPose";
 import { instantiateModel, isModelReady } from "./modelLibrary";
 import {
   blobShadowMaterial,
@@ -66,10 +71,11 @@ export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
   { url: `${C}/person-woman-b.glb`, clothingMaterialNames: ["Dress"], complexionMaterialNames: ["Skin"], hairMaterialNames: ["Hair"], scale: 0.374, yawOffset: Math.PI, walkClip: "Walk" },
 ];
 
-/** CC-BY "Poly by Google" bicycle (credited in CREDITS.md); authored huge and
+/** CC-BY "Poly by Google" bicycle (credited in CREDITS.md; pedals/tires split
+ * into animatable nodes by tools/split-bicycle-pedals.mjs); authored huge and
  * facing +X (tires along X), so it yaws +90° to put its front (handlebars) on
  * +Z, aligned with the rider (verified against a side-on render). */
-const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: 0.005, yawOffset: Math.PI / 2 } as const;
+const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: BIKE_SCALE, yawOffset: Math.PI / 2 } as const;
 
 export function characterModelUrls(): string[] {
   return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
@@ -232,67 +238,19 @@ export function buildPedestrianVisual(
   };
 }
 
-/** Pedal radians advanced per metre the cyclist travels. */
-const PEDAL_RATE = 2.2;
+/** Rigs a cyclist may ride: every model but the dress one — a knee-length
+ * skirt skinned to two counter-phased pedalling legs shears unavoidably. */
+const CYCLIST_RIDER_MODELS: readonly CharacterModelConfig[] = CHARACTER_MODELS.filter(
+  (config) => !config.url.includes("person-woman-b"),
+);
 
 /**
- * Poses a rider's HumanArmature skeleton into a cycling posture (seated, hands
- * forward on the bars, torso leaned) and returns `update(phase)` to pedal the
- * legs. The bone rotations were dialled in against real renders of this rig; the
- * legs oscillate on their local X axis, arms swing forward on Z. Bones are named
- * "Clone of <bone>" after instantiation.
- */
-function setupCyclistPose(riderRoot: TransformNode): (phase: number) => void {
-  const bones: Record<string, TransformNode> = {};
-  for (const node of riderRoot.getChildTransformNodes(false)) {
-    bones[node.name.replace(/^Clone of /, "")] = node;
-  }
-  const restQ: Record<string, Quaternion> = {};
-  for (const name of [
-    "UpperLeg.L", "UpperLeg.R", "LowerLeg.L", "LowerLeg.R",
-    "UpperArm.L", "UpperArm.R", "LowerArm.L", "LowerArm.R", "Abdomen",
-  ]) {
-    const node = bones[name];
-    if (!node) continue;
-    if (!node.rotationQuaternion) {
-      node.rotationQuaternion = Quaternion.FromEulerVector(node.rotation);
-    }
-    restQ[name] = node.rotationQuaternion.clone();
-  }
-  const set = (name: string, axis: Vector3, angle: number): void => {
-    const node = bones[name];
-    const rest = restQ[name];
-    if (!node || !rest) return;
-    node.rotationQuaternion = rest.multiply(Quaternion.RotationAxis(axis, angle));
-  };
-  // Upright cruiser posture: torso near-vertical, arms out to the high swept-back
-  // handlebars (tuned against side-on renders so the hands reach the grips).
-  const applyStatic = (): void => {
-    set("UpperArm.L", Axis.Z, -0.82);
-    set("UpperArm.R", Axis.Z, 0.82);
-    set("LowerArm.L", Axis.X, -0.35);
-    set("LowerArm.R", Axis.X, -0.35);
-    set("Abdomen", Axis.X, 0.15);
-  };
-  const leg = (side: "L" | "R", phase: number): void => {
-    const p = -phase; // reverse so the pedals turn forward, not backward
-    set(`UpperLeg.${side}`, Axis.X, 1.0 + 0.32 * Math.sin(p));
-    set(`LowerLeg.${side}`, Axis.X, -1.4 + 0.5 * Math.sin(p - 0.7));
-  };
-  const update = (phase: number): void => {
-    applyStatic();
-    leg("L", phase);
-    leg("R", phase + Math.PI);
-  };
-  update(0);
-  return update;
-}
-
-/**
- * A cyclist: the bicycle prop with a rider posed correctly on it — seated, hands
- * on the bars, feet on the pedals, legs pedalling as it moves. The rider is one
- * of the pedestrian character models, skeleton-posed into a riding posture (no
- * cycling clip ships CC0), with clothing and complexion set for crowd variety.
+ * A cyclist: the bicycle prop with a rider seated on it — hips on the saddle,
+ * hands on the grips, feet riding the split pedal nodes, legs pedalling and
+ * wheels rolling with ground distance. The rider is one of the pedestrian
+ * character models; the posture and pedal cycle are solved from measured
+ * geometry in cyclistPose.ts (no cycling clip ships CC0), with clothing and
+ * complexion recoloured for crowd variety.
  */
 export function buildCyclistVisual(
   scene: Scene,
@@ -301,7 +259,8 @@ export function buildCyclistVisual(
   variant: number,
   colors: CharacterColors,
 ): CharacterVisual | null {
-  const riderConfig = CHARACTER_MODELS[Math.abs(variant) % CHARACTER_MODELS.length];
+  const riderConfig =
+    CYCLIST_RIDER_MODELS[Math.abs(variant) % CYCLIST_RIDER_MODELS.length];
   if (!isModelReady(scene, BICYCLE_MODEL.url) || !isModelReady(scene, riderConfig.url)) {
     return null;
   }
@@ -327,11 +286,33 @@ export function buildCyclistVisual(
   bikeRoot.scaling.setAll(BICYCLE_MODEL.scale);
   const bikeMaterials = convertMaterials(scene, `${name}-bike`, bikeWrap, new Map());
 
-  // Rider faces +Z (rig faces -Z), lifted onto the saddle and skeleton-posed.
+  // Centre the bike on the cyclist's pivot: the glb's wheelbase midpoint and
+  // frame plane are offset from its origin, which used to park the whole bike
+  // ~0.10 m to one side of the rail point (and of the rider).
+  {
+    const tires = bikeRoot
+      .getChildTransformNodes(false)
+      .filter((node) => /Tire/.test(node.name));
+    if (tires.length === 2) {
+      const mid = new Vector3();
+      for (const tire of tires) {
+        tire.computeWorldMatrix(true);
+        mid.addInPlace(tire.getAbsolutePosition());
+      }
+      mid.scaleInPlace(0.5);
+      root.computeWorldMatrix(true);
+      const rootInv = root.getWorldMatrix().clone().invert();
+      Vector3.TransformCoordinatesToRef(mid, rootInv, mid);
+      bikeWrap.position.x -= mid.x;
+      bikeWrap.position.z -= mid.z;
+      bikeWrap.computeWorldMatrix(true);
+    }
+  }
+
+  // Rider faces +Z (rig faces -Z); cyclistPose seats it onto the saddle.
   const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
   riderWrap.parent = root;
   riderWrap.rotation.y = riderConfig.yawOffset;
-  riderWrap.position.set(0, 0.32, -0.1);
   riderRoot.parent = riderWrap;
   riderRoot.scaling.setAll(riderConfig.scale);
   const riderMaterials = convertMaterials(
@@ -340,10 +321,12 @@ export function buildCyclistVisual(
     riderRoot,
     materialOverrides(riderConfig, colors),
   );
-  // We pose the skeleton manually, so drop the rider's imported walk/idle clips.
+  // The skeleton is posed from measured geometry; the imported walk/idle clips
+  // would fight it, so drop them before solving.
   for (const group of riderInstance.animationGroups) group.dispose();
-  const updatePose = setupCyclistPose(riderRoot);
+  const rig = setupCyclistPose(root, bikeRoot, riderWrap, riderRoot);
   let phase = 0;
+  let wheelAngle = 0;
 
   addContactShadow(scene, name, root, 0.7, 1.7);
 
@@ -351,9 +334,10 @@ export function buildCyclistVisual(
   return {
     root,
     advancePedals(distanceMeters) {
-      if (disposed) return;
-      phase += distanceMeters * PEDAL_RATE;
-      updatePose(phase);
+      if (disposed || !rig) return;
+      phase += distanceMeters * PEDAL_CRANK_RATE;
+      wheelAngle += distanceMeters * WHEEL_ROLL_RATE;
+      poseCyclist(rig, phase, wheelAngle);
     },
     dispose() {
       if (disposed) return;
