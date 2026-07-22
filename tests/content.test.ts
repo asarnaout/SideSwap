@@ -506,6 +506,35 @@ describe("SideSwap content", () => {
     }
   });
 
+  it("gives every lane somewhere legal to go at its far end", () => {
+    // A lane whose successors are missing, empty or spatially discontinuous is
+    // a trap: `advanceNpcAlongLegalRoute` recycles the vehicle the moment it
+    // runs out of centreline, so it pops out of existence wherever the player
+    // happens to be looking. London's bus lane dead-ended at the Exhibition
+    // Road signal and every bus vanished the instant the light went green
+    // (#128). The simulation's own tolerance is 0.5 m; the authored data is
+    // held to the tighter 0.01 m checked below.
+    const strandedLanes: string[] = [];
+    for (const map of MAP_PACKS) {
+      const lanes = new Map(map.laneGraph.lanes.map((lane) => [lane.id, lane]));
+      for (const lane of map.laneGraph.lanes) {
+        const end = lane.centerline.at(-1)!;
+        const continuations = lane.successors.filter((successorId) => {
+          const successor = lanes.get(successorId);
+          if (!successor) return false;
+          const start = successor.centerline[0];
+          return Math.hypot(end.x - start.x, end.z - start.z) < 0.5;
+        });
+        if (!continuations.length) {
+          strandedLanes.push(
+            `${map.id}/${lane.id} strands traffic at (${end.x}, ${end.z})`,
+          );
+        }
+      }
+    }
+    expect(strandedLanes).toEqual([]);
+  });
+
   it("validates lane references, legal successors, controls, and checkpoints", () => {
     const invalidSuccessors: string[] = [];
     for (const map of MAP_PACKS) {

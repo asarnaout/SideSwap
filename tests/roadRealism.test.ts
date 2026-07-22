@@ -256,11 +256,10 @@ describe("ambient traffic circulates instead of blinking out", () => {
   // on an authored spawn lane or, past the fifth, on an arbitrary lane — and
   // the branch offset is the car's index — so the property has to hold for
   // every lane and every offset, not just the spawn points.
-  const EXPECTED_STUBS: Record<string, string[]> = {
-    // A bus lane joined by changing lanes, not by turning into it.
-    "london-south-kensington": ["london-cromwell-east-bus"],
-  };
-
+  // London's bus lane was the last exception here, allowed to dead-end because
+  // nothing turns into it. It still had a bus driving down it, and that bus
+  // blinked out at the Exhibition Road signal every cycle (#128) — a lane with
+  // traffic on it has to lead somewhere whether or not anything turns in.
   for (const pack of MAP_PACKS) {
     it(`keeps every route in ${pack.id} on a circuit`, () => {
       const stranded = new Set<string>();
@@ -279,7 +278,7 @@ describe("ambient traffic circulates instead of blinking out", () => {
           if (!path.loop) stranded.add(lane.id);
         }
       }
-      expect([...stranded].sort()).toEqual(EXPECTED_STUBS[pack.id] ?? []);
+      expect([...stranded].sort()).toEqual([]);
     });
   }
 });
