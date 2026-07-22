@@ -85,15 +85,3 @@ export function authoredSignalAspectAt({
   if (slotPosition < redAmberSeconds + greenSeconds) return "green";
   return "amber";
 }
-
-export function authoredSignalRequiresStop(
-  aspect: AuthoredSignalAspect,
-  includeAmber = false,
-): boolean {
-  return (
-    aspect === "red" ||
-    aspect === "red_amber" ||
-    aspect === "all_red" ||
-    (includeAmber && aspect === "amber")
-  );
-}

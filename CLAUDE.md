@@ -32,7 +32,7 @@ The `--exclude "**/node_modules/**"` is required because passing `--exclude` ove
 
 **There is no CI.** No `.github/`. Nothing runs test/lint/typecheck unless you do.
 
-Lint exits 0 with ~11 outstanding `no-unused-vars` **warnings** — "lint passes" is not "lint clean". `build/` is a *source* directory but is in ESLint's ignore list (inherited from the Next preset, where `build/` means output), so `build/sites-vite-plugin.ts` is never linted.
+Lint is currently **clean — 0 errors, 0 warnings**. Keep it that way: unused vars are warnings, not errors, so dead code accumulates silently rather than failing anything. `build/` is a *source* directory but is in ESLint's ignore list (inherited from the Next preset, where `build/` means output), so `build/sites-vite-plugin.ts` is never linted.
 
 ## The README is stale
 
@@ -118,9 +118,9 @@ Vehicle ground contact is a two-value handshake: nodes at `y = 0.12` and `LOCAL_
 
 ### Rendering layer
 
-`GameCanvas.tsx` is 10k lines but only two live objects: the React component (~660 lines at the end) and `class BabylonGameSession` (~6.5k lines). **React owns the canvas element, the props, and one 10 Hz HUD snapshot; the session owns everything else.** No React state is driven at frame rate. The session is rebuilt only on `[trafficSide, steeringSide, lesson?.id, mapPack?.id, sessionActivation]`; every other prop flows through `session.updateOptions(...)`.
+`GameCanvas.tsx` is ~9.3k lines but only two live objects: `class BabylonGameSession` (`:2782`) and the React component (`:8673`). **React owns the canvas element, the props, and one 10 Hz HUD snapshot; the session owns everything else.** No React state is driven at frame rate. The session is rebuilt only on `[trafficSide, steeringSide, lesson?.id, mapPack?.id, sessionActivation]`; every other prop flows through `session.updateOptions(...)`.
 
-Lines 146-1527 are an **exported pure geometry layer** (road strips, junction fills, chevron placement) — exported specifically so tests can import them from the 10k-line file without instantiating Babylon.
+Everything above `GameCanvasProps` (`:1232`) is an **exported pure geometry layer** (road strips, junction fills, chevron placement) — exported specifically so tests can import them without instantiating Babylon.
 
 Models are a two-phase construction: everything starts as an empty placeholder, then an async preload upgrades vehicles/characters/props, builds instanced buildings and the VAT crowd, and only then calls `markReady()` — which is what lifts the React loading gate. There is no procedural vehicle/character fallback any more, so **anything that lifts `markReady` early ships invisible cars and people**.
 
@@ -138,9 +138,7 @@ The AudioContext is a **module-level singleton**, deliberately not per-session, 
 
 ## Sharp edges
 
-- **~600 lines inside `BabylonGameSession` are unreachable.** Two dead roots, both superseded by `SimulationCore`: `evaluateLesson` (`:3999`) and `computeNpcRenderSnapshots` (`:4703`). Every method below them is called only from within that subtree — `evaluateAuthoredLesson`, `evaluateAuthoredRuleZones`, `evaluateAuthoredSignalEntry`, `authoredSignalAspect`, `findBlockingAuthoredExit`, `assessAuthoredRule`, `applyNpcRenderSnapshots`, `npcTargetSpeed`, `tryActivateQueuedNpc` — plus `createOffsetFlatSegment` (`:7312`) and the `trafficAccumulator` field. All are `private`, so nothing outside the file can reach them. `tsconfig` has no `noUnusedLocals`, so nothing warns — **fixing a bug in any of these changes nothing at runtime.**
-  - **Trap when deleting:** `angleDifference` is two different symbols. The dead one is the private method at `GameCanvas.tsx:4570`; the module-level `angleDifference` in `simulation.ts:710` is live and used 6× by wrong-way, signal-cancel and NPC-clearance checks. A repo-wide delete or rename breaks the simulation.
-  - Note the NPC fields `pathSegments` / `spawnPathSegment` / `respawnAfterSeconds` are still *written* at spawn but only ever read by this dead subtree, so removing it makes them unused too.
+- **Unreachable code does not warn.** `tsconfig` has no `noUnusedLocals` and ESLint treats unused vars as warnings, so a `private` method that loses its last caller just sits there. The `evaluateLesson` and `computeNpcRenderSnapshots` subtrees, superseded by `SimulationCore`, sat unreferenced until they were deleted; when you supersede a subsystem, delete its old path in the same change. Two traps that made that cleanup non-obvious and will recur: **duplicate names across layers** — `buildConnectedNpcPath` is both a `BabylonGameSession` private wrapper and a live module-level function in `npcPaths.ts`, and the deleted `angleDifference` had exactly that shape against the live one in `simulation.ts:710`, so never delete or rename by name alone — and **write-only struct fields**, which nothing flags at all: `NpcVehicle` carried ten (`pathSegments`, `spawnPathSegment`, …) that were assigned at spawn and read only by the dead subtree.
 - **Inline `penalty:` fallbacks at `emitEvent` call sites never fire — for any rule.** `penaltyFor` is `scoring.penalties[code] ?? fallback`, and `penalties` is typed `Partial`, so the mechanism is real; but both scoring configs that can reach it cover all 21 `RuleCode`s with identical values (`SCORING_CONFIG` in `content.ts`, and `DEFAULT_SCORING` at `simulation.ts:663` when a caller omits `scoring`). So editing `penalty: 6` at a call site changes nothing — edit `SCORING_CONFIG`. Keep the fallbacks in mind when **adding** a `RuleCode`: miss it in both maps and the inline number silently becomes live.
 - **`snapshot.recentEvents` is always empty in production** — `GameCanvas` calls `drainEvents()` every fixed update. Use `drainEvents()` or `latestEvent`.
 - **`"coach"` enforcement does not cover collisions.** Collisions call `triggerCritical` directly, bypassing the softening — so in the open world a collision still teleports the player back to spawn. Only `wrong_way`/`out_of_bounds`/`red_light` are actually softened.

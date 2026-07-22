@@ -922,17 +922,3 @@ export function buildSimulationCoreConfig({
     maxReverseSpeedMps: DEFAULT_MAX_REVERSE_SPEED_MPS,
   };
 }
-
-export function expectedSimulationNpcCount(
-  lesson: GameCanvasLesson | undefined,
-  touchFirst: boolean,
-): number {
-  if (!lesson) return touchFirst ? 8 : 10;
-  const densityCounts = { none: 0, light: 6, moderate: 12, busy: 18 } as const;
-  const configured = densityCounts[lesson.trafficDensity];
-  return touchFirst ? Math.min(12, configured) : configured;
-}
-
-export function laneLengthForSimulationAdapter(lane: GameCanvasLane): number {
-  return laneLength(lane);
-}

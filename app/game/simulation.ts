@@ -32,7 +32,6 @@ const NPC_LANE_CHANGE_SIGNAL_SECONDS = 1.2;
 const NPC_LANE_CHANGE_END_MARGIN_M = 2;
 const PLAYER_TRAFFIC_CLEARANCE_M =
   PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 1.25;
-const NPC_PHYSICAL_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 0.08;
 const NPC_CROSSING_YIELD_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 3;
 // A rendered vehicle is ~3.75 m long, but the physics model treats every car as
 // a ~1 m-radius disc. Holding at least a body length of centre-to-centre spacing
