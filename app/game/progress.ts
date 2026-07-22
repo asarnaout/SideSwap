@@ -47,6 +47,7 @@ const DEFAULT_ACCESSIBILITY: AccessibilityPreferences = {
   effectsVolume: 0.8,
   // Under the effects bus by default: music is a bed, not the main event.
   musicVolume: 0.55,
+  musicMuted: false,
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -128,6 +129,7 @@ const parseAccessibility = (value: unknown): AccessibilityPreferences => {
     // simply falls away here — this builds a fresh object from known keys, so no
     // progress-version bump is needed to retire it.
     musicVolume: clamp(record.musicVolume, 0, 1, DEFAULT_ACCESSIBILITY.musicVolume),
+    musicMuted: asBoolean(record.musicMuted, DEFAULT_ACCESSIBILITY.musicMuted),
   };
 };
 

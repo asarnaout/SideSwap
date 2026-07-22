@@ -355,8 +355,14 @@ export interface SimulationCoreConfig {
 export interface SimulationInput {
   /** Accelerator pressure from 0 to 1. */
   readonly throttle?: number;
-  /** Brake pressure from 0 to 1. Braking never selects reverse. */
+  /** Brake pressure from 0 to 1. The brake alone never selects reverse. */
   readonly brake?: number;
+  /**
+   * Reverse pedal from 0 to 1 — "I want to go backwards". While the car is
+   * still rolling forwards this brakes it; from a standstill it pulls away in
+   * reverse, so one key covers both without the driver selecting a gear.
+   */
+  readonly reverse?: number;
   /** Steering from -1 (left) to 1 (right). */
   readonly steer?: number;
   /** Current player look direction in world radians, used to hide runtime spawns. */
@@ -611,6 +617,7 @@ interface ScoreState {
 interface ContinuousInput {
   throttle: number;
   brake: number;
+  reverse: number;
   steer: number;
 }
 
@@ -1022,7 +1029,7 @@ export class SimulationCore {
   private signal: TurnSignal = "off";
   private signalStartHeading = 0;
   private signalAutoCancelSeconds = 0;
-  private continuousInput: ContinuousInput = { throttle: 0, brake: 0, steer: 0 };
+  private continuousInput: ContinuousInput = { throttle: 0, brake: 0, reverse: 0, steer: 0 };
   private viewHeading = 0;
   private previousObservationAction: ObservationDirection | null = null;
   private previousActions: Record<string, boolean> = {};
@@ -1448,6 +1455,7 @@ export class SimulationCore {
     this.continuousInput = {
       throttle: clamp(input.throttle ?? 0, 0, 1),
       brake: clamp(input.brake ?? 0, 0, 1),
+      reverse: clamp(input.reverse ?? 0, 0, 1),
       steer: clamp(input.steer ?? 0, -1, 1),
     };
 
@@ -1494,7 +1502,7 @@ export class SimulationCore {
     this.signal = "off";
     this.signalStartHeading = this.player.heading;
     this.signalAutoCancelSeconds = 0;
-    this.continuousInput = { throttle: 0, brake: 0, steer: 0 };
+    this.continuousInput = { throttle: 0, brake: 0, reverse: 0, steer: 0 };
     this.viewHeading = this.player.heading;
     this.previousObservationAction = null;
     this.previousActions = {};
@@ -1832,14 +1840,30 @@ export class SimulationCore {
   }
 
   private clearActiveInput(): void {
-    this.continuousInput = { throttle: 0, brake: 0, steer: 0 };
+    this.continuousInput = { throttle: 0, brake: 0, reverse: 0, steer: 0 };
     this.accumulatorSeconds = 0;
   }
 
   private movePlayer(deltaSeconds: number): void {
-    const throttle = this.continuousInput.throttle;
-    const brake = this.continuousInput.brake;
-    const direction = this.gear === "drive" ? 1 : -1;
+    const forward = this.continuousInput.throttle;
+    const backward = this.continuousInput.reverse;
+    const speed = this.signedSpeedMps;
+
+    // Each pedal states a direction the driver wants to travel. Pressed against
+    // the way the car is already rolling it is a brake; once the car has come to
+    // rest the same pedal pulls away that way. So holding the reverse pedal
+    // brings the car to a stop and then backs it up, with no gear to select —
+    // and the brake pedal proper still only ever slows the car down.
+    const opposed =
+      (speed > STOPPED_SPEED_MPS ? backward : 0) +
+      (speed < -STOPPED_SPEED_MPS ? forward : 0);
+    const brake = Math.max(this.continuousInput.brake, Math.min(1, opposed));
+    const drive =
+      speed > STOPPED_SPEED_MPS
+        ? forward
+        : speed < -STOPPED_SPEED_MPS
+          ? -backward
+          : forward - backward;
 
     if (brake > 0) {
       this.signedSpeedMps = moveTowards(
@@ -1848,8 +1872,8 @@ export class SimulationCore {
         (3 + brake * 8.5) * deltaSeconds,
       );
     } else {
-      const acceleration = direction > 0 ? 5.6 : 4.1;
-      this.signedSpeedMps += direction * throttle * acceleration * deltaSeconds;
+      const acceleration = drive >= 0 ? 5.6 : 4.1;
+      this.signedSpeedMps += drive * acceleration * deltaSeconds;
       const drag = 0.25 + Math.abs(this.signedSpeedMps) * 0.035;
       this.signedSpeedMps = moveTowards(
         this.signedSpeedMps,
@@ -1863,9 +1887,14 @@ export class SimulationCore {
       -this.config.maxReverseSpeedMps,
       this.config.maxForwardSpeedMps,
     );
-    if (Math.abs(this.signedSpeedMps) < 0.015 && throttle === 0) {
+    if (Math.abs(this.signedSpeedMps) < 0.015 && drive === 0) {
       this.signedSpeedMps = 0;
     }
+    // The gear is now a readout of which way the car is actually travelling
+    // rather than something the driver selects. It latches, so a car rolling to
+    // a halt keeps reading R until it next pulls away forwards.
+    if (this.signedSpeedMps > STOPPED_SPEED_MPS) this.gear = "drive";
+    else if (this.signedSpeedMps < -STOPPED_SPEED_MPS) this.gear = "reverse";
 
     const absoluteSpeed = Math.abs(this.signedSpeedMps);
     if (absoluteSpeed > 0.04) {

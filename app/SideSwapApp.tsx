@@ -303,9 +303,27 @@ export default function SideSwapApp() {
   // Lives out here rather than inside GameCanvas, which remounts mid-session
   // whenever the destination or steering side changes — music placed in there
   // would restart at apparently random moments.
+  const musicMuted = progress.accessibility.musicMuted;
   const music = useDriveMusic(
-    progress.accessibility.masterVolume * progress.accessibility.musicVolume,
+    musicMuted
+      ? 0
+      : progress.accessibility.masterVolume * progress.accessibility.musicVolume,
   );
+  // Mute is its own switch rather than a volume of zero, so the slider keeps the
+  // level to come back to.
+  const toggleMusicMuted = useCallback(() => {
+    setProgress((current) => {
+      const next: PlayerProgressV2 = {
+        ...current,
+        accessibility: {
+          ...current.accessibility,
+          musicMuted: !current.accessibility.musicMuted,
+        },
+      };
+      saveProgress(next);
+      return next;
+    });
+  }, []);
 
   // Drain fuel by the distance the car actually moved between HUD samples, then
   // mirror the pose for the next delta. Fuel lives in the drive session and is
@@ -892,6 +910,32 @@ export default function SideSwapApp() {
             </em>
           </div>
         )}
+        <button
+          type="button"
+          onClick={toggleMusicMuted}
+          aria-pressed={musicMuted}
+          aria-label={musicMuted ? "Unmute music" : "Mute music"}
+          title={musicMuted ? "Unmute music" : "Mute music"}
+          style={{
+            position: "absolute",
+            top: "1rem",
+            right: "1rem",
+            width: "2.6rem",
+            height: "2.6rem",
+            display: "grid",
+            placeItems: "center",
+            borderRadius: "999px",
+            border: "none",
+            cursor: "pointer",
+            background: "rgba(15, 18, 22, 0.6)",
+            backdropFilter: "blur(10px)",
+            color: musicMuted ? "rgba(244, 246, 248, 0.45)" : "#f4f6f8",
+            font: "500 1.1rem/1 system-ui, sans-serif",
+            zIndex: 6,
+          }}
+        >
+          <span aria-hidden="true">{musicMuted ? "🔇" : "🎵"}</span>
+        </button>
         {hud && (
           <div className="sr-only" aria-live="polite">
             Speed {hud.speed} {hud.speedUnit}, gear {hud.gear}.

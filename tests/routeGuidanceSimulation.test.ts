@@ -137,10 +137,12 @@ describe("authoritative route guidance", () => {
         spawn: { x: 0, z: 4, heading: 0 },
       }),
     );
-    expect(reverse.selectGear("reverse")).toBe(true);
+    // The reverse pedal, not a selected gear: from a standstill it pulls the
+    // car away backwards.
     for (let tick = 0; tick < 70; tick += 1) {
-      reverse.step(1 / 60, { throttle: 0.7 });
+      reverse.step(1 / 60, { reverse: 0.7 });
     }
+    expect(reverse.getSnapshot().player.gear).toBe("reverse");
     expect(reverse.getSnapshot().player.z).toBeLessThan(3);
     expect(reverse.getSnapshot().guidance.owner?.routeIndex).toBe(0);
 

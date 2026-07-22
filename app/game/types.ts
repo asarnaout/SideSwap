@@ -563,6 +563,8 @@ export interface AccessibilityPreferences {
   readonly masterVolume: number;
   readonly effectsVolume: number;
   readonly musicVolume: number;
+  /** Silences the music bed only; effects and engine keep their levels. */
+  readonly musicMuted: boolean;
 }
 
 export interface PlayerProgressV2 {

@@ -17,20 +17,72 @@ describe("deterministic simulation", () => {
     expect(left.getSnapshot()).toEqual(right.getSnapshot());
   });
 
-  it("requires a stop before switching direction and never reverses via brake", () => {
+  // Tick counts here are kept short on purpose: reverse far enough and the run
+  // ends in an incident and respawns the car, which would read as "speed 0" and
+  // quietly stop testing what these say they test. Hence the status assertions.
+  it("never reverses off the brake pedal, however long it is held", () => {
     const simulation = new SimulationCore({ npcCount: 0 });
     for (let index = 0; index < 60; index += 1) {
       simulation.step(1 / 60, { throttle: 1 });
     }
-    expect(simulation.toggleGear()).toBe(false);
-    expect(simulation.getSnapshot().player.gear).toBe("drive");
-    for (let index = 0; index < 120; index += 1) {
+    expect(simulation.getSnapshot().player.signedSpeedMps).toBeGreaterThan(1);
+    for (let index = 0; index < 300; index += 1) {
       simulation.step(1 / 60, { brake: 1 });
+      expect(simulation.getSnapshot().player.signedSpeedMps).toBeGreaterThanOrEqual(0);
     }
     expect(simulation.getSnapshot().player.signedSpeedMps).toBe(0);
     expect(simulation.getSnapshot().player.gear).toBe("drive");
-    expect(simulation.toggleGear()).toBe(true);
-    expect(simulation.getSnapshot().player.gear).toBe("reverse");
+  });
+
+  it("brakes to a stop on the reverse pedal, then pulls away backwards", () => {
+    const simulation = new SimulationCore({ npcCount: 0 });
+    for (let index = 0; index < 60; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const cruising = simulation.getSnapshot().player.signedSpeedMps;
+    expect(cruising).toBeGreaterThan(1);
+
+    // Held from cruising speed the same pedal has to slow the car all the way
+    // down before it ever moves backwards — no lurch through zero.
+    let previous = cruising;
+    let stoppedAt = -1;
+    for (let index = 0; index < 90; index += 1) {
+      simulation.step(1 / 60, { reverse: 1 });
+      const speed = simulation.getSnapshot().player.signedSpeedMps;
+      if (stoppedAt < 0) {
+        expect(speed, `tick ${index}`).toBeLessThanOrEqual(previous + 1e-9);
+        if (speed <= 0) stoppedAt = index;
+      }
+      previous = speed;
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(stoppedAt).toBeGreaterThan(0);
+    expect(snapshot.player.signedSpeedMps).toBeLessThan(-1);
+    expect(snapshot.player.gear).toBe("reverse");
+  });
+
+  it("brakes a reversing car back to a stop on the accelerator", () => {
+    const simulation = new SimulationCore({ npcCount: 0 });
+    for (let index = 0; index < 60; index += 1) {
+      simulation.step(1 / 60, { reverse: 1 });
+    }
+    expect(simulation.getSnapshot().player.signedSpeedMps).toBeLessThan(-1);
+    for (let index = 0; index < 120; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.player.signedSpeedMps).toBeGreaterThan(1);
+    expect(snapshot.player.gear).toBe("drive");
+  });
+
+  it("holds still when both pedals are pressed together", () => {
+    const simulation = new SimulationCore({ npcCount: 0 });
+    for (let index = 0; index < 60; index += 1) {
+      simulation.step(1 / 60, { throttle: 1, reverse: 1 });
+    }
+    expect(Math.abs(simulation.getSnapshot().player.signedSpeedMps)).toBeLessThan(0.05);
   });
 
   it("keeps snapshots serializable and uses weighted scoring", () => {
