@@ -113,7 +113,10 @@ describe("CrowdSim.step", () => {
     }
   });
 
-  it("turns watched walkers around at the bubble edge instead of vanishing them", () => {
+  // 20k sim steps with per-walker assertions: ~4s alone, so the default 5s
+  // budget flakes under parallel-worker contention. The body is synchronous —
+  // the timeout is a label, never a truncation.
+  it("turns watched walkers around at the bubble edge instead of vanishing them", { timeout: 20_000 }, () => {
     const sim = makeSim();
     sim.step(DT, CENTRE, never);
     let turnarounds = 0;

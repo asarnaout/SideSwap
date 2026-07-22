@@ -56,8 +56,20 @@ import {
 } from "./simulationAdapter";
 import {
   DEFAULT_SERVICE_SETBACK_M,
+  FUEL_PUMP_REACH_M,
+  gasStationPumpPositions,
   resolveServicePointLot,
 } from "./servicePoints";
+import { PROP_MODEL_FOOTPRINTS_M } from "./propFootprints";
+import {
+  buildBoardScript,
+  buildErrandScript,
+  buildExitScript,
+  buildRefuelScript,
+  scriptFocusPoint,
+  type CutsceneKind,
+  type CutsceneStep,
+} from "./cutsceneScript";
 import { DriveAudio } from "./audio/DriveAudio";
 import {
   authoredSignalAspectAt,
@@ -130,10 +142,12 @@ const LANE_PAINT_STYLES = new Set([
   "edge_solid",
 ]);
 import {
+  buildActorVisual,
   buildCyclistVisual,
   buildPedestrianVisual,
   characterModelUrls,
   CHARACTER_MODELS,
+  type ActorVisual,
   type CharacterColors,
   type CharacterVisual,
 } from "./characterMeshes";
@@ -860,6 +874,7 @@ export interface GameRuntimeEvent {
     | "horn"
     | "coaching"
     | "collision"
+    | "cutscene"
     | "fine"
     | "incident"
     | "reset"
@@ -872,6 +887,25 @@ export interface GameRuntimeEvent {
   ruleCode?: string;
   penalty?: number;
   evidence?: Readonly<Record<string, string | number | boolean>>;
+}
+
+/**
+ * One interaction cutscene the app wants played: the driver refuelling, the
+ * rider boarding or leaving, a delivery errand. Nonce-keyed like `resetNonce`
+ * so a re-render can never restart a scene; the session answers with
+ * `cutscene` events (`phase: "pump" | "done"`) carrying the same nonce.
+ */
+export interface CutsceneRequest {
+  readonly nonce: number;
+  readonly kind: CutsceneKind;
+  /** The gig stop the scene plays at (venue/address id). Refuel resolves the
+   * nearest pump instead. */
+  readonly venueId?: string;
+  /** Stop id whose seed styles the passenger — the pickup, so the person who
+   * gets out at the drop-off is the person who got in. */
+  readonly actorSeedId?: string;
+  /** How empty the tank is (0..1), sizing the refuel fill window. */
+  readonly missingFuelFraction?: number;
 }
 
 /** Structural lesson contract; existing LessonDefinition objects can be passed directly. */
@@ -1276,6 +1310,8 @@ export interface GameCanvasProps {
   gigStopId?: string | null;
   /** True once the parcel/rider is aboard, so the marker reads as a drop-off. */
   gigStopCarrying?: boolean;
+  /** Interaction cutscene to play; controls lock until its `done` event. */
+  cutscene?: CutsceneRequest | null;
   className?: string;
   style?: CSSProperties;
   showBuiltInHud?: boolean;
@@ -1328,6 +1364,7 @@ interface SessionOptions {
   riderVenueId: string | null;
   gigStopId: string | null;
   gigStopCarrying: boolean;
+  cutscene: CutsceneRequest | null;
   lesson?: GameCanvasLesson;
   mapPack?: GameCanvasMapPack;
 }
@@ -1340,6 +1377,64 @@ interface AnalogInput {
   steer: number;
   quickLook: number;
 }
+
+/** Driving input while a cutscene owns the car: everything at rest. */
+const CUTSCENE_LOCKED_INPUT: Readonly<AnalogInput> = Object.freeze({
+  throttle: 0,
+  brake: 0,
+  reverse: 0,
+  steer: 0,
+  quickLook: 0,
+});
+
+/** Execution state of the interaction cutscene being performed. */
+interface ActiveCutscene {
+  readonly nonce: number;
+  readonly kind: CutsceneKind;
+  readonly script: readonly CutsceneStep[];
+  stepIndex: number;
+  stepElapsed: number;
+  stepStarted: boolean;
+  /** Cumulative polyline lengths for the current walk/run step. */
+  segmentLengths: number[];
+  segmentTotal: number;
+  readonly actorNode: TransformNode;
+  readonly actorVisual: ActorVisual | null;
+  /** The staged wide shot, framing the car and the farthest scene point. */
+  readonly cameraPosition: Vector3;
+  readonly cameraTarget: Vector3;
+  /** The plane the actor's feet walk on (forecourt slab vs walker plane). */
+  readonly groundY: number;
+  /** The waiting rider was hidden for a boarding scene (restored on cancel). */
+  riderWasHidden: boolean;
+  pumpEmitted: boolean;
+}
+
+/** The player avatar every cutscene stages: one consistent driver. */
+const DRIVER_ACTOR_VARIANT = 2;
+const DRIVER_ACTOR_COLORS: CharacterColors = {
+  clothing: new Color3(0.86, 0.47, 0.15),
+  complexion: new Color3(0.72, 0.53, 0.4),
+  hair: new Color3(0.16, 0.12, 0.09),
+};
+
+/** Matches the waiting-rider tint so the boarding actor is the same person. */
+const RIDER_CLOTHING_TINT = new Color3(0.92, 0.55, 0.2);
+
+/** How deep and how long the suspension dips when somebody gets in or out. */
+const CUTSCENE_DIP_SECONDS = 0.42;
+const CUTSCENE_DIP_DEPTH_M = 0.05;
+
+/** Characters stand on the walker plane of the y-stack (matches the ambient
+ * crowd's WALKER_Y and the scenario pedestrians), not on y=0 — the road tops
+ * out at 0.07, so feet placed at zero read as buried to the ankles. */
+const ACTOR_WALK_Y = 0.08;
+/** The gas station's forecourt slab tops out at ~0.095 (measured world AABB
+ * of the placed model), so the refuel scene walks a touch higher still. */
+const FORECOURT_WALK_Y = 0.1;
+
+/** How far inside the pavement a street address's "front door" sits. */
+const STREET_DOOR_INSET_M = 3.2;
 
 interface PlayerState {
   x: number;
@@ -2925,9 +3020,22 @@ class BabylonGameSession {
     string,
     { x: number; z: number; facing: number }
   >();
-  private riderVisual: CharacterVisual | null = null;
+  private riderVisual: ActorVisual | null = null;
   private riderNode: TransformNode | null = null;
   private riderVenuePlaced: string | null = null;
+  /**
+   * Front-door point for each gig stop: a measured venue's face centre, or a
+   * street address's building line. Where the delivery errand actor vanishes.
+   */
+  private readonly gigVenueDoors = new Map<string, { x: number; z: number }>();
+  /** The interaction cutscene being performed, if any. While set, driving
+   * input reads as zero and the third-person camera holds the staged shot. */
+  private activeCutscene: ActiveCutscene | null = null;
+  /** Highest request nonce already staged, so option echoes can't restart. */
+  private handledCutsceneNonce = 0;
+  /** Suspension dip when somebody gets in/out: half-sine over its window. */
+  private cutsceneDipSeconds = 0;
+  private cutsceneDipOffset = 0;
   private gigMarkerNode: TransformNode | null = null;
   private gigMarkerPlaced: string | null = null;
   private gigMarkerCarrying = false;
@@ -3279,6 +3387,11 @@ class BabylonGameSession {
     this.syncRider();
     this.syncGigMarker();
     this.syncDamageSmoke();
+    const cutsceneRequest = this.options.cutscene;
+    if (cutsceneRequest && cutsceneRequest.nonce !== this.handledCutsceneNonce) {
+      this.handledCutsceneNonce = cutsceneRequest.nonce;
+      this.startCutscene(cutsceneRequest);
+    }
   }
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
@@ -3320,27 +3433,37 @@ class BabylonGameSession {
     this.setPaused(!this.paused);
   }
 
-  setCameraMode(mode: CameraMode, notify = true) {
-    const activeCameraNames =
-      this.scene.activeCameras?.map((camera) => camera.name) ?? [];
-    if (
-      this.cameraMode === mode &&
-      isCameraStackActive(
-        mode,
-        this.scene.activeCamera?.name ?? null,
-        activeCameraNames,
-      )
-    ) {
-      return;
-    }
-    this.cameraMode = mode;
-    const firstPerson = mode === "first";
+  /** Puts the render stack (cameras + exterior/cockpit visibility) into
+   * first- or third-person shape. Split from `setCameraMode` because a
+   * cutscene borrows the third-person stack without touching the mode. */
+  private applyCameraStack(firstPerson: boolean) {
     this.playerExterior.setEnabled(!firstPerson);
     this.playerCockpit.setEnabled(firstPerson);
     this.scene.activeCamera = firstPerson ? this.firstCamera : this.thirdCamera;
     this.scene.activeCameras = firstPerson
       ? [this.firstCamera, this.rearCamera]
       : [this.thirdCamera];
+  }
+
+  setCameraMode(mode: CameraMode, notify = true) {
+    const activeCameraNames =
+      this.scene.activeCameras?.map((camera) => camera.name) ?? [];
+    if (
+      this.cameraMode === mode &&
+      (this.activeCutscene !== null ||
+        isCameraStackActive(
+          mode,
+          this.scene.activeCamera?.name ?? null,
+          activeCameraNames,
+        ))
+    ) {
+      return;
+    }
+    this.cameraMode = mode;
+    const firstPerson = mode === "first";
+    // A running cutscene keeps its staged third-person stack; the recorded
+    // mode is honoured the moment the scene ends.
+    if (!this.activeCutscene) this.applyCameraStack(firstPerson);
     if (notify) {
       this.callbacks.onCameraChange?.(mode);
       this.emit("camera", `${firstPerson ? "First" : "Third"}-person camera selected.`);
@@ -3349,6 +3472,8 @@ class BabylonGameSession {
   }
 
   toggleCamera() {
+    // The staged shot owns the camera while an interaction scene plays.
+    if (this.activeCutscene) return;
     this.setCameraMode(this.cameraMode === "first" ? "third" : "first");
   }
 
@@ -3395,6 +3520,7 @@ class BabylonGameSession {
   }
 
   reset(incidentMessage?: string) {
+    this.cancelCutscene();
     if (incidentMessage) {
       this.simulation.reportExternalCollision(
         incidentMessage,
@@ -3423,6 +3549,7 @@ class BabylonGameSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelCutscene();
     this.engine.stopRenderLoop(this.renderFrame);
     this.simulation.dispose();
     this.inputRouter.dispose();
@@ -3471,6 +3598,13 @@ class BabylonGameSession {
     this.modelsReady = true;
     this.upgradeVehiclesToModels();
     this.upgradeRoadUsersToModels();
+    // The waiting rider is placed from options, usually before the character
+    // glbs settle; rebuild it so the first passenger gig's rider isn't an
+    // invisible placeholder.
+    if (this.riderVenuePlaced) {
+      this.riderVenuePlaced = null;
+      this.syncRider();
+    }
     this.upgradePropsToModels();
     this.buildInstancedBuildings();
     this.buildAmbientCrowd();
@@ -3738,18 +3872,359 @@ class BabylonGameSession {
     const spot = this.gigVenueCurbside.get(target);
     if (!spot) return;
     const node = new TransformNode(`gig-rider-${target}`, this.scene);
-    node.position.set(spot.x, 0, spot.z);
+    node.position.set(spot.x, ACTOR_WALK_Y, spot.z);
     node.rotation.y = spot.facing;
     this.riderNode = node;
-    // Reuse the pedestrian character pipeline; a low cadence reads as idling.
-    this.riderVisual = this.buildRoadUserVisual(
+    // The actor pipeline's Idle clip: somebody standing at the kerb waiting,
+    // not the old walk-cycle-in-place. Null while the glbs preload; the
+    // preload settle re-syncs so the first gig's rider is never left empty.
+    this.riderVisual = buildActorVisual(
+      this.scene,
       node,
       `gig-rider-${target}`,
-      false,
       target.length,
-      this.characterColorsAt(hashStringToSeed(target), new Color3(0.92, 0.55, 0.2)),
-      0.6,
+      this.passengerColors(target),
     );
+  }
+
+  /** The rider/passenger palette for a stop id — one person per pickup, and
+   * the same person again when they get out at the drop-off. */
+  private passengerColors(seedId: string): CharacterColors {
+    return this.characterColorsAt(hashStringToSeed(seedId), RIDER_CLOTHING_TINT);
+  }
+
+  /**
+   * Stages one interaction cutscene: builds the choreography for the request,
+   * spawns its actor, and swings the camera to a wide shot of the car and the
+   * scene's far point. While `activeCutscene` is set, `mergedInput` reads as
+   * all-zero (the "game is unplayable" contract) and `updateCamera` holds the
+   * staged shot. Anything unstageable resolves as an instant `done` so the
+   * app-side effects (fuel, gig state) are never lost.
+   */
+  private startCutscene(request: CutsceneRequest) {
+    this.cancelCutscene();
+    const car = {
+      x: this.playerState.x,
+      z: this.playerState.z,
+      heading: this.playerState.heading,
+    };
+    let script: readonly CutsceneStep[] | null = null;
+    let passengerSeed: string | null = null;
+    switch (request.kind) {
+      case "refuel": {
+        const pump = this.nearestPumpTo(car.x, car.z);
+        if (pump) {
+          script = buildRefuelScript(
+            car,
+            this.options.steeringSide,
+            pump,
+            request.missingFuelFraction ?? 1,
+          );
+        }
+        break;
+      }
+      case "board": {
+        const spot = request.venueId
+          ? this.gigVenueCurbside.get(request.venueId)
+          : undefined;
+        if (spot) {
+          const from = this.riderNode
+            ? { x: this.riderNode.position.x, z: this.riderNode.position.z }
+            : { x: spot.x, z: spot.z };
+          script = buildBoardScript(car, this.options.trafficSide, from);
+          passengerSeed = request.actorSeedId ?? request.venueId ?? null;
+        }
+        break;
+      }
+      case "exit": {
+        const spot = request.venueId
+          ? this.gigVenueCurbside.get(request.venueId)
+          : undefined;
+        script = buildExitScript(
+          car,
+          this.options.trafficSide,
+          spot ? { x: spot.x, z: spot.z } : null,
+        );
+        passengerSeed = request.actorSeedId ?? request.venueId ?? null;
+        break;
+      }
+      case "food_pickup":
+      case "food_dropoff": {
+        const door = request.venueId
+          ? (this.gigVenueDoors.get(request.venueId) ??
+            this.gigVenueCurbside.get(request.venueId))
+          : undefined;
+        if (door) {
+          script = buildErrandScript(car, this.options.steeringSide, {
+            x: door.x,
+            z: door.z,
+          });
+        }
+        break;
+      }
+    }
+    if (!script || script.length === 0) {
+      this.emitCutsceneDone(request.nonce, request.kind);
+      return;
+    }
+
+    const actorNode = new TransformNode(`cutscene-actor-${request.nonce}`, this.scene);
+    actorNode.setEnabled(false);
+    const actorVisual = passengerSeed
+      ? buildActorVisual(
+          this.scene,
+          actorNode,
+          `cutscene-passenger-${request.nonce}`,
+          passengerSeed.length,
+          this.passengerColors(passengerSeed),
+        )
+      : buildActorVisual(
+          this.scene,
+          actorNode,
+          `cutscene-driver-${request.nonce}`,
+          DRIVER_ACTOR_VARIANT,
+          DRIVER_ACTOR_COLORS,
+        );
+
+    // The staged shot: a static wide framing of the car and the scene's far
+    // point, from whichever side the camera is already on so the glide in
+    // never swings across the action.
+    const focus = scriptFocusPoint(car, script);
+    const midX = (car.x + focus.x) / 2;
+    const midZ = (car.z + focus.z) / 2;
+    const span = Math.hypot(focus.x - car.x, focus.z - car.z);
+    let perpX = focus.z - car.z;
+    let perpZ = -(focus.x - car.x);
+    const perpLength = Math.hypot(perpX, perpZ);
+    if (perpLength < 0.001) {
+      perpX = Math.cos(car.heading);
+      perpZ = -Math.sin(car.heading);
+    } else {
+      perpX /= perpLength;
+      perpZ /= perpLength;
+    }
+    const towardCameraX = this.thirdCamera.position.x - midX;
+    const towardCameraZ = this.thirdCamera.position.z - midZ;
+    if (perpX * towardCameraX + perpZ * towardCameraZ < 0) {
+      perpX = -perpX;
+      perpZ = -perpZ;
+    }
+    const radius = Math.max(9, span * 0.85);
+
+    const riderWasHidden = request.kind === "board" && this.riderNode !== null;
+    if (riderWasHidden) this.riderNode?.setEnabled(false);
+
+    this.activeCutscene = {
+      nonce: request.nonce,
+      kind: request.kind,
+      script,
+      stepIndex: 0,
+      stepElapsed: 0,
+      stepStarted: false,
+      segmentLengths: [],
+      segmentTotal: 0,
+      actorNode,
+      actorVisual,
+      cameraPosition: new Vector3(
+        midX + perpX * radius,
+        4.2 + span * 0.25,
+        midZ + perpZ * radius,
+      ),
+      cameraTarget: new Vector3(midX, 1.0, midZ),
+      groundY: request.kind === "refuel" ? FORECOURT_WALK_Y : ACTOR_WALK_Y,
+      riderWasHidden,
+      pumpEmitted: false,
+    };
+    this.applyCameraStack(false);
+  }
+
+  /** Fired at a step's first frame: placement, visibility, clip, foley, dip. */
+  private beginCutsceneStep(cutscene: ActiveCutscene, step: CutsceneStep) {
+    const path = step.path ?? [];
+    cutscene.segmentLengths = [];
+    cutscene.segmentTotal = 0;
+    for (let index = 1; index < path.length; index += 1) {
+      cutscene.segmentTotal += Math.hypot(
+        path[index].x - path[index - 1].x,
+        path[index].z - path[index - 1].z,
+      );
+      cutscene.segmentLengths.push(cutscene.segmentTotal);
+    }
+    if (step.sound) this.audio?.foley(step.sound);
+    if (step.carDip) this.cutsceneDipSeconds = CUTSCENE_DIP_SECONDS;
+    if (step.fuelWindow && !cutscene.pumpEmitted) {
+      cutscene.pumpEmitted = true;
+      this.emit("cutscene", "Filling the tank.", "info", {
+        evidence: {
+          phase: "pump",
+          nonce: cutscene.nonce,
+          durationMs: Math.round(step.seconds * 1000),
+        },
+      });
+    }
+    switch (step.action) {
+      case "show":
+      case "walk":
+      case "run": {
+        const at = path[0];
+        if (at) cutscene.actorNode.position.set(at.x, cutscene.groundY, at.z);
+        if (step.face !== undefined) cutscene.actorNode.rotation.y = step.face;
+        cutscene.actorNode.setEnabled(true);
+        if (step.action === "show") {
+          cutscene.actorVisual?.setClip("idle");
+        } else {
+          const speed =
+            step.seconds > 0 ? cutscene.segmentTotal / step.seconds : 0;
+          if (step.action === "walk") {
+            cutscene.actorVisual?.setClip("walk", clamp(speed / 1.4, 0.5, 1.8));
+          } else {
+            cutscene.actorVisual?.setClip("run", clamp(speed / 3.0, 0.6, 1.6));
+          }
+        }
+        break;
+      }
+      case "idle":
+        if (step.face !== undefined) cutscene.actorNode.rotation.y = step.face;
+        cutscene.actorVisual?.setClip("idle");
+        break;
+      case "hide":
+        cutscene.actorNode.setEnabled(false);
+        break;
+    }
+  }
+
+  /**
+   * Advances the running cutscene by one rendered frame: moves the actor along
+   * the current step's polyline, then rolls completed steps forward (several
+   * can elapse in one slow frame). Also decays the suspension dip — that keeps
+   * settling even after the scene ends.
+   */
+  private advanceCutscene(frameSeconds: number) {
+    if (this.cutsceneDipSeconds > 0) {
+      this.cutsceneDipSeconds = Math.max(
+        0,
+        this.cutsceneDipSeconds - frameSeconds,
+      );
+      this.cutsceneDipOffset =
+        Math.sin(Math.PI * (1 - this.cutsceneDipSeconds / CUTSCENE_DIP_SECONDS)) *
+        CUTSCENE_DIP_DEPTH_M;
+    } else {
+      this.cutsceneDipOffset = 0;
+    }
+    const cutscene = this.activeCutscene;
+    if (!cutscene) return;
+    let step = cutscene.script[cutscene.stepIndex];
+    if (!cutscene.stepStarted) {
+      cutscene.stepStarted = true;
+      this.beginCutsceneStep(cutscene, step);
+    }
+    cutscene.stepElapsed += frameSeconds;
+    while (cutscene.stepElapsed >= step.seconds) {
+      cutscene.stepElapsed -= step.seconds;
+      cutscene.stepIndex += 1;
+      if (cutscene.stepIndex >= cutscene.script.length) {
+        this.finishCutscene(cutscene);
+        return;
+      }
+      step = cutscene.script[cutscene.stepIndex];
+      this.beginCutsceneStep(cutscene, step);
+    }
+    if (
+      (step.action === "walk" || step.action === "run") &&
+      cutscene.segmentTotal > 0 &&
+      step.seconds > 0
+    ) {
+      const path = step.path ?? [];
+      const along =
+        cutscene.segmentTotal * Math.min(1, cutscene.stepElapsed / step.seconds);
+      let segment = 0;
+      while (
+        segment < cutscene.segmentLengths.length - 1 &&
+        along > cutscene.segmentLengths[segment]
+      ) {
+        segment += 1;
+      }
+      const segmentStart = segment === 0 ? 0 : cutscene.segmentLengths[segment - 1];
+      const segmentLength = cutscene.segmentLengths[segment] - segmentStart;
+      const a = path[segment];
+      const b = path[segment + 1];
+      const t = segmentLength > 0 ? (along - segmentStart) / segmentLength : 1;
+      cutscene.actorNode.position.set(
+        a.x + (b.x - a.x) * t,
+        cutscene.groundY,
+        a.z + (b.z - a.z) * t,
+      );
+      if (segmentLength > 0.01) {
+        cutscene.actorNode.rotation.y = Math.atan2(b.x - a.x, b.z - a.z);
+      }
+    }
+  }
+
+  private finishCutscene(cutscene: ActiveCutscene) {
+    // Boarding leaves the rider hidden: the app flips the gig to "carrying" on
+    // this event, which clears riderVenueId and disposes the waiting mesh —
+    // re-enabling it here would flash the double for a frame.
+    cutscene.actorVisual?.dispose();
+    cutscene.actorNode.dispose(false, false);
+    this.activeCutscene = null;
+    this.applyCameraStack(this.cameraMode === "first");
+    this.audio?.foley("chime");
+    this.emitCutsceneDone(cutscene.nonce, cutscene.kind);
+  }
+
+  /** Tears a scene down without a `done` event: tow reset, session dispose. */
+  private cancelCutscene() {
+    const cutscene = this.activeCutscene;
+    if (!cutscene) return;
+    this.activeCutscene = null;
+    cutscene.actorVisual?.dispose();
+    cutscene.actorNode.dispose(false, false);
+    if (cutscene.riderWasHidden) this.riderNode?.setEnabled(true);
+    if (cutscene.pumpEmitted) this.audio?.foley("pump_stop");
+    this.cutsceneDipSeconds = 0;
+    this.cutsceneDipOffset = 0;
+    this.applyCameraStack(this.cameraMode === "first");
+  }
+
+  private emitCutsceneDone(nonce: number, kind: CutsceneKind) {
+    const message =
+      kind === "refuel"
+        ? "Tank filled; back behind the wheel."
+        : kind === "board"
+          ? "Rider aboard."
+          : kind === "exit"
+            ? "Rider dropped off."
+            : kind === "food_pickup"
+              ? "Order collected."
+              : "Order delivered.";
+    this.emit("cutscene", message, "info", {
+      evidence: { phase: "done", nonce, kind },
+    });
+  }
+
+  /** The pump the refuel scene plays at: nearest to the car, within the same
+   * reach the refuel prompt uses (plus slack for the car's own footprint). */
+  private nearestPumpTo(
+    x: number,
+    z: number,
+  ): { x: number; z: number } | null {
+    const mapPack = this.options.mapPack;
+    if (!mapPack) return null;
+    let best: { x: number; z: number } | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const service of mapPack.geometry.servicePoints ?? []) {
+      for (const pump of gasStationPumpPositions(
+        mapPack.laneGraph.lanes,
+        service,
+      )) {
+        const distance = Math.hypot(x - pump.x, z - pump.z);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = pump;
+        }
+      }
+    }
+    return bestDistance <= FUEL_PUMP_REACH_M + 3 ? best : null;
   }
 
   /**
@@ -3838,6 +4313,7 @@ class BabylonGameSession {
     }
 
     const interpolation = this.paused ? 1 : this.accumulator / FIXED_STEP;
+    if (!this.paused) this.advanceCutscene(frameSeconds);
     this.updatePlayerVisuals(interpolation);
     this.updateGuidanceVisuals();
     if (!this.paused) this.updatePropFalls(frameSeconds);
@@ -4167,6 +4643,10 @@ class BabylonGameSession {
   }
 
   private mergedInput(): AnalogInput {
+    // The "game is unplayable" contract while an interaction scene plays:
+    // every consumer (sim input, engine audio, steering visual, quick-look)
+    // reads through here, so one gate locks them all.
+    if (this.activeCutscene) return CUTSCENE_LOCKED_INPUT;
     const strongest = (...values: number[]) =>
       values.reduce((best, value) =>
         Math.abs(value) > Math.abs(best) ? value : best,
@@ -5363,7 +5843,11 @@ class BabylonGameSession {
     while (headingDelta > Math.PI) headingDelta -= Math.PI * 2;
     while (headingDelta < -Math.PI) headingDelta += Math.PI * 2;
     this.displayedHeading += headingDelta * positionBlend;
-    this.player.position.set(this.displayedX, 0.12, this.displayedZ);
+    this.player.position.set(
+      this.displayedX,
+      0.12 - this.cutsceneDipOffset,
+      this.displayedZ,
+    );
     this.player.rotation.y = this.displayedHeading;
     const visualSteer = this.mergedInput().steer;
     if (this.steeringAssembly) {
@@ -5391,7 +5875,24 @@ class BabylonGameSession {
     const look = this.mergedInput().quickLook;
     const quickLookAngle = Math.abs(look) > 1.5 ? Math.PI : look * 1.18;
 
-    if (this.cameraMode === "first") {
+    if (this.activeCutscene) {
+      // The staged wide shot: glide to it on the same lerp the chase camera
+      // uses (slower, for a cinematic ease); the chase/cockpit pose resumes
+      // through the same smoothing when the scene ends.
+      if (this.options.reducedMotion) {
+        this.thirdCamera.position.copyFrom(this.activeCutscene.cameraPosition);
+      } else {
+        const smooth = 1 - Math.exp(-3.5 * dt);
+        this.thirdCamera.position.copyFrom(
+          Vector3.Lerp(
+            this.thirdCamera.position,
+            this.activeCutscene.cameraPosition,
+            smooth,
+          ),
+        );
+      }
+      this.thirdCamera.setTarget(this.activeCutscene.cameraTarget);
+    } else if (this.cameraMode === "first") {
       const seatSide = this.options.steeringSide === "left" ? -0.46 : 0.46;
       const headBob =
         this.options.headBob && !this.options.reducedMotion
@@ -5999,6 +6500,26 @@ class BabylonGameSession {
         z: pose.z - Math.sin(pose.heading) * 4.5,
         facing: Math.atan2(-Math.cos(pose.heading), Math.sin(pose.heading)),
       });
+      // The delivery errand's "front door": the measured model's road-facing
+      // face centre (same holder-frame convention as the venue collider:
+      // right carries model X, forward carries model Z), or the near edge of
+      // the authored footprint for unmeasured venues.
+      {
+        const rightX = Math.cos(pose.heading);
+        const rightZ = -Math.sin(pose.heading);
+        const forwardX = Math.sin(pose.heading);
+        const forwardZ = Math.cos(pose.heading);
+        const measured = PROP_MODEL_FOOTPRINTS_M[venue.modelId ?? venue.kind];
+        const doorDepth = measured
+          ? measured.minX - 0.45
+          : (px - pose.x) * rightX + (pz - pose.z) * rightZ -
+            Math.max(venue.footprint.x, venue.footprint.z) / 2 - 0.6;
+        const doorAlong = measured ? (measured.minZ + measured.maxZ) / 2 : 0;
+        this.gigVenueDoors.set(venue.id, {
+          x: (measured ? px : pose.x) + rightX * doorDepth + forwardX * doorAlong,
+          z: (measured ? pz : pose.z) + rightZ * doorDepth + forwardZ * doorAlong,
+        });
+      }
       // A venue may name a specific building model; its kind still drives the
       // procedural fallback colour and everything gameplay-facing.
       const modelKey = venue.modelId ?? venue.kind;
@@ -6042,6 +6563,13 @@ class BabylonGameSession {
         x: address.kerbX,
         z: address.kerbZ,
         facing: address.facing,
+      });
+      // The address's "front door" is its building line: the kerb spot pushed
+      // across the pavement, away from the road (facing looks back across the
+      // carriageway).
+      this.gigVenueDoors.set(address.id, {
+        x: address.kerbX - Math.sin(address.facing) * STREET_DOOR_INSET_M,
+        z: address.kerbZ - Math.cos(address.facing) * STREET_DOOR_INSET_M,
       });
     }
 
@@ -7578,6 +8106,31 @@ class BabylonGameSession {
             ._drawCalls?.current ?? null,
         crowdInstances: this.crowdRenderer?.instanceCount ?? 0,
         crowdMeshes: this.crowdRenderer?.meshCount ?? 0,
+      });
+      // The interaction cutscene's live state, so QA can assert the scene
+      // actually runs, where its actor is, and that the camera stack and the
+      // control lock restore when it ends.
+      debugWindow.__sideswapCutsceneDebug = () => ({
+        active: this.activeCutscene
+          ? {
+              kind: this.activeCutscene.kind,
+              nonce: this.activeCutscene.nonce,
+              step: this.activeCutscene.stepIndex,
+              action:
+                this.activeCutscene.script[this.activeCutscene.stepIndex]
+                  ?.action ?? null,
+              actorX:
+                Math.round(this.activeCutscene.actorNode.position.x * 100) /
+                100,
+              actorZ:
+                Math.round(this.activeCutscene.actorNode.position.z * 100) /
+                100,
+              actorVisible: this.activeCutscene.actorNode.isEnabled(),
+            }
+          : null,
+        cameraMode: this.cameraMode,
+        activeCamera: this.scene.activeCamera?.name ?? null,
+        dip: Math.round(this.cutsceneDipOffset * 1000) / 1000,
       });
       // Walker states + bubble, so the capture harness can assert the crowd
       // moves smoothly and never pops in or out on screen.
@@ -9235,6 +9788,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       riderVenueId = null,
       gigStopId = null,
       gigStopCarrying = false,
+      cutscene = null,
       className,
       style,
       showBuiltInHud = true,
@@ -9378,6 +9932,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             riderVenueId,
             gigStopId,
             gigStopCarrying,
+            cutscene,
           },
           {
             onHudUpdate: (snapshot) => callbackRef.current.onHudUpdate?.(snapshot),
@@ -9427,8 +9982,9 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         riderVenueId,
         gigStopId,
         gigStopCarrying,
+        cutscene,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, carConditionPct, riderVenueId, gigStopId, gigStopCarrying]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, carConditionPct, riderVenueId, gigStopId, gigStopCarrying, cutscene]);
 
     // The tow-and-repair flow: the app bumps `resetNonce` once the fee is
     // debited and the car snaps back to its spawn, repaired.
