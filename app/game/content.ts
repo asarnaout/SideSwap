@@ -1987,6 +1987,18 @@ export const FINE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
   jp: 800,
 };
 
+/**
+ * Tow-and-repair bill when the car's condition hits zero. Roughly three
+ * fines' worth: wrecking the car should sting harder than a citation but
+ * never bankrupt a session — the wallet remains the only durable consequence.
+ */
+export const REPAIR_FEE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
+  us: 25,
+  uk: 25,
+  fr: 30,
+  jp: 2500,
+};
+
 /** Starting cash a new (or migrated) player holds in each country's currency. */
 export const STARTING_WALLET_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
   us: 20,

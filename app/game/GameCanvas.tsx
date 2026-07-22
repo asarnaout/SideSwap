@@ -142,6 +142,10 @@ import {
 } from "./characterPalettes";
 import { CrowdRenderer } from "./crowdRenderer";
 import {
+  SMOKE_HEAVY_CONDITION_PCT,
+  SMOKE_LIGHT_CONDITION_PCT,
+} from "./damage";
+import {
   createCrowdSim,
   WALKER_DOWNED_TOTAL_SECONDS,
   WALKER_FALL_SECONDS,
@@ -857,6 +861,7 @@ export interface GameRuntimeEvent {
     | "indicator"
     | "horn"
     | "coaching"
+    | "collision"
     | "fine"
     | "incident"
     | "reset"
@@ -1263,6 +1268,10 @@ export interface GameCanvasProps {
   visualHonkIndicator?: boolean;
   /** When true (out of fuel), the throttle is held at zero. */
   outOfFuel?: boolean;
+  /** Car condition 0..100 (app-owned damage state); drives the hood smoke. */
+  carConditionPct?: number;
+  /** Bump to snap the car back to its spawn (the tow-and-repair flow). */
+  resetNonce?: number;
   /** Venue id where a passenger is waiting to be collected, else null. */
   riderVenueId?: string | null;
   /** Stop the active gig is currently heading for, else null. */
@@ -1317,6 +1326,7 @@ interface SessionOptions {
   cameraShake: boolean;
   headBob: boolean;
   outOfFuel: boolean;
+  carConditionPct: number;
   riderVenueId: string | null;
   gigStopId: string | null;
   gigStopCarrying: boolean;
@@ -2959,6 +2969,12 @@ class BabylonGameSession {
   private readonly destructibleGrid = new Map<string, DestructibleProp[]>();
   private readonly activePropFalls: ActivePropFall[] = [];
   private impactPuffs: ParticleSystem | null = null;
+  /** Decaying camera-kick amplitude fed by collision events. */
+  private impactKick = 0;
+  private impactShakeSeconds = 0;
+  /** Hood smoke shown while the car's condition is low. */
+  private damageSmoke: ParticleSystem | null = null;
+  private readonly damageSmokeEmitter = new Vector3(0, -50, 0);
   /** Sidewalk positions (+ toward-road yaw) for the distributed animated crowd,
    * spawned as pedestrians once the character glbs preload. */
   private crowdSim: CrowdSim | null = null;
@@ -3264,6 +3280,7 @@ class BabylonGameSession {
     });
     this.syncRider();
     this.syncGigMarker();
+    this.syncDamageSmoke();
   }
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
@@ -3422,6 +3439,8 @@ class BabylonGameSession {
     this.effectsPipeline = null;
     this.impactPuffs?.dispose();
     this.impactPuffs = null;
+    this.damageSmoke?.dispose();
+    this.damageSmoke = null;
     this.riderVisual?.dispose();
     this.riderNode?.dispose(false, false);
     this.gigMarkerNode?.dispose(false, true);
@@ -3824,6 +3843,14 @@ class BabylonGameSession {
     this.updatePlayerVisuals(interpolation);
     this.updateGuidanceVisuals();
     if (!this.paused) this.updatePropFalls(frameSeconds);
+    if (this.damageSmoke?.isStarted()) {
+      // Trail the smoke from the engine bay, wherever the car is facing.
+      this.damageSmokeEmitter.set(
+        this.displayedX + Math.sin(this.displayedHeading) * 1.05,
+        0.92,
+        this.displayedZ + Math.cos(this.displayedHeading) * 1.05,
+      );
+    }
     this.updateCamera(frameSeconds);
     this.updateIndicatorLights(frameSeconds);
     this.updateAudio(frameSeconds);
@@ -4986,6 +5013,53 @@ class BabylonGameSession {
     puffs.manualEmitCount = count;
   }
 
+  /** Continuous engine-bay smoke while the car's condition is low; rate and
+   * colour step up as it worsens. Off (and never created) while healthy. */
+  private ensureDamageSmoke(): ParticleSystem {
+    if (this.damageSmoke) return this.damageSmoke;
+    const texture = new DynamicTexture("damage-smoke", 64, this.scene, false);
+    const context = texture.getContext();
+    const gradient = context.createRadialGradient(32, 32, 3, 32, 32, 30);
+    gradient.addColorStop(0, "rgba(200, 200, 205, 0.85)");
+    gradient.addColorStop(1, "rgba(200, 200, 205, 0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 64, 64);
+    texture.update();
+    const smoke = new ParticleSystem("damage-smoke", 90, this.scene);
+    smoke.particleTexture = texture;
+    smoke.emitter = this.damageSmokeEmitter;
+    smoke.minEmitBox = new Vector3(-0.18, 0, -0.18);
+    smoke.maxEmitBox = new Vector3(0.18, 0.1, 0.18);
+    smoke.minLifeTime = 0.7;
+    smoke.maxLifeTime = 1.4;
+    smoke.minSize = 0.25;
+    smoke.maxSize = 0.7;
+    smoke.minEmitPower = 0.4;
+    smoke.maxEmitPower = 0.9;
+    smoke.direction1 = new Vector3(-0.2, 1, -0.2);
+    smoke.direction2 = new Vector3(0.2, 1.6, 0.2);
+    smoke.gravity = new Vector3(0, 0.6, 0);
+    smoke.updateSpeed = 0.016;
+    this.damageSmoke = smoke;
+    return smoke;
+  }
+
+  private syncDamageSmoke() {
+    const pct = this.options.carConditionPct ?? 100;
+    const heavy = pct <= SMOKE_HEAVY_CONDITION_PCT;
+    if (pct > SMOKE_LIGHT_CONDITION_PCT) {
+      this.damageSmoke?.stop();
+      return;
+    }
+    const smoke = this.ensureDamageSmoke();
+    smoke.emitRate = heavy ? 34 : 13;
+    const tone = heavy ? 0.32 : 0.62;
+    smoke.color1 = new Color4(tone, tone, tone + 0.03, heavy ? 0.6 : 0.4);
+    smoke.color2 = new Color4(tone * 0.8, tone * 0.8, tone * 0.8, heavy ? 0.45 : 0.3);
+    smoke.colorDead = new Color4(tone, tone, tone, 0);
+    if (!smoke.isStarted()) smoke.start();
+  }
+
   /**
    * Pre-warm the render pipeline before the drive starts, so the first corner
    * doesn't stall. WebGL compiles a material's shader — and uploads its
@@ -5126,10 +5200,24 @@ class BabylonGameSession {
       this.lastSimulationCoachMessage = correction;
       if (event.code === "collision") {
         const impact = event.evidence?.impactSpeedMps;
-        this.audio?.impact(typeof impact === "number" ? impact : 0, eventNow());
+        const impactMps = typeof impact === "number" ? impact : 0;
+        // Prop and pedestrian contacts trigger their own softened thud at the
+        // report site (and keep sounding inside the event cooldown); only
+        // wall and vehicle crashes voice from the event stream.
+        if (!event.evidence?.externalRoadUser) {
+          this.audio?.impact(impactMps, eventNow());
+        }
+        this.impactKick = Math.min(
+          1,
+          Math.max(this.impactKick, (impactMps || 4) / 12),
+        );
       }
       this.emit(
-        event.severity === "critical" ? "incident" : "coaching",
+        event.severity === "critical"
+          ? "incident"
+          : event.code === "collision"
+            ? "collision"
+            : "coaching",
         `${event.message} ${correction}`,
         event.severity === "critical" ? "critical" : "warning",
         {
@@ -5143,7 +5231,10 @@ class BabylonGameSession {
       } else if (
         event.code === "wrong_way" ||
         event.code === "out_of_bounds" ||
-        event.code === "red_light"
+        event.code === "red_light" ||
+        // Crashing into cars or buildings is fined when witnessed too;
+        // pedestrian strikes are cited unconditionally by the app instead.
+        (event.code === "collision" && !event.evidence?.roadUserType)
       ) {
         const patrol = this.patrolNearPlayer(35);
         if (patrol) {
@@ -5361,6 +5452,23 @@ class BabylonGameSession {
         );
       }
       this.thirdCamera.setTarget(target);
+    }
+
+    // Impact kick: a short decaying jolt on top of whichever camera is live,
+    // fed by collision events. Applied post-pose so the smoothing above
+    // cannot iron it out.
+    this.impactShakeSeconds += dt;
+    if (this.impactKick > 0.012) {
+      if (this.options.cameraShake && !this.options.reducedMotion) {
+        const kick = this.impactKick;
+        const jab = Math.sin(this.impactShakeSeconds * 47) * 0.24 * kick;
+        const lift = Math.cos(this.impactShakeSeconds * 39) * 0.11 * kick;
+        const camera =
+          this.cameraMode === "first" ? this.firstCamera : this.thirdCamera;
+        camera.position.addInPlace(right.scale(jab));
+        camera.position.y += lift;
+      }
+      this.impactKick *= Math.exp(-5.2 * dt);
     }
   }
 
@@ -9120,6 +9228,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       headBob = false,
       visualHonkIndicator = true,
       outOfFuel = false,
+      carConditionPct = 100,
+      resetNonce = 0,
       riderVenueId = null,
       gigStopId = null,
       gigStopCarrying = false,
@@ -9262,6 +9372,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             cameraShake,
             headBob,
             outOfFuel,
+            carConditionPct,
             riderVenueId,
             gigStopId,
             gigStopCarrying,
@@ -9310,11 +9421,21 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         cameraShake,
         headBob,
         outOfFuel,
+        carConditionPct,
         riderVenueId,
         gigStopId,
         gigStopCarrying,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, riderVenueId, gigStopId, gigStopCarrying]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, carConditionPct, riderVenueId, gigStopId, gigStopCarrying]);
+
+    // The tow-and-repair flow: the app bumps `resetNonce` once the fee is
+    // debited and the car snaps back to its spawn, repaired.
+    const lastResetNonceRef = useRef(resetNonce);
+    useEffect(() => {
+      if (resetNonce === lastResetNonceRef.current) return;
+      lastResetNonceRef.current = resetNonce;
+      sessionRef.current?.reset();
+    }, [resetNonce]);
 
     useImperativeHandle(
       ref,
