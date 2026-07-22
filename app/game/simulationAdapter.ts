@@ -898,6 +898,21 @@ export function buildStaticObstacles(
     });
   }
 
+  if (london) {
+    // The cast-iron pillar box on Queen's Gate (GameCanvas
+    // LONDON_POST_BOX_POSITION). Every other piece of street furniture is
+    // knockable renderer-side; Royal Mail wins, so it is a solid here and the
+    // renderer deliberately leaves it out of the destructible registry.
+    obstacles.push({
+      kind: "circle",
+      id: "london-post-box",
+      tag: "landmark",
+      x: 122,
+      z: 87,
+      radius: 0.45,
+    });
+  }
+
   const fenceMinX = bounds.minX - WORLD_EDGE_STANDOFF_M;
   const fenceMaxX = bounds.maxX + WORLD_EDGE_STANDOFF_M;
   const fenceMinZ = bounds.minZ - WORLD_EDGE_STANDOFF_M;
