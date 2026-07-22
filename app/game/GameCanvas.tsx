@@ -1403,6 +1403,8 @@ interface ActiveCutscene {
   /** The staged wide shot, framing the car and the farthest scene point. */
   readonly cameraPosition: Vector3;
   readonly cameraTarget: Vector3;
+  /** The plane the actor's feet walk on (forecourt slab vs walker plane). */
+  readonly groundY: number;
   /** The waiting rider was hidden for a boarding scene (restored on cancel). */
   riderWasHidden: boolean;
   pumpEmitted: boolean;
@@ -1422,6 +1424,14 @@ const RIDER_CLOTHING_TINT = new Color3(0.92, 0.55, 0.2);
 /** How deep and how long the suspension dips when somebody gets in or out. */
 const CUTSCENE_DIP_SECONDS = 0.42;
 const CUTSCENE_DIP_DEPTH_M = 0.05;
+
+/** Characters stand on the walker plane of the y-stack (matches the ambient
+ * crowd's WALKER_Y and the scenario pedestrians), not on y=0 — the road tops
+ * out at 0.07, so feet placed at zero read as buried to the ankles. */
+const ACTOR_WALK_Y = 0.08;
+/** The gas station's forecourt slab tops out at ~0.095 (measured world AABB
+ * of the placed model), so the refuel scene walks a touch higher still. */
+const FORECOURT_WALK_Y = 0.1;
 
 /** How far inside the pavement a street address's "front door" sits. */
 const STREET_DOOR_INSET_M = 3.2;
@@ -3862,7 +3872,7 @@ class BabylonGameSession {
     const spot = this.gigVenueCurbside.get(target);
     if (!spot) return;
     const node = new TransformNode(`gig-rider-${target}`, this.scene);
-    node.position.set(spot.x, 0, spot.z);
+    node.position.set(spot.x, ACTOR_WALK_Y, spot.z);
     node.rotation.y = spot.facing;
     this.riderNode = node;
     // The actor pipeline's Idle clip: somebody standing at the kerb waiting,
@@ -4021,6 +4031,7 @@ class BabylonGameSession {
         midZ + perpZ * radius,
       ),
       cameraTarget: new Vector3(midX, 1.0, midZ),
+      groundY: request.kind === "refuel" ? FORECOURT_WALK_Y : ACTOR_WALK_Y,
       riderWasHidden,
       pumpEmitted: false,
     };
@@ -4056,7 +4067,7 @@ class BabylonGameSession {
       case "walk":
       case "run": {
         const at = path[0];
-        if (at) cutscene.actorNode.position.set(at.x, 0, at.z);
+        if (at) cutscene.actorNode.position.set(at.x, cutscene.groundY, at.z);
         if (step.face !== undefined) cutscene.actorNode.rotation.y = step.face;
         cutscene.actorNode.setEnabled(true);
         if (step.action === "show") {
@@ -4140,7 +4151,7 @@ class BabylonGameSession {
       const t = segmentLength > 0 ? (along - segmentStart) / segmentLength : 1;
       cutscene.actorNode.position.set(
         a.x + (b.x - a.x) * t,
-        0,
+        cutscene.groundY,
         a.z + (b.z - a.z) * t,
       );
       if (segmentLength > 0.01) {
