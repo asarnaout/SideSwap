@@ -9,6 +9,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import type {
+  CutsceneRequest,
   GameCanvasLesson,
   GameHudSnapshot,
   GameRuntimeEvent,
@@ -51,7 +52,6 @@ import { Minimap } from "./game/MinimapCanvas";
 import { primeAudioContext, suspendAudioContext } from "./game/audio/audioContext";
 import { useDriveMusic } from "./game/audio/musicPlayer";
 import {
-  advanceGig,
   generateGigFromPools,
   gigTarget,
   pickGigKind,
@@ -260,6 +260,10 @@ function nextGigFor(
   );
 }
 
+/** How close to a gig stop counts as arrived — mirrors `advanceGig`'s radius;
+ * the state itself now flips when the arrival cutscene completes. */
+const GIG_ARRIVAL_RADIUS_M = 14;
+
 /** Human-readable reason for a fine toast, from the violation's rule code. */
 function fineReason(code: string | undefined): string {
   switch (code) {
@@ -316,6 +320,44 @@ export default function SideSwapApp() {
   const towResetNonceRef = useRef(0);
   const [towResetNonce, setTowResetNonce] = useState(0);
   const lastPedFineAtRef = useRef(0);
+  // The interaction cutscene being performed (refuel, boarding, an errand).
+  // While set, the canvas locks driving input; its `done` event applies the
+  // durable effect (gig state flip) and clears this. The ref mirrors the
+  // state so the 10 Hz HUD path and event handler read the live value.
+  const [cutscene, setCutscene] = useState<CutsceneRequest | null>(null);
+  const cutsceneRef = useRef<CutsceneRequest | null>(null);
+  const cutsceneNonceRef = useRef(0);
+  // While the pump runs, the fuel bar's CSS transition is stretched to the
+  // fill window so the gauge glides while the driver holds the nozzle.
+  const [fuelFillMs, setFuelFillMs] = useState(0);
+
+  const clearCutscene = useCallback(() => {
+    cutsceneRef.current = null;
+    setCutscene(null);
+    setFuelFillMs(0);
+  }, []);
+
+  const beginCutscene = useCallback(
+    (
+      kind: CutsceneRequest["kind"],
+      venueId?: string,
+      actorSeedId?: string,
+      missingFuelFraction?: number,
+    ) => {
+      if (cutsceneRef.current || towingRef.current) return;
+      cutsceneNonceRef.current += 1;
+      const request: CutsceneRequest = {
+        nonce: cutsceneNonceRef.current,
+        kind,
+        venueId,
+        actorSeedId,
+        missingFuelFraction,
+      };
+      cutsceneRef.current = request;
+      setCutscene(request);
+    },
+    [],
+  );
   // Lives out here rather than inside GameCanvas, which remounts mid-session
   // whenever the destination or steering side changes — music placed in there
   // would restart at apparently random moments.
@@ -358,13 +400,37 @@ export default function SideSwapApp() {
         );
       }
     }
-    setGig((current) =>
-      current && current.state !== "delivered"
-        ? advanceGig(current, { x: snapshot.playerX, z: snapshot.playerZ })
-        : current,
-    );
     lastPoseRef.current = { x: snapshot.playerX, z: snapshot.playerZ };
   }, []);
+
+  // Arriving at a gig stop now means actually stopping there: inside the
+  // arrival radius at walking pace. That starts the matching interaction
+  // cutscene (rider boards, driver runs the errand); the gig state flips when
+  // its `done` event lands — no more drive-by pickups.
+  useEffect(() => {
+    if (view !== "driving" || !hud || !gig || gig.state === "delivered") return;
+    if (cutscene || towing || hud.speed > 1) return;
+    const target = gigTarget(gig);
+    if (!target) return;
+    const distance = Math.hypot(
+      hud.playerX - target.x,
+      hud.playerZ - target.z,
+    );
+    if (distance > GIG_ARRIVAL_RADIUS_M) return;
+    if (gig.state === "enroute_pickup") {
+      beginCutscene(
+        gig.kind === "passenger" ? "board" : "food_pickup",
+        target.id,
+        gig.pickup.id,
+      );
+    } else {
+      beginCutscene(
+        gig.kind === "passenger" ? "exit" : "food_dropoff",
+        target.id,
+        gig.pickup.id,
+      );
+    }
+  }, [view, hud, gig, cutscene, towing, beginCutscene]);
 
   const handleUiGamepadBack = useCallback(() => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -412,6 +478,9 @@ export default function SideSwapApp() {
     if (towingRef.current) return;
     towingRef.current = true;
     setTowing(true);
+    // A scene in flight is torn down by the session's reset; drop the app
+    // side too so nothing waits on a `done` that will never come.
+    clearCutscene();
     const fee = REPAIR_FEE_BY_COUNTRY[driveCountry.id];
     const paid = debit(progress, driveCountry.id, fee);
     setProgress(paid);
@@ -427,13 +496,58 @@ export default function SideSwapApp() {
       towingRef.current = false;
       setTowing(false);
     }, reduced ? 500 : 2400);
-  }, [progress, driveCountry]);
+  }, [progress, driveCountry, clearCutscene]);
 
   // Collision events wear the car down (and striking a person is cited on the
   // spot); a fine event reaches us only when a patrol witnessed the violation.
   // Both debit the local wallet and flash the toast, mirroring the refuel path.
   const handleGameEvent = useCallback(
     (event: GameRuntimeEvent) => {
+      if (event.type === "cutscene") {
+        const active = cutsceneRef.current;
+        const evidence = event.evidence ?? {};
+        if (!active || evidence.nonce !== active.nonce) return;
+        if (evidence.phase === "pump") {
+          // The nozzle is in: pay and fill atomically, and stretch the fuel
+          // bar's transition across the fill window so the gauge pours while
+          // the driver pumps. An aborted scene after this point was still a
+          // completed purchase; before it, nothing happened.
+          const litres = Math.max(0, TANK_CAPACITY_L - driveFuel);
+          const cost =
+            Math.round(
+              litres * FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] * 100,
+            ) / 100;
+          const refueled = setFuel(
+            debit(progress, driveCountry.id, cost),
+            driveCountry.id,
+            TANK_CAPACITY_L,
+          );
+          setProgress(refueled);
+          saveProgress(refueled);
+          setFuelFillMs(
+            typeof evidence.durationMs === "number" ? evidence.durationMs : 0,
+          );
+          setDriveFuel(TANK_CAPACITY_L);
+          return;
+        }
+        if (evidence.phase === "done") {
+          clearCutscene();
+          if (active.kind === "board" || active.kind === "food_pickup") {
+            setGig((current) =>
+              current && current.state === "enroute_pickup"
+                ? { ...current, state: "carrying" }
+                : current,
+            );
+          } else if (active.kind === "exit" || active.kind === "food_dropoff") {
+            setGig((current) =>
+              current && current.state === "carrying"
+                ? { ...current, state: "delivered" }
+                : current,
+            );
+          }
+        }
+        return;
+      }
       if (event.type === "collision") {
         const evidence = event.evidence ?? {};
         const damage = damageForCollision(evidence);
@@ -472,7 +586,7 @@ export default function SideSwapApp() {
       saveProgress(fined);
       setFineToast({ amount, reason: fineReason(event.ruleCode) });
     },
-    [progress, driveCountry, beginTow],
+    [progress, driveCountry, driveFuel, beginTow, clearCutscene],
   );
 
   // Auto-dismiss the fine toast a few seconds after it appears.
@@ -604,6 +718,7 @@ export default function SideSwapApp() {
     setCarCondition(FULL_CONDITION_PCT);
     towingRef.current = false;
     setTowing(false);
+    clearCutscene();
     setView("driving");
   };
 
@@ -615,6 +730,7 @@ export default function SideSwapApp() {
     setGig(null);
     setPaused(false);
     setActiveSession(null);
+    clearCutscene();
     music.stop();
     // Parked, not closed — the player will almost certainly start another drive,
     // and a closed context can never be reopened.
@@ -654,16 +770,16 @@ export default function SideSwapApp() {
       litresNeeded * FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] * 100,
     ) / 100;
   const canRefuel = litresNeeded > 0.5 && walletHere >= refuelCost;
+  // Pressing Refuel now stages the pump cutscene; the wallet debit and the
+  // fill land when the scene reports the nozzle is in (its `pump` event).
   const refuel = () => {
-    if (!canRefuel) return;
-    const refueled = setFuel(
-      debit(progress, driveCountry.id, refuelCost),
-      driveCountry.id,
-      TANK_CAPACITY_L,
+    if (!canRefuel || cutscene || towing) return;
+    beginCutscene(
+      "refuel",
+      undefined,
+      undefined,
+      litresNeeded / TANK_CAPACITY_L,
     );
-    setProgress(refueled);
-    saveProgress(refueled);
-    setDriveFuel(TANK_CAPACITY_L);
   };
 
   // Pin the pumps rather than the lane anchor. The anchor sits on the
@@ -702,6 +818,29 @@ export default function SideSwapApp() {
     gig && gig.kind === "passenger" && gig.state === "enroute_pickup"
       ? gig.pickup.id
       : null;
+  // Within arrival range but still rolling: nudge the player to stop, since
+  // stopping is what starts the pickup/drop-off scene now.
+  const nearGigStop = Boolean(
+    hud &&
+      gig &&
+      gig.state !== "delivered" &&
+      gigTargetVenue &&
+      Math.hypot(
+        hud.playerX - gigTargetVenue.x,
+        hud.playerZ - gigTargetVenue.z,
+      ) <= GIG_ARRIVAL_RADIUS_M,
+  );
+  const cutsceneCaption = cutscene
+    ? cutscene.kind === "refuel"
+      ? "Refueling…"
+      : cutscene.kind === "board"
+        ? "Your rider is getting in…"
+        : cutscene.kind === "exit"
+          ? "Dropping off your rider…"
+          : cutscene.kind === "food_pickup"
+            ? "Picking up the order…"
+            : "Delivering the order…"
+    : null;
   // A street address is a spot outside a row of buildings that look like every
   // other row, so the stop you are heading for gets a lit kerbside beacon.
   const gigStopId = gigTargetVenue?.id ?? null;
@@ -744,6 +883,7 @@ export default function SideSwapApp() {
           riderVenueId={riderVenueId}
           gigStopId={gigStopId}
           gigStopCarrying={gigStopCarrying}
+          cutscene={cutscene}
           onHudUpdate={handleHud}
           onEvent={handleGameEvent}
           onPauseChange={setPaused}
@@ -816,6 +956,39 @@ export default function SideSwapApp() {
               </span>
               <strong>{formatMoney(gig.reward, driveCountry)}</strong>
             </div>
+            {nearGigStop && !cutscene && hud && hud.speed > 1 && (
+              <div
+                style={{
+                  marginTop: "0.4rem",
+                  fontSize: "0.78rem",
+                  color: "#f2c658",
+                }}
+              >
+                Stop the car to{" "}
+                {gig.state === "carrying" ? "drop off" : "pick up"}.
+              </div>
+            )}
+          </div>
+        )}
+        {cutsceneCaption && (
+          <div
+            role="status"
+            style={{
+              position: "absolute",
+              left: "50%",
+              bottom: "1.4rem",
+              transform: "translateX(-50%)",
+              padding: "0.55rem 1.2rem",
+              borderRadius: "999px",
+              background: "rgba(15, 18, 22, 0.78)",
+              backdropFilter: "blur(10px)",
+              color: "#f4f6f8",
+              font: "600 0.95rem/1.2 system-ui, sans-serif",
+              pointerEvents: "none",
+              zIndex: 6,
+            }}
+          >
+            {cutsceneCaption}
           </div>
         )}
         {fineToast && (
@@ -904,7 +1077,12 @@ export default function SideSwapApp() {
                   height: "100%",
                   width: `${Math.max(0, Math.min(100, fuelFraction * 100))}%`,
                   background: fuelFraction < 0.2 ? "#e0533f" : "#5bbf6a",
-                  transition: "width 0.2s ease",
+                  // While the pump scene runs, the bar pours across the whole
+                  // fill window instead of snapping full.
+                  transition:
+                    fuelFillMs > 0
+                      ? `width ${fuelFillMs}ms linear`
+                      : "width 0.2s ease",
                 }}
               />
             </div>
@@ -985,7 +1163,7 @@ export default function SideSwapApp() {
             </>
           )}
         </div>
-        {activeGasStation && (
+        {activeGasStation && !cutscene && !towing && (
           <div
             style={{
               position: "absolute",
