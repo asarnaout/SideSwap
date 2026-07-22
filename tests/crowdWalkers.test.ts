@@ -11,7 +11,9 @@ import {
 } from "../app/game/crowdWalkers";
 import {
   buildPavementGraph,
+  EDGE_KIND_SCATTER,
   samplePavementEdge,
+  samplePavementEdgeOffset,
   type PavementSurface,
 } from "../app/game/pavementPaths";
 
@@ -34,6 +36,7 @@ const CONFIG: CrowdConfig = {
   recycleRadiusM: 100,
   minSpeedMps: 0.9,
   maxSpeedMps: 1.7,
+  scatterHalfWidthM: 0.45,
   turnPauseSeconds: 1,
   modelCount: 3,
   tintCount: 5,
@@ -72,7 +75,7 @@ describe("createCrowdSim", () => {
 });
 
 describe("CrowdSim.step", () => {
-  it("keeps every walker exactly on the rails", () => {
+  it("keeps every walker inside its rail's scatter band", () => {
     const sim = makeSim();
     for (let step = 0; step < 5_000; step += 1) {
       sim.step(DT, CENTRE, never);
@@ -81,8 +84,19 @@ describe("CrowdSim.step", () => {
       const edge = GRAPH.edges[walker.edgeId];
       expect(walker.s).toBeGreaterThanOrEqual(0);
       expect(walker.s).toBeLessThanOrEqual(edge.lengthM);
-      const pose = samplePavementEdge(edge, walker.s);
-      expect(Math.hypot(walker.x - pose.x, walker.z - pose.z)).toBeLessThan(1e-6);
+      // Never further off the rail than the configured band…
+      const rail = samplePavementEdge(edge, walker.s);
+      expect(Math.hypot(walker.x - rail.x, walker.z - rail.z)).toBeLessThanOrEqual(
+        CONFIG.scatterHalfWidthM + 1e-6,
+      );
+      // …and exactly where the offset sampler says, so any renderer that
+      // re-derives a pose from (edgeId, s, lateralM) agrees with the sim.
+      const exact = samplePavementEdgeOffset(
+        edge,
+        walker.s,
+        walker.lateralM * EDGE_KIND_SCATTER[edge.kind],
+      );
+      expect(Math.hypot(walker.x - exact.x, walker.z - exact.z)).toBeLessThan(1e-6);
     }
   });
 
@@ -103,13 +117,49 @@ describe("CrowdSim.step", () => {
           expect(distance).toBeGreaterThanOrEqual(CONFIG.innerRadiusM);
           expect(distance).toBeLessThanOrEqual(CONFIG.outerRadiusM);
         } else {
+          // 1.5×: a scattered walker's ground speed stretches past its rail
+          // arclength rate on taper ramps and the outside of curves. The
+          // bound still catches an actual sidestep or teleport cold.
           expect(moved, `walker ${index} step ${step}`).toBeLessThanOrEqual(
-            walker.speedMps * DT + 1e-9,
+            walker.speedMps * DT * 1.5 + 1e-9,
           );
         }
         previous[index].x = walker.x;
         previous[index].z = walker.z;
       }
+    }
+  });
+
+  it("spreads walkers across the pavement band instead of single file", () => {
+    const sim = makeSim();
+    sim.step(DT, CENTRE, never);
+    for (let step = 0; step < 600; step += 1) {
+      sim.step(DT, CENTRE, never);
+    }
+    // Offsets are personal: most walkers hold distinct lines, on both sides.
+    const offsets = sim.walkers.map((walker) => walker.lateralM);
+    expect(new Set(offsets.map((value) => value.toFixed(3))).size).toBeGreaterThan(
+      CONFIG.count / 2,
+    );
+    expect(Math.max(...offsets)).toBeGreaterThan(0.15);
+    expect(Math.min(...offsets)).toBeLessThan(-0.15);
+    // And the offsets are real on the ground: a good share of the pool is
+    // measurably off the rail line right now, not just in principle.
+    const adrift = sim.walkers.filter((walker) => {
+      const rail = samplePavementEdge(GRAPH.edges[walker.edgeId], walker.s);
+      return Math.hypot(walker.x - rail.x, walker.z - rail.z) > 0.1;
+    });
+    expect(adrift.length).toBeGreaterThanOrEqual(CONFIG.count / 3);
+  });
+
+  it("pins everyone back to the rail line when the scatter band is zero", () => {
+    const sim = makeSim({ scatterHalfWidthM: 0 });
+    for (let step = 0; step < 1_000; step += 1) {
+      sim.step(DT, CENTRE, never);
+    }
+    for (const walker of sim.walkers) {
+      const rail = samplePavementEdge(GRAPH.edges[walker.edgeId], walker.s);
+      expect(Math.hypot(walker.x - rail.x, walker.z - rail.z)).toBeLessThan(1e-6);
     }
   });
 

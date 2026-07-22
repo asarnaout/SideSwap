@@ -73,7 +73,7 @@ Linked only by `LaneSegment.roadId <-> RoadSurface.id`/`laneIds`. Two-way street
 |---|---|---|
 | asphalt strips, kerb/junction fills | `roadSurfaces` | `GameCanvas.tsx:373`, `:641` |
 | paint broken at junctions | `roadSurfaces` | `roadMarkings.ts:92` |
-| walkable pavement rails | `roadSurfaces` | `pavementPaths.ts:447` |
+| walkable pavement rails | `roadSurfaces` | `pavementPaths.ts:464` |
 | ambient traffic routes | `lanes.successors` | `npcPaths.ts:47` |
 | gig drop-off addresses | `lanes` + `blocks` | `streetAddresses.ts:293` |
 | instanced building street wall | `blocks.buildingSet` | `buildingSets.ts:194` |

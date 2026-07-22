@@ -3089,6 +3089,8 @@ class BabylonGameSession {
   private readonly crowdProbePoint = new Vector3();
   /** Cached per-map pavement graph; null once known to be unavailable. */
   private pavementGraph: PavementGraph | null | undefined;
+  /** The sidewalk band the graph was built with; drives the crowd's scatter. */
+  private pavementSidewalkWidthM = 0;
   private complexions: readonly CharacterTone[] | undefined;
   private hairTones: readonly CharacterTone[] | undefined;
   private roadUserPedSim: CrowdSim | null = null;
@@ -3762,12 +3764,20 @@ class BabylonGameSession {
     const sidewalkWidthM = palette.paved
       ? PAVED_SIDEWALK_WIDTH_M
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
+    this.pavementSidewalkWidthM = sidewalkWidthM;
     try {
       this.pavementGraph = buildPavementGraph(surfaces, { sidewalkWidthM });
     } catch (error) {
       console.warn("[crowd] pavement graph build failed", error);
     }
     return this.pavementGraph;
+  }
+
+  /** Half-width of the crowd's scatter band: the pavement band less standing
+   * room for a body at each edge, so nobody's shoulder overhangs the kerb or
+   * the building line (issue #127 — no more single file). */
+  private crowdScatterHalfM(): number {
+    return Math.max(0, this.pavementSidewalkWidthM / 2 - 0.55);
   }
 
   private buildAmbientCrowd() {
@@ -3784,6 +3794,7 @@ class BabylonGameSession {
       recycleRadiusM: config.recycleRadiusM,
       minSpeedMps: 0.9,
       maxSpeedMps: 1.7,
+      scatterHalfWidthM: this.crowdScatterHalfM(),
       turnPauseSeconds: 1,
       modelCount: CHARACTER_MODELS.length,
       tintCount: CROWD_CLOTHING_COLORS.length,
@@ -8146,6 +8157,7 @@ class BabylonGameSession {
               z: round(walker.z),
               edge: walker.edgeId,
               s: round(walker.s),
+              lateral: round(walker.lateralM),
               dir: walker.dir,
               state: walker.state,
               speed: round(walker.speedMps),
@@ -9285,7 +9297,13 @@ class BabylonGameSession {
     // sims because the two kinds move at different speeds.
     const graph = this.ensurePavementGraph();
     const radii = AMBIENT_CROWD_CONFIG[mapPack.id] ?? DEFAULT_ROAD_USER_RADII;
-    const railSimFor = (count: number, tag: string, minSpeedMps: number, maxSpeedMps: number) => {
+    const railSimFor = (
+      count: number,
+      tag: string,
+      minSpeedMps: number,
+      maxSpeedMps: number,
+      scatterHalfWidthM: number,
+    ) => {
       if (!graph || count <= 0) return null;
       const sim = createCrowdSim(graph, {
         count,
@@ -9295,6 +9313,7 @@ class BabylonGameSession {
         recycleRadiusM: radii.recycleRadiusM,
         minSpeedMps,
         maxSpeedMps,
+        scatterHalfWidthM,
         turnPauseSeconds: 1,
         modelCount: CHARACTER_MODELS.length,
         tintCount: trafficColors.length,
@@ -9304,8 +9323,21 @@ class BabylonGameSession {
       sim?.step(0, { x: this.playerState.x, z: this.playerState.z }, () => true);
       return sim;
     };
-    this.roadUserPedSim = railSimFor(requestedPedestrians, "roadusers", 1.1, 1.6);
-    this.roadUserCycleSim = railSimFor(requestedCyclists, "cyclists", 3.2, 4.2);
+    this.roadUserPedSim = railSimFor(
+      requestedPedestrians,
+      "roadusers",
+      1.1,
+      1.6,
+      this.crowdScatterHalfM(),
+    );
+    // Cyclists hold a straighter line than strollers do.
+    this.roadUserCycleSim = railSimFor(
+      requestedCyclists,
+      "cyclists",
+      3.2,
+      4.2,
+      Math.min(0.4, this.crowdScatterHalfM()),
+    );
     const roadUserCount = requestedPedestrians + requestedCyclists;
     for (let index = 0; index < roadUserCount; index += 1) {
       const isCyclist = index >= requestedPedestrians;

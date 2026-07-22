@@ -7,7 +7,9 @@
 // bubble rules are assertable in a unit test without a camera.
 
 import {
-  samplePavementEdge,
+  EDGE_KIND_SCATTER,
+  samplePavementEdgeOffset,
+  type PavementEdge,
   type PavementGraph,
 } from "./pavementPaths";
 import { seededUnit } from "./visuals";
@@ -21,6 +23,10 @@ export interface CrowdWalker {
   /** Cached segment index so resampling after a small advance is O(1). */
   segmentHint: number;
   speedMps: number;
+  /** Lateral offset from the rail line (right of the edge direction), fixed
+   * between recycles. This is what breaks the single-file look (issue #127):
+   * every walker keeps to their own line across the pavement band. */
+  lateralM: number;
   /** Which character model this walker wears; fixed for the pool's life so
    * the renderer's per-model instance partition never changes size. */
   readonly variant: number;
@@ -70,6 +76,9 @@ export interface CrowdConfig {
   readonly recycleRadiusM: number;
   readonly minSpeedMps: number;
   readonly maxSpeedMps: number;
+  /** Half-width of the band walkers scatter across, centred on the rail
+   * line. Zero pins everyone back to the rail, single file. */
+  readonly scatterHalfWidthM: number;
   /** How long a walker stands after turning at the bubble's edge. */
   readonly turnPauseSeconds: number;
   readonly modelCount: number;
@@ -105,6 +114,10 @@ const RESPAWN_ATTEMPTS = 12;
 const JUNCTION_PAUSE_CHANCE = 0.3;
 const JUNCTION_PAUSE_S = 0.3;
 const WALKER_VISIBILITY_RADIUS_M = 2;
+/** How far ahead a walker looks to face its true travel direction: through a
+ * taper ramp the scattered position drifts diagonally toward the node, and a
+ * body facing the rail tangent would visibly crab-walk the drift. */
+const HEADING_LOOKAHEAD_M = 0.6;
 
 export class CrowdSim {
   readonly walkers: CrowdWalker[];
@@ -133,6 +146,7 @@ export class CrowdSim {
       dir: 1 as const,
       segmentHint: 0,
       speedMps: config.minSpeedMps,
+      lateralM: 0,
       variant: index % Math.max(1, config.modelCount),
       tintIndex: index % Math.max(1, config.tintCount),
       complexionIndex: index % Math.max(1, config.complexionCount),
@@ -218,6 +232,11 @@ export class CrowdSim {
     }
   }
 
+  /** The walker's personal offset, scaled down on tightly-curved edge kinds. */
+  private scatterOf(walker: CrowdWalker, edge: PavementEdge): number {
+    return walker.lateralM * EDGE_KIND_SCATTER[edge.kind];
+  }
+
   private advance(walker: CrowdWalker, dt: number): void {
     const edge = this.graph.edges[walker.edgeId];
     walker.s += walker.dir * walker.speedMps * dt;
@@ -229,16 +248,35 @@ export class CrowdSim {
       walker.s = Math.min(Math.max(walker.s, 0), edge.lengthM);
       this.crossNode(walker, nodeId);
     }
-    const pose = samplePavementEdge(
-      this.graph.edges[walker.edgeId],
+    const current = this.graph.edges[walker.edgeId];
+    const offset = this.scatterOf(walker, current);
+    const pose = samplePavementEdgeOffset(
+      current,
       walker.s,
+      offset,
       walker.segmentHint,
     );
     walker.x = pose.x;
     walker.z = pose.z;
     walker.segmentHint = pose.segmentIndex;
+    // Face the true travel direction, not the rail tangent — through a taper
+    // ramp they differ. The lookahead degenerates at an edge's very end (the
+    // sample clamps), where the taper has already put the walker back on the
+    // rail and the tangent is exact.
+    const ahead = samplePavementEdgeOffset(
+      current,
+      walker.s + walker.dir * HEADING_LOOKAHEAD_M,
+      offset,
+      pose.segmentIndex,
+    );
+    const dx = ahead.x - pose.x;
+    const dz = ahead.z - pose.z;
     walker.headingRad =
-      walker.dir === 1 ? pose.headingRad : pose.headingRad + Math.PI;
+      Math.hypot(dx, dz) > 0.05
+        ? Math.atan2(dx, dz)
+        : walker.dir === 1
+          ? pose.headingRad
+          : pose.headingRad + Math.PI;
   }
 
   private crossNode(walker: CrowdWalker, nodeId: number): void {
@@ -276,6 +314,10 @@ export class CrowdSim {
     isVisible: CrowdVisibilityProbe,
   ): void {
     const { innerRadiusM, outerRadiusM } = this.config;
+    // A fresh spot on the pavement band, not just a fresh spot on the rail —
+    // the annulus and visibility checks probe where the walker will actually
+    // stand, offset included.
+    walker.lateralM = (this.random() * 2 - 1) * this.config.scatterHalfWidthM;
     let bestEdge = 0;
     let bestS = 0;
     let bestScore = -1;
@@ -290,7 +332,7 @@ export class CrowdSim {
       }
       const edge = this.graph.edges[low];
       const s = this.random() * edge.lengthM;
-      const pose = samplePavementEdge(edge, s);
+      const pose = samplePavementEdgeOffset(edge, s, this.scatterOf(walker, edge));
       const distance = Math.hypot(pose.x - focus.x, pose.z - focus.z);
       const inAnnulus = distance >= innerRadiusM && distance <= outerRadiusM;
       if (inAnnulus && !isVisible(pose.x, pose.z, WALKER_VISIBILITY_RADIUS_M)) {
@@ -317,7 +359,8 @@ export class CrowdSim {
     walker.pauseRemaining = 0;
     walker.downedRemaining = 0;
     walker.justRecycled = true;
-    const pose = samplePavementEdge(this.graph.edges[bestEdge], bestS);
+    const edge = this.graph.edges[bestEdge];
+    const pose = samplePavementEdgeOffset(edge, bestS, this.scatterOf(walker, edge));
     walker.x = pose.x;
     walker.z = pose.z;
     walker.segmentHint = pose.segmentIndex;
