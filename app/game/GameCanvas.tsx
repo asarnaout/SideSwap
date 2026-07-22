@@ -5272,45 +5272,6 @@ class BabylonGameSession {
     }
   }
 
-  private updateTraffic(dt: number) {
-    this.trafficLightSeconds = (this.trafficLightSeconds + dt) % 3600;
-    this.trafficLightIsRed = this.trafficLightSeconds % 14 > 8;
-    if (this.signalRedMaterial && this.signalAmberMaterial && this.signalGreenMaterial) {
-      this.signalRedMaterial.emissiveColor.copyFromFloats(
-        this.trafficLightIsRed ? 0.75 : 0.08,
-        this.trafficLightIsRed ? 0.025 : 0.005,
-        this.trafficLightIsRed ? 0.015 : 0.005,
-      );
-      this.signalGreenMaterial.emissiveColor.copyFromFloats(
-        this.trafficLightIsRed ? 0.005 : 0.01,
-        this.trafficLightIsRed ? 0.06 : 0.46,
-        this.trafficLightIsRed ? 0.012 : 0.1,
-      );
-      this.signalAmberMaterial.emissiveColor.copyFromFloats(0.08, 0.04, 0.005);
-    }
-    this.updateAuthoredSignalVisuals();
-    if (this.options.mapPack && this.options.lesson) {
-      this.applyNpcRenderSnapshots(this.computeNpcRenderSnapshots(dt));
-      return;
-    }
-    for (const npc of this.npcVehicles) {
-      const nextZ = npc.z + npc.direction * npc.speed * dt;
-      const sharesPlayerLane = Math.abs(npc.laneX - this.playerState.x) < 1.1;
-      const approachingFromBehind =
-        npc.direction > 0 &&
-        nextZ < this.playerState.z &&
-        this.playerState.z - nextZ < 9;
-      if (!(sharesPlayerLane && approachingFromBehind)) {
-        npc.z = nextZ;
-      }
-      if (npc.direction > 0 && npc.z > 87) npc.z = -78;
-      if (npc.direction < 0 && npc.z < -78) npc.z = 87;
-      npc.node.position.x = npc.laneX;
-      npc.node.position.z = npc.z;
-      npc.node.rotation.y = npc.direction > 0 ? 0 : Math.PI;
-    }
-  }
-
   private animatePedestrians(dt: number) {
     for (const pedestrian of this.pedestrians) {
       const span = pedestrian.span ?? 16;
