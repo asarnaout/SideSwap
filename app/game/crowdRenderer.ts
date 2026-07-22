@@ -26,8 +26,14 @@ import {
   VertexAnimationBaker,
 } from "@babylonjs/core";
 import { CHARACTER_MODELS } from "./characterMeshes";
-import type { CrowdWalker } from "./crowdWalkers";
 import {
+  WALKER_FALL_SECONDS,
+  WALKER_RISE_SECONDS,
+  walkerDownedPhase,
+  type CrowdWalker,
+} from "./crowdWalkers";
+import {
+  alignedVatOffset,
   composeYawTranslation16,
   conjugatePose,
   partitionWalkersByVariant,
@@ -52,15 +58,30 @@ interface CrowdModelBundle {
   readonly parts: Mesh[];
   readonly ownedMaterials: StandardMaterial[];
   readonly manager: BakedVertexAnimationManager;
-  readonly frames: number;
+  /** Frames in the walk range, which starts at row 0 of the texture. */
+  readonly walkFrames: number;
+  /** Frames in the fall (Death) range; 0 when the model ships no such clip.
+   * The texture layout is [walk][fall][fall reversed = get-up]. */
+  readonly deathFrames: number;
   readonly w0: Float32Array;
   readonly w0Inverse: Float32Array;
   /** Walker indices this model draws; fixed for the renderer's life. */
   readonly indices: readonly number[];
   readonly matrixData: Float32Array;
   readonly vatData: Float32Array;
+  /** Last animation phase written per slot (walk/fall/lie/rise). */
+  readonly phases: Uint8Array;
   vatDirty: boolean;
 }
+
+const PHASE_WALK = 0;
+const PHASE_FALLING = 1;
+const PHASE_LYING = 2;
+const PHASE_RISING = 3;
+
+/** One-shot windows play marginally slower than their sim phase so the timer
+ * always flips the window before the shader loops back to frame one. */
+const ONE_SHOT_TAIL_SECONDS = 0.06;
 
 export interface CrowdTint {
   readonly r: number;
@@ -170,6 +191,10 @@ export class CrowdRenderer {
     const skeleton = entries.skeletons[0];
     const walkPattern = new RegExp(config.walkClip, "i");
     const walk = entries.animationGroups.find((group) => walkPattern.test(group.name));
+    // The stylised fall every Quaternius rig ships; baked forward as the
+    // knockdown and copied reversed as the get-up. A model without one still
+    // builds — its struck walkers simply stand frozen instead of falling.
+    const death = entries.animationGroups.find((group) => /death/i.test(group.name));
     const parts = modelRoot
       .getChildMeshes(false)
       .filter((mesh): mesh is Mesh => !!mesh.skeleton);
@@ -183,23 +208,49 @@ export class CrowdRenderer {
     modelRoot.parent = root;
     modelRoot.scaling.setAll(config.scale);
 
-    // Bake: step the glTF Walk group frame by frame; skeleton.prepare(true)
-    // copies each frame's linked-node TRS into the bones.
-    const frames = Math.max(2, Math.floor(walk.to - walk.from) + 1);
-    walk.start(true, 1, walk.from, walk.to, false);
-    walk.pause();
+    // Bake: step each glTF group frame by frame; skeleton.prepare(true)
+    // copies each frame's linked-node TRS into the bones. Texture layout:
+    // rows [0..walkFrames) walk, then the fall, then the fall reversed.
+    const walkFrames = Math.max(2, Math.floor(walk.to - walk.from) + 1);
+    const deathFrames = death
+      ? Math.max(2, Math.floor(death.to - death.from) + 1)
+      : 0;
+    const frames = walkFrames + deathFrames * 2;
     const stride = skeleton.getTransformMatrices(parts[0]).length;
     const data = new Float32Array(stride * frames);
-    for (let frame = 0; frame < frames; frame += 1) {
+    walk.start(true, 1, walk.from, walk.to, false);
+    walk.pause();
+    for (let frame = 0; frame < walkFrames; frame += 1) {
       walk.goToFrame(walk.from + frame);
       skeleton.prepare(true);
       data.set(skeleton.getTransformMatrices(parts[0]), frame * stride);
+    }
+    if (death) {
+      walk.stop();
+      death.start(true, 1, death.from, death.to, false);
+      death.pause();
+      for (let frame = 0; frame < deathFrames; frame += 1) {
+        death.goToFrame(death.from + frame);
+        skeleton.prepare(true);
+        data.set(
+          skeleton.getTransformMatrices(parts[0]),
+          (walkFrames + frame) * stride,
+        );
+      }
+      for (let frame = 0; frame < deathFrames; frame += 1) {
+        const source = (walkFrames + deathFrames - 1 - frame) * stride;
+        data.copyWithin(
+          (walkFrames + deathFrames + frame) * stride,
+          source,
+          source + stride,
+        );
+      }
     }
     for (const group of entries.animationGroups) group.dispose();
     // A silent bake failure yields identical frames; refuse to ship a crowd
     // of gliding mannequins.
     let variance = 0;
-    const middle = Math.floor(frames / 2) * stride;
+    const middle = Math.floor(walkFrames / 2) * stride;
     for (let index = 0; index < stride; index += 1) {
       variance = Math.max(variance, Math.abs(data[index] - data[middle + index]));
     }
@@ -307,9 +358,9 @@ export class CrowdRenderer {
     const vatData = new Float32Array(count * 4);
     for (const [slot, walkerIndex] of indices.entries()) {
       vatData[slot * 4] = 0;
-      vatData[slot * 4 + 1] = frames - 1;
+      vatData[slot * 4 + 1] = walkFrames - 1;
       // Spread start phases so the crowd never marches in step.
-      vatData[slot * 4 + 2] = (walkerIndex * 7.31) % frames;
+      vatData[slot * 4 + 2] = (walkerIndex * 7.31) % walkFrames;
       vatData[slot * 4 + 3] = 0;
       const walker = walkers[walkerIndex];
       for (const channel of channels) {
@@ -337,12 +388,14 @@ export class CrowdRenderer {
       parts,
       ownedMaterials,
       manager,
-      frames,
+      walkFrames,
+      deathFrames,
       w0,
       w0Inverse,
       indices,
       matrixData,
       vatData,
+      phases: new Uint8Array(count),
       vatDirty: true,
     };
   }
@@ -352,7 +405,7 @@ export class CrowdRenderer {
     for (const bundle of this.bundles) bundle.manager.time += seconds;
   }
 
-  /** Pushes the walkers' poses (and any cadence changes) to the GPU. */
+  /** Pushes the walkers' poses (and any cadence or phase changes) to the GPU. */
   writeFrame(walkers: readonly CrowdWalker[]): void {
     if (!this.built) return;
     for (const bundle of this.bundles) {
@@ -368,6 +421,21 @@ export class CrowdRenderer {
           walker.z,
           walker.headingRad,
         );
+        const phase =
+          walker.state !== "downed" || bundle.deathFrames === 0
+            ? PHASE_WALK
+            : walkerDownedPhase(walker.downedRemaining) === "falling"
+              ? PHASE_FALLING
+              : walkerDownedPhase(walker.downedRemaining) === "lying"
+                ? PHASE_LYING
+                : PHASE_RISING;
+        if (phase !== bundle.phases[slot]) {
+          bundle.phases[slot] = phase;
+          this.writePhaseWindow(bundle, slot, phase);
+          bundle.vatDirty = true;
+          continue;
+        }
+        if (phase !== PHASE_WALK) continue;
         const cadence =
           CLIP_FPS * clamp(walker.speedMps / WALK_CLIP_NATURAL_MPS, 0.5, 1.6);
         const fps = walker.state === "pause" ? cadence * PAUSED_CADENCE : cadence;
@@ -380,7 +448,7 @@ export class CrowdRenderer {
             bundle.vatData[fpsIndex],
             fps,
             bundle.vatData[slot * 4 + 2],
-            bundle.frames,
+            bundle.walkFrames,
           );
           bundle.vatData[fpsIndex] = fps;
           bundle.vatDirty = true;
@@ -407,6 +475,41 @@ export class CrowdRenderer {
       }
       this.shadow.thinInstanceBufferUpdated("matrix");
     }
+  }
+
+  /**
+   * Points a slot's per-instance VAT window at the range for `phase`. The
+   * one-shots (fall, get-up) are offset-aligned so they start on their first
+   * frame right now, and play just slower than their sim phase so the timer
+   * always advances the phase before the shader loops.
+   */
+  private writePhaseWindow(
+    bundle: CrowdModelBundle,
+    slot: number,
+    phase: number,
+  ): void {
+    const time = bundle.manager.time;
+    const { walkFrames, deathFrames, vatData } = bundle;
+    let from = 0;
+    let to = walkFrames - 1;
+    let fps = CLIP_FPS;
+    if (phase === PHASE_FALLING) {
+      from = walkFrames;
+      to = walkFrames + deathFrames - 1;
+      fps = deathFrames / (WALKER_FALL_SECONDS + ONE_SHOT_TAIL_SECONDS);
+    } else if (phase === PHASE_LYING) {
+      from = walkFrames + deathFrames - 1;
+      to = from;
+      fps = 0;
+    } else if (phase === PHASE_RISING) {
+      from = walkFrames + deathFrames;
+      to = walkFrames + deathFrames * 2 - 1;
+      fps = deathFrames / (WALKER_RISE_SECONDS + ONE_SHOT_TAIL_SECONDS);
+    }
+    vatData[slot * 4] = from;
+    vatData[slot * 4 + 1] = to;
+    vatData[slot * 4 + 2] = phase === PHASE_LYING ? 0 : alignedVatOffset(time, fps, from, to);
+    vatData[slot * 4 + 3] = fps;
   }
 
   private disposeBundle(bundle: CrowdModelBundle): void {

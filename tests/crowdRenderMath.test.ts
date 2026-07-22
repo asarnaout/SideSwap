@@ -1,12 +1,14 @@
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core";
 import { describe, expect, it } from "vitest";
 import {
+  alignedVatOffset,
   composeYawTranslation16,
   conjugatePose,
   mulMatrix16,
   partitionWalkersByVariant,
   rebaseVatOffset,
   vatFrame,
+  vatFrameWindowed,
 } from "../app/game/crowdRenderMath";
 
 const closeTo = (actual: ArrayLike<number>, expected: ArrayLike<number>, tolerance = 1e-5) => {
@@ -103,5 +105,54 @@ describe("partitionWalkersByVariant", () => {
     expect(partition[0]).toEqual([0, 3, 6]);
     expect(partition[1]).toEqual([1, 4, 7]);
     expect(partition[2]).toEqual([2, 5, 8]);
+  });
+});
+
+describe("vatFrameWindowed / alignedVatOffset", () => {
+  it("mirrors the shader's windowed frame formula, correction included", () => {
+    // Early in the clock (under one cycle) there is no frame correction…
+    expect(vatFrameWindowed(0, 30, 0, 40, 79)).toBe(40);
+    // …after a full cycle the modulus drops to len-1 and frames start at +1.
+    const late = vatFrameWindowed(100, 30, 0, 40, 79);
+    expect(late).toBeGreaterThanOrEqual(41);
+    expect(late).toBeLessThanOrEqual(79);
+  });
+
+  it("aligns any window to its first frame at any clock time", () => {
+    for (const time of [0.4, 7.13, 63.7, 512.9]) {
+      for (const [fps, start, end] of [
+        [48, 0, 35],
+        [50 / 0.96, 36, 85],
+        [61.2, 86, 135],
+      ] as const) {
+        const offset = alignedVatOffset(time, fps, start, end);
+        const frame = vatFrameWindowed(time, fps, offset, start, end);
+        // First frame, allowing the shader's +1 start-up correction.
+        expect(frame).toBeGreaterThanOrEqual(start);
+        expect(frame).toBeLessThanOrEqual(start + 1);
+      }
+    }
+  });
+
+  it("plays a one-shot window through in order after alignment", () => {
+    const fps = 50;
+    const start = 40;
+    const end = 89;
+    const t0 = 33.33;
+    const offset = alignedVatOffset(t0, fps, start, end);
+    let previous = -1;
+    // One window pass lasts len/fps = 1s; sample the first 0.95s.
+    for (let step = 0; step <= 57; step += 1) {
+      const frame = vatFrameWindowed(t0 + step / 60, fps, offset, start, end);
+      expect(frame).toBeGreaterThanOrEqual(previous);
+      previous = frame;
+    }
+    expect(previous).toBeGreaterThan(start + 40);
+  });
+
+  it("holds a single-frame window regardless of time", () => {
+    for (const time of [0, 12.7, 400.01]) {
+      expect(vatFrameWindowed(time, 0, 0, 85, 85)).toBe(85);
+    }
   });
 });

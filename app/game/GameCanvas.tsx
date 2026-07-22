@@ -16,6 +16,8 @@ import {
   Matrix,
   Mesh,
   MeshBuilder,
+  ParticleSystem,
+  Quaternion,
   Scene,
   ShadowGenerator,
   StandardMaterial,
@@ -50,6 +52,7 @@ import {
 import {
   buildSimulationCoreConfig,
   resolveSimulationLaneAnchor,
+  resolveVenuePlacement,
 } from "./simulationAdapter";
 import {
   DEFAULT_SERVICE_SETBACK_M,
@@ -68,6 +71,7 @@ import {
   buildPlanarUVs,
   generateRoadsidePropPlacements,
   hashStringToSeed,
+  PAVED_SIDEWALK_WIDTH_M,
   resolveFogRange,
   resolveMapVisualKey,
   resolveMapVisualPalette,
@@ -139,7 +143,20 @@ import {
   type CharacterTone,
 } from "./characterPalettes";
 import { CrowdRenderer } from "./crowdRenderer";
-import { createCrowdSim, type CrowdSim } from "./crowdWalkers";
+import {
+  SMOKE_HEAVY_CONDITION_PCT,
+  SMOKE_LIGHT_CONDITION_PCT,
+} from "./damage";
+import {
+  createCrowdSim,
+  WALKER_DOWNED_TOTAL_SECONDS,
+  WALKER_FALL_SECONDS,
+  WALKER_LIE_SECONDS,
+  WALKER_RISE_SECONDS,
+  walkerDownedPhase,
+  type CrowdSim,
+  type WalkerDownedPhase,
+} from "./crowdWalkers";
 import { buildPavementGraph, type PavementGraph } from "./pavementPaths";
 import { PED_TURN_PAUSE_S, stepStroll } from "./pedestrianStroll";
 
@@ -199,10 +216,6 @@ const ROAD_JUNCTION_FILL_Y = ROAD_SURFACE_Y + 0.0016;
 const ROAD_SHOULDER_Y = 0.045;
 const ROAD_SHOULDER_JUNCTION_FILL_Y = ROAD_SHOULDER_Y - 0.0015;
 const ROAD_POINT_EPSILON_M = 0.08;
-// On paved ("city") maps the shoulder band becomes a concrete sidewalk: wider
-// than the dirt shoulder so pedestrians, vendors and streetlights have a curb to
-// sit on. It rides the same band + junction-fill machinery as the dirt shoulder.
-const PAVED_SIDEWALK_WIDTH = 3.4;
 // Lift instanced buildings a few cm so a model's flat base plate never sits
 // exactly coplanar with the ground/sidewalk — otherwise the two surfaces
 // z-fight and flicker as the camera moves. Above the sidewalk band (0.045),
@@ -846,6 +859,7 @@ export interface GameRuntimeEvent {
     | "indicator"
     | "horn"
     | "coaching"
+    | "collision"
     | "fine"
     | "incident"
     | "reset"
@@ -1252,6 +1266,10 @@ export interface GameCanvasProps {
   visualHonkIndicator?: boolean;
   /** When true (out of fuel), the throttle is held at zero. */
   outOfFuel?: boolean;
+  /** Car condition 0..100 (app-owned damage state); drives the hood smoke. */
+  carConditionPct?: number;
+  /** Bump to snap the car back to its spawn (the tow-and-repair flow). */
+  resetNonce?: number;
   /** Venue id where a passenger is waiting to be collected, else null. */
   riderVenueId?: string | null;
   /** Stop the active gig is currently heading for, else null. */
@@ -1306,6 +1324,7 @@ interface SessionOptions {
   cameraShake: boolean;
   headBob: boolean;
   outOfFuel: boolean;
+  carConditionPct: number;
   riderVenueId: string | null;
   gigStopId: string | null;
   gigStopCarrying: boolean;
@@ -1451,6 +1470,10 @@ interface Pedestrian {
   /** Driven by a pavement-rail walker sim instead of the strip stroll. */
   railMode?: boolean;
   kind?: "pedestrian" | "cyclist";
+  /** While set (rule-clock seconds), this road user is knocked down. */
+  downedUntilSeconds?: number;
+  /** Last knockdown phase applied, so one-shots trigger exactly once. */
+  downPhase?: WalkerDownedPhase;
   /** Model (or procedural-fallback) visual under `node`; null before build. */
   visual?: CharacterVisual | null;
   /** Which character model + clothing, so it can rebuild on model upgrade. */
@@ -1887,6 +1910,8 @@ const LONDON_PLANTER_POSITIONS: readonly (readonly [number, number])[] = [
   [57, 68],
 ];
 
+// Mirrored as a solid circle obstacle in simulationAdapter (cast iron beats
+// car); move both together.
 const LONDON_POST_BOX_POSITION = [122, 87] as const;
 
 /** Hand-placed South Kensington furniture that scattered props must avoid. */
@@ -1896,6 +1921,75 @@ const LONDON_FURNITURE_POINTS: readonly GameCanvasPoint[] = [
   ...LONDON_PLANTER_POSITIONS,
   LONDON_POST_BOX_POSITION,
 ].map(([x, z]) => ({ x, z }));
+
+/**
+ * Street furniture the car can knock over. Every scattered prop, vendor cart
+ * and piece of hand-placed London furniture registers here; a hit scrubs the
+ * player's speed via the sim's external-contact path (which is also what the
+ * damage/fine layers listen to), topples or squashes the prop in place, and
+ * leaves the wreckage lying for the rest of the drive. `damage: "none"` props
+ * (grass tufts) are a purely visual crunch — no event, no speed change. The
+ * London post box is deliberately absent: cast iron wins, it is a solid
+ * obstacle in the core instead.
+ */
+interface DestructiblePropConfig {
+  readonly radiusM: number;
+  readonly speedScale: number;
+  readonly damage: "none" | "light" | "medium";
+  readonly noun: string;
+  readonly fall: "topple" | "squash";
+}
+
+const DESTRUCTIBLE_PROP_CONFIGS: Readonly<Record<string, DestructiblePropConfig>> = {
+  tree: { radiusM: 0.5, speedScale: 0.7, damage: "medium", noun: "a street tree", fall: "topple" },
+  streetlight: { radiusM: 0.32, speedScale: 0.74, damage: "medium", noun: "a streetlight", fall: "topple" },
+  "utility-pole": { radiusM: 0.35, speedScale: 0.72, damage: "medium", noun: "a utility pole", fall: "topple" },
+  sign: { radiusM: 0.28, speedScale: 0.93, damage: "light", noun: "a signpost", fall: "topple" },
+  hydrant: { radiusM: 0.35, speedScale: 0.9, damage: "light", noun: "a fire hydrant", fall: "topple" },
+  bollard: { radiusM: 0.25, speedScale: 0.92, damage: "light", noun: "a bollard", fall: "topple" },
+  vending: { radiusM: 0.6, speedScale: 0.88, damage: "light", noun: "a vending machine", fall: "topple" },
+  vendor: { radiusM: 1.15, speedScale: 0.85, damage: "light", noun: "a vendor cart", fall: "topple" },
+  hedge: { radiusM: 1.25, speedScale: 0.88, damage: "light", noun: "a hedge", fall: "squash" },
+  "dune-tuft": { radiusM: 0.5, speedScale: 1, damage: "none", noun: "a dune tuft", fall: "squash" },
+  "london-lamp": { radiusM: 0.32, speedScale: 0.74, damage: "medium", noun: "a lamp post", fall: "topple" },
+  "london-bollard": { radiusM: 0.25, speedScale: 0.92, damage: "light", noun: "a bollard", fall: "topple" },
+  "london-planter": { radiusM: 0.58, speedScale: 0.85, damage: "light", noun: "a planter", fall: "topple" },
+};
+
+interface DestructiblePropPart {
+  readonly node: TransformNode;
+  /** The streetlight's ground light pool: sinks away instead of rotating. */
+  readonly isLightPool: boolean;
+}
+
+interface DestructibleProp {
+  readonly kind: string;
+  readonly config: DestructiblePropConfig;
+  readonly x: number;
+  readonly z: number;
+  readonly radiusM: number;
+  readonly parts: readonly DestructiblePropPart[];
+  state: "standing" | "falling" | "down";
+}
+
+interface ActivePropFall {
+  readonly prop: DestructibleProp;
+  readonly pivot: TransformNode;
+  readonly poolParts: readonly TransformNode[];
+  progress: number;
+}
+
+/** Grid cell for the prop broad phase; must exceed the largest prop radius
+ * plus the car capsule reach so a 3x3 neighbourhood always suffices. */
+const DESTRUCTIBLE_GRID_CELL_M = 8;
+const PROP_TOPPLE_SECONDS = 0.5;
+const PROP_TOPPLE_MAX_ANGLE_RAD = 1.46;
+const PROP_MIN_STRIKE_SPEED_MPS = 0.8;
+/** Above this many simultaneous falls, further strikes settle instantly. */
+const PROP_MAX_ACTIVE_TOPPLES = 8;
+
+const PLAYER_CAPSULE_HALF_LENGTH_M = 1.15;
+const PLAYER_CAPSULE_RADIUS_M = 1.0;
 
 const PROP_TREE: PropKindConfig = {
   kind: "tree",
@@ -2869,6 +2963,16 @@ class BabylonGameSession {
   private readonly buildingExclusions: { x: number; z: number; radius: number }[] = [];
   /** Sidewalk vendor carts to instantiate once their glbs preload. */
   private readonly pendingVendors: { config: StreetPropConfig; x: number; z: number; yaw: number }[] = [];
+  /** Knockable street furniture, bucketed for the per-step broad phase. */
+  private readonly destructibleGrid = new Map<string, DestructibleProp[]>();
+  private readonly activePropFalls: ActivePropFall[] = [];
+  private impactPuffs: ParticleSystem | null = null;
+  /** Decaying camera-kick amplitude fed by collision events. */
+  private impactKick = 0;
+  private impactShakeSeconds = 0;
+  /** Hood smoke shown while the car's condition is low. */
+  private damageSmoke: ParticleSystem | null = null;
+  private readonly damageSmokeEmitter = new Vector3(0, -50, 0);
   /** Sidewalk positions (+ toward-road yaw) for the distributed animated crowd,
    * spawned as pedestrians once the character glbs preload. */
   private crowdSim: CrowdSim | null = null;
@@ -3174,6 +3278,7 @@ class BabylonGameSession {
     });
     this.syncRider();
     this.syncGigMarker();
+    this.syncDamageSmoke();
   }
 
   setTouchAnalog(control: keyof AnalogInput, value: number) {
@@ -3330,6 +3435,10 @@ class BabylonGameSession {
     this.audio = null;
     this.effectsPipeline?.dispose();
     this.effectsPipeline = null;
+    this.impactPuffs?.dispose();
+    this.impactPuffs = null;
+    this.damageSmoke?.dispose();
+    this.damageSmoke = null;
     this.riderVisual?.dispose();
     this.riderNode?.dispose(false, false);
     this.gigMarkerNode?.dispose(false, true);
@@ -3517,7 +3626,7 @@ class BabylonGameSession {
     const palette = resolveMapVisualPalette(mapPack.id);
     // The exact sidewalk band the environment renders, so walkers stay on it.
     const sidewalkWidthM = palette.paved
-      ? PAVED_SIDEWALK_WIDTH
+      ? PAVED_SIDEWALK_WIDTH_M
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     try {
       this.pavementGraph = buildPavementGraph(surfaces, { sidewalkWidthM });
@@ -3603,6 +3712,9 @@ class BabylonGameSession {
       pedestrian.node.position.x = walker.x;
       pedestrian.node.position.z = walker.z;
       pedestrian.node.rotation.y = walker.headingRad;
+      // A knocked-down user's clips are driven by updateDownedRoadUsers;
+      // poking setMoving here would fight the fall/recover one-shots.
+      if (pedestrian.downedUntilSeconds !== undefined) continue;
       const moving = walker.state === "walk";
       pedestrian.visual?.setMoving?.(moving);
       if (moving) pedestrian.visual?.advancePedals?.(walker.speedMps * dt);
@@ -3728,6 +3840,15 @@ class BabylonGameSession {
     const interpolation = this.paused ? 1 : this.accumulator / FIXED_STEP;
     this.updatePlayerVisuals(interpolation);
     this.updateGuidanceVisuals();
+    if (!this.paused) this.updatePropFalls(frameSeconds);
+    if (this.damageSmoke?.isStarted()) {
+      // Trail the smoke from the engine bay, wherever the car is facing.
+      this.damageSmokeEmitter.set(
+        this.displayedX + Math.sin(this.displayedHeading) * 1.05,
+        0.92,
+        this.displayedZ + Math.cos(this.displayedHeading) * 1.05,
+      );
+    }
     this.updateCamera(frameSeconds);
     this.updateIndicatorLights(frameSeconds);
     this.updateAudio(frameSeconds);
@@ -3812,7 +3933,9 @@ class BabylonGameSession {
     this.animatePedestrians(dt);
     this.syncRailRoadUsers(dt);
     this.stepAmbientCrowd(dt);
+    this.updateDownedRoadUsers();
     this.reportVulnerableRoadUserCollision();
+    this.checkDestructiblePropCollisions();
     this.evaluateAuthoredProgress();
   }
 
@@ -3823,7 +3946,9 @@ class BabylonGameSession {
     ) {
       return;
     }
+    const impactSpeedMps = Math.round(this.playerState.speedMps * 10) / 10;
     for (const roadUser of this.pedestrians) {
+      if (roadUser.downedUntilSeconds !== undefined) continue;
       const safetyRadius = roadUser.kind === "cyclist" ? 1.9 : 1.55;
       if (
         Math.hypot(
@@ -3834,7 +3959,7 @@ class BabylonGameSession {
         continue;
       }
       const cyclist = roadUser.kind === "cyclist";
-      const reported = this.simulation.reportExternalCollision(
+      const reported = this.simulation.reportExternalContact(
         cyclist
           ? "Your vehicle collided with a cyclist."
           : roadUser.railMode
@@ -3845,12 +3970,21 @@ class BabylonGameSession {
           : roadUser.railMode
             ? "Keep the car off the kerb and clear of people on foot."
             : "Brake early and yield until the crossing is completely clear.",
+        cyclist ? 0.8 : 0.75,
         {
           roadUserType: cyclist ? "cyclist" : "pedestrian",
-          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+          impactSpeedMps,
         },
       );
       if (!reported) return;
+      this.knockDownRoadUser(roadUser);
+      this.audio?.impact(this.playerState.speedMps * 0.5, eventNow());
+      this.emitImpactBurst(
+        roadUser.node.position.x,
+        0.9,
+        roadUser.node.position.z,
+        10,
+      );
       const snapshot = this.simulation.getSnapshot();
       this.applySimulationSnapshot(snapshot);
       this.processSimulationEvents(this.simulation.drainEvents());
@@ -3860,6 +3994,7 @@ class BabylonGameSession {
     // up on the kerb — the same offence the old clone crowd reported.
     if (!this.crowdSim) return;
     for (const walker of this.crowdSim.walkers) {
+      if (walker.state === "downed") continue;
       if (
         Math.hypot(
           this.playerState.x - walker.x,
@@ -3868,19 +4003,88 @@ class BabylonGameSession {
       ) {
         continue;
       }
-      const reported = this.simulation.reportExternalCollision(
+      const reported = this.simulation.reportExternalContact(
         "Your vehicle struck a pedestrian on the pavement.",
         "Keep the car off the kerb and clear of people on foot.",
+        0.75,
         {
           roadUserType: "pedestrian",
-          impactSpeedMps: Math.round(this.playerState.speedMps * 10) / 10,
+          impactSpeedMps,
         },
       );
       if (!reported) return;
+      this.crowdSim.strike(walker, this.playerState.x, this.playerState.z);
+      this.crowdDirty = true;
+      this.audio?.impact(this.playerState.speedMps * 0.5, eventNow());
+      this.emitImpactBurst(walker.x, 0.9, walker.z, 10);
       const snapshot = this.simulation.getSnapshot();
       this.applySimulationSnapshot(snapshot);
       this.processSimulationEvents(this.simulation.drainEvents());
       return;
+    }
+  }
+
+  /** Starts a scenario road user's knockdown: the walker sim (if any) halts
+   * in place, pedestrians face the car and play the fitted fall clip, and
+   * cyclists tip over via updateDownedRoadUsers' per-frame roll. */
+  private knockDownRoadUser(roadUser: Pedestrian) {
+    roadUser.downedUntilSeconds =
+      this.ruleElapsedSeconds + WALKER_DOWNED_TOTAL_SECONDS;
+    roadUser.downPhase = "falling";
+    const railEntry = this.railRoadUsers.find(
+      (entry) => entry.pedestrian === roadUser,
+    );
+    if (railEntry) {
+      const sim =
+        railEntry.kind === "cyclist"
+          ? this.roadUserCycleSim
+          : this.roadUserPedSim;
+      const walker = sim?.walkers[railEntry.index];
+      if (sim && walker) {
+        sim.strike(walker, this.playerState.x, this.playerState.z);
+      }
+    }
+    if (roadUser.kind === "cyclist") return;
+    if (!roadUser.railMode) {
+      // Strip strollers own their node yaw; face the car so the fall reads
+      // as being knocked away from it. Rail walkers get this via strike().
+      roadUser.node.rotation.y = Math.atan2(
+        this.playerState.x - roadUser.node.position.x,
+        this.playerState.z - roadUser.node.position.z,
+      );
+    }
+    roadUser.visual?.playKnockdown?.(WALKER_FALL_SECONDS);
+  }
+
+  /** Advances every knocked-down road user's phase: cyclists roll over and
+   * back upright, pedestrians get their one-shot recover, and everyone
+   * resumes walking when the shared knockdown window closes. */
+  private updateDownedRoadUsers() {
+    for (const roadUser of this.pedestrians) {
+      if (roadUser.downedUntilSeconds === undefined) continue;
+      const remaining = roadUser.downedUntilSeconds - this.ruleElapsedSeconds;
+      if (remaining <= 0) {
+        roadUser.downedUntilSeconds = undefined;
+        roadUser.downPhase = undefined;
+        if (roadUser.kind === "cyclist") roadUser.node.rotation.z = 0;
+        else roadUser.visual?.setMoving?.(true);
+        continue;
+      }
+      const phase = walkerDownedPhase(remaining);
+      if (roadUser.kind === "cyclist") {
+        const tilt =
+          phase === "falling"
+            ? 1 -
+              (remaining - WALKER_LIE_SECONDS - WALKER_RISE_SECONDS) /
+                WALKER_FALL_SECONDS
+            : phase === "lying"
+              ? 1
+              : remaining / WALKER_RISE_SECONDS;
+        roadUser.node.rotation.z = -1.35 * clamp(tilt, 0, 1);
+      } else if (phase === "rising" && roadUser.downPhase !== "rising") {
+        roadUser.visual?.playRecover?.(WALKER_RISE_SECONDS);
+      }
+      roadUser.downPhase = phase;
     }
   }
 
@@ -4561,6 +4765,9 @@ class BabylonGameSession {
       inst.scaling.setAll(vendor.config.scale);
       inst.isPickable = false;
       this.staticSceneryFreeze.push(inst);
+      this.registerDestructibleProp("vendor", vendor.x, vendor.z, 1, [
+        { node: inst, isLightPool: false },
+      ]);
     }
     this.pendingVendors.length = 0;
   }
@@ -4585,6 +4792,270 @@ class BabylonGameSession {
       if ("doNotSyncBoundingInfo" in mesh) mesh.doNotSyncBoundingInfo = true;
     }
     this.staticSceneryFreeze.length = 0;
+  }
+
+  private destructibleCellKey(x: number, z: number): string {
+    return `${Math.floor(x / DESTRUCTIBLE_GRID_CELL_M)}:${Math.floor(z / DESTRUCTIBLE_GRID_CELL_M)}`;
+  }
+
+  /** Enrols a placed prop as knockable. Unknown kinds are silently ignored so
+   * a new scatter kind fails soft (indestructible) rather than crashing. */
+  private registerDestructibleProp(
+    kind: string,
+    x: number,
+    z: number,
+    scale: number,
+    parts: readonly DestructiblePropPart[],
+  ) {
+    const config = DESTRUCTIBLE_PROP_CONFIGS[kind];
+    if (!config || !parts.length) return;
+    const prop: DestructibleProp = {
+      kind,
+      config,
+      x,
+      z,
+      radiusM: config.radiusM * scale,
+      parts,
+      state: "standing",
+    };
+    const key = this.destructibleCellKey(x, z);
+    const bucket = this.destructibleGrid.get(key);
+    if (bucket) bucket.push(prop);
+    else this.destructibleGrid.set(key, [prop]);
+  }
+
+  /** The car's two capsule circles against every standing prop nearby. */
+  private checkDestructiblePropCollisions() {
+    if (
+      this.simulationSnapshot.status !== "running" ||
+      this.playerState.speedMps < PROP_MIN_STRIKE_SPEED_MPS ||
+      this.destructibleGrid.size === 0
+    ) {
+      return;
+    }
+    const { x, z, heading } = this.playerState;
+    const forwardX = Math.sin(heading);
+    const forwardZ = Math.cos(heading);
+    const column = Math.floor(x / DESTRUCTIBLE_GRID_CELL_M);
+    const row = Math.floor(z / DESTRUCTIBLE_GRID_CELL_M);
+    for (let dc = -1; dc <= 1; dc += 1) {
+      for (let dr = -1; dr <= 1; dr += 1) {
+        const bucket = this.destructibleGrid.get(`${column + dc}:${row + dr}`);
+        if (!bucket) continue;
+        for (const prop of bucket) {
+          if (prop.state !== "standing") continue;
+          const reach = prop.radiusM + PLAYER_CAPSULE_RADIUS_M;
+          let contact = false;
+          for (let end = -1; end <= 1 && !contact; end += 2) {
+            const cx = x + forwardX * PLAYER_CAPSULE_HALF_LENGTH_M * end;
+            const cz = z + forwardZ * PLAYER_CAPSULE_HALF_LENGTH_M * end;
+            contact = Math.hypot(cx - prop.x, cz - prop.z) < reach;
+          }
+          if (contact) this.strikeDestructibleProp(prop);
+        }
+      }
+    }
+  }
+
+  private strikeDestructibleProp(prop: DestructibleProp) {
+    const impactSpeed = this.playerState.speedMps;
+    if (prop.config.damage !== "none") {
+      const reported = this.simulation.reportExternalContact(
+        prop.config.fall === "squash"
+          ? `You drove through ${prop.config.noun}.`
+          : `You knocked over ${prop.config.noun}.`,
+        "Mind the kerbside furniture.",
+        prop.config.speedScale,
+        {
+          obstacle: "prop",
+          propKind: prop.kind,
+          impactSpeedMps: Math.round(impactSpeed * 10) / 10,
+        },
+      );
+      if (!reported) return;
+      const snapshot = this.simulation.getSnapshot();
+      this.applySimulationSnapshot(snapshot);
+      this.processSimulationEvents(this.simulation.drainEvents());
+      this.audio?.impact(impactSpeed * 0.55, eventNow());
+    } else {
+      this.audio?.impact(Math.min(impactSpeed * 0.2, 1.5), eventNow());
+    }
+    prop.state = "falling";
+
+    // Fall away from the car; a dead-centre hit falls along the travel dir.
+    let fallX = prop.x - this.playerState.x;
+    let fallZ = prop.z - this.playerState.z;
+    const fallLength = Math.hypot(fallX, fallZ);
+    if (fallLength > 1e-3) {
+      fallX /= fallLength;
+      fallZ /= fallLength;
+    } else {
+      fallX = Math.sin(this.playerState.heading);
+      fallZ = Math.cos(this.playerState.heading);
+    }
+
+    const pivot = new TransformNode(`prop-fall-${prop.kind}`, this.scene);
+    pivot.position.set(prop.x, 0, prop.z);
+    const poolParts: TransformNode[] = [];
+    for (const part of prop.parts) {
+      part.node.unfreezeWorldMatrix();
+      if (part.isLightPool) {
+        poolParts.push(part.node);
+        continue;
+      }
+      part.node.setParent(pivot);
+    }
+    if (prop.config.fall === "topple") {
+      // Rotating about this horizontal axis tips the top toward (fallX, fallZ).
+      pivot.rotationQuaternion = Quaternion.Identity();
+      pivot.metadata = { axis: new Vector3(fallZ, 0, -fallX) };
+    }
+    const fall: ActivePropFall = { prop, pivot, poolParts, progress: 0 };
+    if (this.activePropFalls.length >= PROP_MAX_ACTIVE_TOPPLES) {
+      fall.progress = 1;
+      this.applyPropFallPose(fall);
+      this.settlePropFall(fall);
+      return;
+    }
+    this.activePropFalls.push(fall);
+    this.emitImpactBurst(prop.x, 0.7, prop.z, prop.config.damage === "none" ? 6 : 14);
+  }
+
+  private applyPropFallPose(fall: ActivePropFall) {
+    const { prop, pivot } = fall;
+    // Ease out with a small overshoot so the fall lands with a bounce.
+    const t = Math.min(1, fall.progress);
+    const eased = 1 - (1 - t) * (1 - t);
+    const overshoot = t < 0.72 ? eased * 1.07 : 1.07 - ((t - 0.72) / 0.28) * 0.07;
+    if (prop.config.fall === "squash") {
+      pivot.scaling.y = 1 - 0.68 * eased;
+      pivot.scaling.x = 1 + 0.22 * eased;
+      pivot.scaling.z = 1 + 0.22 * eased;
+      return;
+    }
+    const axis = (pivot.metadata as { axis: Vector3 }).axis;
+    Quaternion.RotationAxisToRef(
+      axis,
+      PROP_TOPPLE_MAX_ANGLE_RAD * overshoot,
+      pivot.rotationQuaternion!,
+    );
+    pivot.position.y = -0.06 * eased;
+    for (const pool of fall.poolParts) {
+      pool.position.y = 0.07 - 1.4 * eased;
+    }
+  }
+
+  private settlePropFall(fall: ActivePropFall) {
+    fall.prop.state = "down";
+    // Refreeze at the settled pose so the wreckage costs nothing per frame.
+    fall.pivot.computeWorldMatrix(true);
+    for (const part of fall.prop.parts) {
+      part.node.computeWorldMatrix(true);
+      part.node.freezeWorldMatrix();
+    }
+  }
+
+  private updatePropFalls(frameSeconds: number) {
+    if (!this.activePropFalls.length) return;
+    for (let index = this.activePropFalls.length - 1; index >= 0; index -= 1) {
+      const fall = this.activePropFalls[index];
+      fall.progress += frameSeconds / PROP_TOPPLE_SECONDS;
+      this.applyPropFallPose(fall);
+      if (fall.progress >= 1) {
+        this.settlePropFall(fall);
+        this.activePropFalls.splice(index, 1);
+      }
+    }
+  }
+
+  /** Shared one-shot burst system for prop crunches and hard impacts. */
+  private ensureImpactPuffs(): ParticleSystem {
+    if (this.impactPuffs) return this.impactPuffs;
+    const texture = new DynamicTexture("impact-puff", 64, this.scene, false);
+    const context = texture.getContext();
+    const gradient = context.createRadialGradient(32, 32, 4, 32, 32, 30);
+    gradient.addColorStop(0, "rgba(235, 230, 220, 0.9)");
+    gradient.addColorStop(1, "rgba(235, 230, 220, 0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 64, 64);
+    texture.update();
+    const puffs = new ParticleSystem("impact-puffs", 160, this.scene);
+    puffs.particleTexture = texture;
+    puffs.emitter = new Vector3(0, -50, 0);
+    puffs.minEmitBox = new Vector3(-0.5, 0, -0.5);
+    puffs.maxEmitBox = new Vector3(0.5, 0.6, 0.5);
+    puffs.minLifeTime = 0.3;
+    puffs.maxLifeTime = 0.7;
+    puffs.minSize = 0.35;
+    puffs.maxSize = 1.0;
+    puffs.emitRate = 0;
+    puffs.manualEmitCount = 0;
+    puffs.minEmitPower = 0.8;
+    puffs.maxEmitPower = 2.4;
+    puffs.direction1 = new Vector3(-1, 0.6, -1);
+    puffs.direction2 = new Vector3(1, 1.4, 1);
+    puffs.gravity = new Vector3(0, -1.6, 0);
+    puffs.color1 = new Color4(0.9, 0.87, 0.8, 0.55);
+    puffs.color2 = new Color4(0.75, 0.72, 0.66, 0.4);
+    puffs.colorDead = new Color4(0.7, 0.68, 0.64, 0);
+    puffs.updateSpeed = 0.016;
+    puffs.start();
+    this.impactPuffs = puffs;
+    return puffs;
+  }
+
+  private emitImpactBurst(x: number, y: number, z: number, count: number) {
+    if (this.options.reducedMotion) return;
+    const puffs = this.ensureImpactPuffs();
+    (puffs.emitter as Vector3).set(x, y, z);
+    puffs.manualEmitCount = count;
+  }
+
+  /** Continuous engine-bay smoke while the car's condition is low; rate and
+   * colour step up as it worsens. Off (and never created) while healthy. */
+  private ensureDamageSmoke(): ParticleSystem {
+    if (this.damageSmoke) return this.damageSmoke;
+    const texture = new DynamicTexture("damage-smoke", 64, this.scene, false);
+    const context = texture.getContext();
+    const gradient = context.createRadialGradient(32, 32, 3, 32, 32, 30);
+    gradient.addColorStop(0, "rgba(200, 200, 205, 0.85)");
+    gradient.addColorStop(1, "rgba(200, 200, 205, 0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 64, 64);
+    texture.update();
+    const smoke = new ParticleSystem("damage-smoke", 90, this.scene);
+    smoke.particleTexture = texture;
+    smoke.emitter = this.damageSmokeEmitter;
+    smoke.minEmitBox = new Vector3(-0.18, 0, -0.18);
+    smoke.maxEmitBox = new Vector3(0.18, 0.1, 0.18);
+    smoke.minLifeTime = 0.7;
+    smoke.maxLifeTime = 1.4;
+    smoke.minSize = 0.25;
+    smoke.maxSize = 0.7;
+    smoke.minEmitPower = 0.4;
+    smoke.maxEmitPower = 0.9;
+    smoke.direction1 = new Vector3(-0.2, 1, -0.2);
+    smoke.direction2 = new Vector3(0.2, 1.6, 0.2);
+    smoke.gravity = new Vector3(0, 0.6, 0);
+    smoke.updateSpeed = 0.016;
+    this.damageSmoke = smoke;
+    return smoke;
+  }
+
+  private syncDamageSmoke() {
+    const pct = this.options.carConditionPct ?? 100;
+    const heavy = pct <= SMOKE_HEAVY_CONDITION_PCT;
+    if (pct > SMOKE_LIGHT_CONDITION_PCT) {
+      this.damageSmoke?.stop();
+      return;
+    }
+    const smoke = this.ensureDamageSmoke();
+    smoke.emitRate = heavy ? 34 : 13;
+    const tone = heavy ? 0.32 : 0.62;
+    smoke.color1 = new Color4(tone, tone, tone + 0.03, heavy ? 0.6 : 0.4);
+    smoke.color2 = new Color4(tone * 0.8, tone * 0.8, tone * 0.8, heavy ? 0.45 : 0.3);
+    smoke.colorDead = new Color4(tone, tone, tone, 0);
+    if (!smoke.isStarted()) smoke.start();
   }
 
   /**
@@ -4727,10 +5198,24 @@ class BabylonGameSession {
       this.lastSimulationCoachMessage = correction;
       if (event.code === "collision") {
         const impact = event.evidence?.impactSpeedMps;
-        this.audio?.impact(typeof impact === "number" ? impact : 0, eventNow());
+        const impactMps = typeof impact === "number" ? impact : 0;
+        // Prop and pedestrian contacts trigger their own softened thud at the
+        // report site (and keep sounding inside the event cooldown); only
+        // wall and vehicle crashes voice from the event stream.
+        if (!event.evidence?.externalRoadUser) {
+          this.audio?.impact(impactMps, eventNow());
+        }
+        this.impactKick = Math.min(
+          1,
+          Math.max(this.impactKick, (impactMps || 4) / 12),
+        );
       }
       this.emit(
-        event.severity === "critical" ? "incident" : "coaching",
+        event.severity === "critical"
+          ? "incident"
+          : event.code === "collision"
+            ? "collision"
+            : "coaching",
         `${event.message} ${correction}`,
         event.severity === "critical" ? "critical" : "warning",
         {
@@ -4744,7 +5229,10 @@ class BabylonGameSession {
       } else if (
         event.code === "wrong_way" ||
         event.code === "out_of_bounds" ||
-        event.code === "red_light"
+        event.code === "red_light" ||
+        // Crashing into cars or buildings is fined when witnessed too;
+        // pedestrian strikes are cited unconditionally by the app instead.
+        (event.code === "collision" && !event.evidence?.roadUserType)
       ) {
         const patrol = this.patrolNearPlayer(35);
         if (patrol) {
@@ -4829,6 +5317,8 @@ class BabylonGameSession {
     for (const pedestrian of this.pedestrians) {
       // Rail-mode road users are positioned by their walker sim instead.
       if (pedestrian.railMode) continue;
+      // Knocked down: hold position and facing until the window closes.
+      if (pedestrian.downedUntilSeconds !== undefined) continue;
       const span = pedestrian.span ?? 16;
       // The sawtooth this replaced covered `span` metres in 18 phase units, so
       // this keeps every road user's ground speed exactly as tuned.
@@ -4960,6 +5450,23 @@ class BabylonGameSession {
         );
       }
       this.thirdCamera.setTarget(target);
+    }
+
+    // Impact kick: a short decaying jolt on top of whichever camera is live,
+    // fed by collision events. Applied post-pose so the smoothing above
+    // cannot iron it out.
+    this.impactShakeSeconds += dt;
+    if (this.impactKick > 0.012) {
+      if (this.options.cameraShake && !this.options.reducedMotion) {
+        const kick = this.impactKick;
+        const jab = Math.sin(this.impactShakeSeconds * 47) * 0.24 * kick;
+        const lift = Math.cos(this.impactShakeSeconds * 39) * 0.11 * kick;
+        const camera =
+          this.cameraMode === "first" ? this.firstCamera : this.thirdCamera;
+        camera.position.addInPlace(right.scale(jab));
+        camera.position.y += lift;
+      }
+      this.impactKick *= Math.exp(-5.2 * dt);
     }
   }
 
@@ -5173,7 +5680,7 @@ class BabylonGameSession {
       ? connectedRoadSurfaces
       : authoredRoadSurfaces;
     const shoulderWidth = paved
-      ? PAVED_SIDEWALK_WIDTH
+      ? PAVED_SIDEWALK_WIDTH_M
       : Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2);
     for (const surface of roadSurfaces) {
       const surfaceMaterial =
@@ -5466,17 +5973,20 @@ class BabylonGameSession {
       depot: new Color3(0.5, 0.5, 0.55),
     };
     for (const venue of mapPack.geometry.gigVenues ?? []) {
-      const pose = resolveSimulationLaneAnchor(
-        mapPack.laneGraph.lanes,
-        venue.anchor,
-      );
-      if (!pose) continue;
-      // Set the building back off the road so its footprint + base sit on the
-      // verge, not the carriageway. Per-site `setbackM` pulls a venue off a
-      // neighbouring lot it would otherwise intersect; 13 is the default.
-      const setback = venue.setbackM ?? 13;
-      const px = pose.x + Math.cos(pose.heading) * setback;
-      const pz = pose.z - Math.sin(pose.heading) * setback;
+      // Shared with the collider builder: on paved city maps the building's
+      // measured front face lines up just behind the walkable pavement (the
+      // street-wall look), elsewhere the authored setback stands. Keeping the
+      // one resolver on both sides is what stops the visible building and its
+      // collision from ever drifting apart again.
+      const placement = resolveVenuePlacement(mapPack, venue);
+      if (!placement) continue;
+      const pose = {
+        x: placement.anchorX,
+        z: placement.anchorZ,
+        heading: placement.heading,
+      };
+      const px = placement.x;
+      const pz = placement.z;
       // Keep scenery buildings off the gig venue's own lot.
       this.buildingExclusions.push({
         x: px,
@@ -6461,6 +6971,7 @@ class BabylonGameSession {
       const parts = partsFor(placement.kind, placement.variant);
       const sin = Math.sin(placement.rotationY);
       const cos = Math.cos(placement.rotationY);
+      const destructibleParts: DestructiblePropPart[] = [];
       for (const part of parts) {
         const instance = part.master.createInstance(
           `prop-${placement.kind}-${instanceIndex}`,
@@ -6479,7 +6990,18 @@ class BabylonGameSession {
         if (part.castShadow !== false) {
           this.registerShadowCaster(instance, placement.x, placement.z);
         }
+        destructibleParts.push({
+          node: instance,
+          isLightPool: part.master.name.includes("-pool"),
+        });
       }
+      this.registerDestructibleProp(
+        placement.kind,
+        placement.x,
+        placement.z,
+        placement.scale,
+        destructibleParts,
+      );
     }
 
     for (const propMaterial of [
@@ -6516,40 +7038,50 @@ class BabylonGameSession {
     const lampPositions = LONDON_LAMP_POSITIONS;
     for (let index = 0; index < lampPositions.length; index += 1) {
       const [x, z] = lampPositions[index];
-      createCylinder(
+      const post = createCylinder(
         scene,
         `london-lamp-post-${index}`,
         { height: 4.7, diameter: 0.18 },
         new Vector3(x, 2.35, z),
         iron,
       );
-      createBox(
+      const head = createBox(
         scene,
         `london-lamp-head-${index}`,
         { width: 0.62, height: 0.78, depth: 0.62 },
         new Vector3(x, 4.68, z),
         lamp,
       );
+      this.registerDestructibleProp("london-lamp", x, z, 1, [
+        { node: post, isLightPool: false },
+        { node: head, isLightPool: false },
+      ]);
     }
 
     for (const [index, [x, z]] of LONDON_BOLLARD_POSITIONS.entries()) {
-      createCylinder(
+      const bollard = createCylinder(
         scene,
         `london-bollard-${index}-${x}`,
         { height: 0.95, diameterTop: 0.17, diameterBottom: 0.28 },
         new Vector3(x, 0.49, z),
         iron,
       );
+      this.registerDestructibleProp("london-bollard", x, z, 1, [
+        { node: bollard, isLightPool: false },
+      ]);
     }
 
     for (const [index, [x, z]] of LONDON_PLANTER_POSITIONS.entries()) {
-      createCylinder(
+      const planterBody = createCylinder(
         scene,
         `london-planter-${index}`,
         { height: 0.72, diameterTop: 1.15, diameterBottom: 0.92 },
         new Vector3(x, 0.38, z),
         planter,
       );
+      this.registerDestructibleProp("london-planter", x, z, 1, [
+        { node: planterBody, isLightPool: false },
+      ]);
     }
 
     createCylinder(
@@ -7064,6 +7596,7 @@ class BabylonGameSession {
               dir: walker.dir,
               state: walker.state,
               speed: round(walker.speedMps),
+              down: round(walker.downedRemaining),
               recycled: walker.justRecycled,
             })) ?? [],
         };
@@ -8697,6 +9230,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       headBob = false,
       visualHonkIndicator = true,
       outOfFuel = false,
+      carConditionPct = 100,
+      resetNonce = 0,
       riderVenueId = null,
       gigStopId = null,
       gigStopCarrying = false,
@@ -8839,6 +9374,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             cameraShake,
             headBob,
             outOfFuel,
+            carConditionPct,
             riderVenueId,
             gigStopId,
             gigStopCarrying,
@@ -8887,11 +9423,21 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
         cameraShake,
         headBob,
         outOfFuel,
+        carConditionPct,
         riderVenueId,
         gigStopId,
         gigStopCarrying,
       });
-    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, riderVenueId, gigStopId, gigStopCarrying]);
+    }, [cameraMode, speedUnit, paused, reducedMotion, steeringSensitivity, fieldOfView, masterVolume, effectsVolume, cameraShake, headBob, outOfFuel, carConditionPct, riderVenueId, gigStopId, gigStopCarrying]);
+
+    // The tow-and-repair flow: the app bumps `resetNonce` once the fee is
+    // debited and the car snaps back to its spawn, repaired.
+    const lastResetNonceRef = useRef(resetNonce);
+    useEffect(() => {
+      if (resetNonce === lastResetNonceRef.current) return;
+      lastResetNonceRef.current = resetNonce;
+      sessionRef.current?.reset();
+    }, [resetNonce]);
 
     useImperativeHandle(
       ref,

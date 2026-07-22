@@ -775,3 +775,357 @@ describe("deterministic simulation", () => {
     expect(railwayEvent?.evidence).toMatchObject({ warningActive: true });
   });
 });
+
+describe("static world collision", () => {
+  const NORTH_LANE = {
+    id: "main-street",
+    points: [
+      { x: 0, z: -100 },
+      { x: 0, z: 100 },
+    ],
+    width: 20,
+    speedLimitMps: 30,
+    loop: false,
+  };
+
+  const wallAhead = (
+    enforcement: "coach" | "reset",
+    maxForwardSpeedMps = 22,
+  ) =>
+    new SimulationCore({
+      lessonId: "wall-test",
+      trafficSide: "right",
+      npcCount: 0,
+      enforcement,
+      lanes: [NORTH_LANE],
+      spawn: { x: 0, z: 0, heading: 0 },
+      bounds: { minX: -60, maxX: 60, minZ: -120, maxZ: 120 },
+      maxForwardSpeedMps,
+      staticObstacles: [
+        {
+          kind: "aabb",
+          id: "front-wall",
+          tag: "building",
+          minX: -30,
+          maxX: 30,
+          minZ: 40,
+          maxZ: 60,
+        },
+      ],
+    });
+
+  it("stops the car at a wall in coach mode without ending the drive", () => {
+    const simulation = wallAhead("coach");
+    for (let index = 0; index < 480; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.score.criticalErrors).toBe(0);
+    // Capsule front circle (centre + 1.15 + radius 1.0) rests on the face.
+    expect(snapshot.player.z).toBeLessThanOrEqual(40 - 2.15 + 0.01);
+    expect(snapshot.player.z).toBeGreaterThan(35);
+    const collision = simulation
+      .getEvents()
+      .find((event) => event.code === "collision");
+    expect(collision?.severity).toBe("minor");
+    expect(collision?.evidence).toMatchObject({ obstacle: "building" });
+    expect(
+      typeof collision?.evidence.impactSpeedMps === "number" &&
+        (collision.evidence.impactSpeedMps as number) > 2,
+    ).toBe(true);
+  });
+
+  it("never tunnels through a wall even at the physics ceiling", () => {
+    const simulation = wallAhead("coach", 50);
+    for (let index = 0; index < 900; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+      expect(simulation.getSnapshot().player.z).toBeLessThan(40 - 1.0);
+    }
+  });
+
+  it("bonks back off a hard head-on hit", () => {
+    const simulation = wallAhead("coach");
+    let sawRebound = false;
+    for (let index = 0; index < 480; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+      if (simulation.getSnapshot().player.signedSpeedMps < -0.1) {
+        sawRebound = true;
+        break;
+      }
+    }
+    expect(sawRebound).toBe(true);
+  });
+
+  it("lets the car reverse away after a head-on stop", () => {
+    const simulation = wallAhead("coach");
+    for (let index = 0; index < 360; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const stopped = simulation.getSnapshot().player.z;
+    for (let index = 0; index < 240; index += 1) {
+      simulation.step(1 / 60, { reverse: 1 });
+    }
+    expect(simulation.getSnapshot().player.z).toBeLessThan(stopped - 4);
+    expect(simulation.getSnapshot().status).toBe("running");
+  });
+
+  it("slides along a wall met at a shallow angle instead of sticking", () => {
+    const simulation = new SimulationCore({
+      lessonId: "slide-test",
+      trafficSide: "right",
+      npcCount: 0,
+      enforcement: "coach",
+      lanes: [NORTH_LANE],
+      // Slight angle toward the wall on the right.
+      spawn: { x: 0, z: -80, heading: 0.18 },
+      bounds: { minX: -60, maxX: 60, minZ: -120, maxZ: 120 },
+      staticObstacles: [
+        {
+          kind: "aabb",
+          id: "side-wall",
+          tag: "building",
+          minX: 4,
+          maxX: 12,
+          minZ: -100,
+          maxZ: 100,
+        },
+      ],
+    });
+    for (let index = 0; index < 600; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    // Pinned laterally by the wall, but well down the road: sliding, not stuck.
+    expect(snapshot.player.x).toBeLessThanOrEqual(4 - 1.0 + 0.01);
+    expect(snapshot.player.z).toBeGreaterThan(-30);
+  });
+
+  it("keeps the classic critical incident in reset enforcement", () => {
+    const simulation = wallAhead("reset");
+    for (let index = 0; index < 480; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+      if (simulation.getSnapshot().status === "incident") break;
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("incident");
+    expect(snapshot.activeIncident?.code).toBe("collision");
+    expect(snapshot.score.criticalErrors).toBe(1);
+    // Snapped back to the spawn checkpoint.
+    expect(Math.abs(snapshot.player.z)).toBeLessThan(1);
+  });
+
+  it("emits at most one collision event per contact burst", () => {
+    const simulation = wallAhead("coach");
+    let firstEventAt: number | null = null;
+    for (let index = 0; index < 600; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+      if (
+        firstEventAt === null &&
+        simulation.getEvents().some((event) => event.code === "collision")
+      ) {
+        firstEventAt = index;
+      }
+    }
+    expect(firstEventAt).not.toBeNull();
+    // Held full throttle against the wall for seconds after the first hit:
+    // the stopped car never re-approaches fast enough to crunch again.
+    const collisions = simulation
+      .getEvents()
+      .filter((event) => event.code === "collision");
+    expect(collisions).toHaveLength(1);
+  });
+
+  it("is deterministic with obstacles present", () => {
+    const left = wallAhead("coach");
+    const right = wallAhead("coach");
+    for (let index = 0; index < 600; index += 1) {
+      const input = { throttle: 1, steer: index > 300 ? -0.4 : 0 };
+      left.step(1 / 60, input);
+      right.step(1 / 60, input);
+    }
+    expect(left.getSnapshot()).toEqual(right.getSnapshot());
+  });
+});
+
+describe("coach-mode crash response with traffic", () => {
+  const crashConfig = () =>
+    new SimulationCore({
+      lessonId: "npc-crash-test",
+      trafficSide: "right",
+      seed: 7,
+      npcCount: 1,
+      enforcement: "coach",
+      lanes: [
+        {
+          id: "crash-lane",
+          points: [
+            { x: 0, z: -40 },
+            { x: 0, z: 400 },
+          ],
+          width: 8,
+          speedLimitMps: 30,
+          loop: false,
+        },
+      ],
+      spawn: { x: 0, z: -30, heading: 0 },
+      bounds: { minX: -40, maxX: 40, minZ: -60, maxZ: 420 },
+      // One crawling car ahead in the same lane; the player runs into it.
+      trafficGates: [
+        {
+          id: "crawler-gate",
+          laneId: "crash-lane",
+          distance: 100,
+          desiredSpeedMps: 1,
+          allowInitialSpawn: true,
+        },
+      ],
+    });
+
+  it("knocks the struck car askew, holds it, then releases it", () => {
+    const simulation = crashConfig();
+    let crashTick: number | null = null;
+    for (let index = 0; index < 1200; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+      const collision = simulation
+        .getEvents()
+        .find((event) => event.code === "collision");
+      if (collision) {
+        crashTick = index;
+        break;
+      }
+    }
+    expect(crashTick).not.toBeNull();
+    const atCrash = simulation.getSnapshot();
+    expect(atCrash.status).toBe("running");
+    expect(atCrash.score.criticalErrors).toBe(0);
+    const struck = atCrash.npcs[0];
+    expect(struck).toBeDefined();
+    // Knocked visibly askew relative to the lane heading (0 = due north).
+    expect(Math.abs(struck.heading)).toBeGreaterThan(0.1);
+    // Holds position for the struck window (~6 s), no drive-through.
+    for (let index = 0; index < 120; index += 1) {
+      simulation.step(1 / 60, {});
+    }
+    const held = simulation.getSnapshot().npcs[0];
+    expect(held.speedMps).toBe(0);
+    expect(Math.hypot(held.x - struck.x, held.z - struck.z)).toBeLessThan(0.2);
+    // After the hold expires the car straightens out and pulls away.
+    for (let index = 0; index < 600; index += 1) {
+      simulation.step(1 / 60, {});
+    }
+    const released = simulation.getSnapshot().npcs[0];
+    expect(released.speedMps).toBeGreaterThan(0.2);
+    expect(Math.abs(released.heading)).toBeLessThan(0.05);
+  });
+
+  it("scrubs the player's speed on impact instead of resetting the drive", () => {
+    const simulation = crashConfig();
+    let preImpactSpeed = 0;
+    let postImpactSpeed = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < 1200; index += 1) {
+      const before = simulation.getSnapshot().player.signedSpeedMps;
+      simulation.step(1 / 60, { throttle: 1 });
+      const collision = simulation
+        .getEvents()
+        .find((event) => event.code === "collision");
+      if (collision) {
+        preImpactSpeed = before;
+        postImpactSpeed = simulation.getSnapshot().player.signedSpeedMps;
+        break;
+      }
+    }
+    expect(preImpactSpeed).toBeGreaterThan(5);
+    // Hard hit: the car rebounds slightly (negative) or crawls (<25%).
+    expect(postImpactSpeed).toBeLessThan(preImpactSpeed * 0.3);
+  });
+
+  it("still recovers NPC-fault contacts without a penalty", () => {
+    // Mirrors the stationary-player invariant the acceptance suite relies on:
+    // a legally stopped player rear-ended by traffic must never be penalised.
+    const simulation = crashConfig();
+    for (let index = 0; index < 600; index += 1) {
+      simulation.step(1 / 60, {});
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.score.criticalErrors).toBe(0);
+    expect(
+      simulation.getEvents().filter((event) => event.code === "collision"),
+    ).toHaveLength(0);
+  });
+});
+
+describe("reportExternalContact", () => {
+  it("scrubs speed and records a minor event under coach enforcement", () => {
+    const simulation = new SimulationCore({
+      npcCount: 0,
+      enforcement: "coach",
+    });
+    for (let index = 0; index < 120; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const before = simulation.getSnapshot().player.signedSpeedMps;
+    expect(before).toBeGreaterThan(3);
+    const reported = simulation.reportExternalContact(
+      "Your vehicle struck a pedestrian on the pavement.",
+      "Keep the car off the kerb and clear of people on foot.",
+      0.75,
+      { roadUserType: "pedestrian", impactSpeedMps: Math.round(before) },
+    );
+    expect(reported).toBe(true);
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.player.signedSpeedMps).toBeCloseTo(before * 0.75, 5);
+    const collision = simulation
+      .getEvents()
+      .find((event) => event.code === "collision");
+    expect(collision?.severity).toBe("minor");
+    expect(collision?.evidence).toMatchObject({ externalRoadUser: true });
+  });
+
+  it("still applies the physical scrub when the event cooldown swallows a repeat", () => {
+    const simulation = new SimulationCore({
+      npcCount: 0,
+      enforcement: "coach",
+    });
+    for (let index = 0; index < 120; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    simulation.reportExternalContact("First contact.", "Slow down.", 0.75);
+    const between = simulation.getSnapshot().player.signedSpeedMps;
+    const again = simulation.reportExternalContact(
+      "Second contact.",
+      "Slow down.",
+      0.5,
+    );
+    expect(again).toBe(true);
+    expect(simulation.getSnapshot().player.signedSpeedMps).toBeCloseTo(
+      between * 0.5,
+      5,
+    );
+    expect(
+      simulation.getEvents().filter((event) => event.code === "collision"),
+    ).toHaveLength(1);
+  });
+
+  it("escalates to the classic incident under reset enforcement", () => {
+    const simulation = new SimulationCore({
+      npcCount: 0,
+      enforcement: "reset",
+    });
+    for (let index = 0; index < 120; index += 1) {
+      simulation.step(1 / 60, { throttle: 1 });
+    }
+    const reported = simulation.reportExternalContact(
+      "Your vehicle struck a pedestrian.",
+      "Yield to people on foot.",
+      0.75,
+    );
+    expect(reported).toBe(true);
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.status).toBe("incident");
+    expect(snapshot.activeIncident?.code).toBe("collision");
+  });
+});

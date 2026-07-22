@@ -18,6 +18,7 @@ import {
   DESTINATION_PROFILES,
   FINE_BY_COUNTRY,
   FUEL_CONSUMPTION_L_PER_M,
+  REPAIR_FEE_BY_COUNTRY,
   FUEL_PRICE_PER_LITRE_BY_COUNTRY,
   GIG_FARE_BY_COUNTRY,
   PASSENGER_FARE_BY_COUNTRY,
@@ -39,6 +40,7 @@ import {
   saveProgress,
   setFuel,
 } from "./game/progress";
+import { FULL_CONDITION_PCT, damageForCollision } from "./game/damage";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import {
   FUEL_PUMP_REACH_M,
@@ -267,6 +269,8 @@ function fineReason(code: string | undefined): string {
       return "leaving the road";
     case "red_light":
       return "running a red light";
+    case "collision":
+      return "careless driving";
     default:
       return "a road violation";
   }
@@ -300,6 +304,18 @@ export default function SideSwapApp() {
     reason: string;
   } | null>(null);
   const lastFineAtRef = useRef(0);
+  // Per-drive car condition (100 = pristine). Collision events wear it down;
+  // at zero the car is towed and repaired for a fee. Never persisted — like
+  // the score, the wallet debit is the only durable consequence. The ref
+  // mirrors the state so back-to-back collision events in one frame all
+  // subtract from the live value.
+  const [carCondition, setCarCondition] = useState(FULL_CONDITION_PCT);
+  const carConditionRef = useRef(FULL_CONDITION_PCT);
+  const [towing, setTowing] = useState(false);
+  const towingRef = useRef(false);
+  const towResetNonceRef = useRef(0);
+  const [towResetNonce, setTowResetNonce] = useState(0);
+  const lastPedFineAtRef = useRef(0);
   // Lives out here rather than inside GameCanvas, which remounts mid-session
   // whenever the destination or steering side changes — music placed in there
   // would restart at apparently random moments.
@@ -389,11 +405,63 @@ export default function SideSwapApp() {
     driveCountry,
   );
 
-  // A fine event reaches us from GameCanvas only when a patrol witnessed the
-  // violation. Debit the local wallet (rate-limited to once per 8s) and flash a
-  // toast; mirrors the refuel debit path.
+  // The car is a write-off: fade to the tow overlay, debit the repair bill,
+  // snap the car back to its spawn repaired, and fade back in. No button, no
+  // modal — the drive itself never stops being playable for long.
+  const beginTow = useCallback(() => {
+    if (towingRef.current) return;
+    towingRef.current = true;
+    setTowing(true);
+    const fee = REPAIR_FEE_BY_COUNTRY[driveCountry.id];
+    const paid = debit(progress, driveCountry.id, fee);
+    setProgress(paid);
+    saveProgress(paid);
+    const reduced = progress.accessibility.reducedMotion;
+    window.setTimeout(() => {
+      towResetNonceRef.current += 1;
+      setTowResetNonce(towResetNonceRef.current);
+      carConditionRef.current = FULL_CONDITION_PCT;
+      setCarCondition(FULL_CONDITION_PCT);
+    }, reduced ? 80 : 900);
+    window.setTimeout(() => {
+      towingRef.current = false;
+      setTowing(false);
+    }, reduced ? 500 : 2400);
+  }, [progress, driveCountry]);
+
+  // Collision events wear the car down (and striking a person is cited on the
+  // spot); a fine event reaches us only when a patrol witnessed the violation.
+  // Both debit the local wallet and flash the toast, mirroring the refuel path.
   const handleGameEvent = useCallback(
     (event: GameRuntimeEvent) => {
+      if (event.type === "collision") {
+        const evidence = event.evidence ?? {};
+        const damage = damageForCollision(evidence);
+        if (damage > 0 && !towingRef.current) {
+          const next = Math.max(0, carConditionRef.current - damage);
+          carConditionRef.current = next;
+          setCarCondition(next);
+          if (next <= 0) beginTow();
+        }
+        const roadUser = evidence.roadUserType;
+        if (roadUser === "pedestrian" || roadUser === "cyclist") {
+          const now = Date.now();
+          if (now - lastPedFineAtRef.current < 4000) return;
+          lastPedFineAtRef.current = now;
+          const amount = FINE_BY_COUNTRY[driveCountry.id];
+          const fined = debit(progress, driveCountry.id, amount);
+          setProgress(fined);
+          saveProgress(fined);
+          setFineToast({
+            amount,
+            reason:
+              roadUser === "cyclist"
+                ? "striking a cyclist"
+                : "striking a pedestrian",
+          });
+        }
+        return;
+      }
       if (event.type !== "fine") return;
       const now = Date.now();
       if (now - lastFineAtRef.current < 8000) return;
@@ -404,7 +472,7 @@ export default function SideSwapApp() {
       saveProgress(fined);
       setFineToast({ amount, reason: fineReason(event.ruleCode) });
     },
-    [progress, driveCountry],
+    [progress, driveCountry, beginTow],
   );
 
   // Auto-dismiss the fine toast a few seconds after it appears.
@@ -532,6 +600,10 @@ export default function SideSwapApp() {
     );
     setHud(null);
     setPaused(false);
+    carConditionRef.current = FULL_CONDITION_PCT;
+    setCarCondition(FULL_CONDITION_PCT);
+    towingRef.current = false;
+    setTowing(false);
     setView("driving");
   };
 
@@ -667,6 +739,8 @@ export default function SideSwapApp() {
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           outOfFuel={driveFuel <= 0}
+          carConditionPct={carCondition}
+          resetNonce={towResetNonce}
           riderVenueId={riderVenueId}
           gigStopId={gigStopId}
           gigStopCarrying={gigStopCarrying}
@@ -835,6 +909,81 @@ export default function SideSwapApp() {
               />
             </div>
           </div>
+          <div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: "0.72rem",
+                opacity: 0.65,
+                marginBottom: "0.25rem",
+              }}
+            >
+              <span>Car</span>
+              <span>
+                {carCondition <= 0
+                  ? "WRECKED"
+                  : `${Math.round(carCondition)}%`}
+              </span>
+            </div>
+            <div
+              style={{
+                height: "0.5rem",
+                borderRadius: "999px",
+                background: "rgba(255,255,255,0.16)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.max(0, Math.min(100, carCondition))}%`,
+                  background:
+                    carCondition <= 25
+                      ? "#e0533f"
+                      : carCondition <= 55
+                        ? "#f2c658"
+                        : "#5bbf6a",
+                  transition: "width 0.2s ease",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+        <div
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "0.4rem",
+            background: "#0c0e11",
+            color: "#f4f6f8",
+            textAlign: "center",
+            font: "700 1.25rem/1.35 system-ui, sans-serif",
+            zIndex: 9,
+            opacity: towing ? 1 : 0,
+            pointerEvents: "none",
+            transition: progress.accessibility.reducedMotion
+              ? "none"
+              : "opacity 0.4s ease",
+          }}
+        >
+          {towing && (
+            <>
+              <span aria-hidden="true" style={{ fontSize: "2rem" }}>
+                🚧
+              </span>
+              <span>Your car&apos;s a write-off.</span>
+              <span style={{ fontSize: "0.95rem", opacity: 0.75 }}>
+                Towed &amp; repaired —{" "}
+                {formatMoney(REPAIR_FEE_BY_COUNTRY[driveCountry.id], driveCountry)}
+              </span>
+            </>
+          )}
         </div>
         {activeGasStation && (
           <div

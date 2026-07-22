@@ -1555,7 +1555,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "mk-v1", kind: "shop", anchor: { laneId: "uk-dual-n-east", distanceAlongM: 48 }, footprint: point(16, 12), name: "Grafton Retail Park" },
         { id: "mk-v2", kind: "residence", anchor: { laneId: "uk-west-south", distanceAlongM: 48 }, footprint: point(14, 12), name: "Oldbrook Houses" },
         { id: "mk-v3", kind: "restaurant", anchor: { laneId: "uk-exit-south", distanceAlongM: 46 }, footprint: point(14, 10), name: "South Grafton Kitchen" },
-        { id: "mk-v4", kind: "office", anchor: { laneId: "uk-entry-south", distanceAlongM: 68 }, footprint: point(16, 14), name: "Midsummer Office" },
+        // Set back off the wide walkable shoulder band: at the default 13 the
+        // office's measured front stood mid-band (walkers clipped through it,
+        // and its collider read as an invisible wall on open grass).
+        { id: "mk-v4", kind: "office", anchor: { laneId: "uk-entry-south", distanceAlongM: 68 }, footprint: point(16, 14), name: "Midsummer Office", setbackM: 16 },
       ],
       landmarks: [
         // The island must sit fully inside the roundabout's inner kerb, not
@@ -1653,7 +1656,9 @@ export const MAP_PACKS: readonly MapPack[] = [
         // Keep compact scenery beside the two curved links; neither block may
         // occupy a driving surface.
         { id: "fr-coquelles", center: point(-88, 104), size: point(56, 20), heightRange: [5, 13], density: 0.45, material: "stucco" },
-        { id: "fr-commercial", center: point(118, -104), size: point(28, 28), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
+        // Pulled north-west off the ring-road curve: at (118,-104) x 28 wide
+        // the block's south-east corner sat astride the fr-east-south sweep.
+        { id: "fr-commercial", center: point(112, -98), size: point(26, 26), heightRange: [7, 16], density: 0.38, material: "pale-concrete" },
       ],
       servicePoints: [
         // Moved 10 m further up the approach: at the old anchor the lot's far
@@ -1671,7 +1676,8 @@ export const MAP_PACKS: readonly MapPack[] = [
       landmarks: [
         { id: "fr-terminal", kind: "terminal", center: point(-96, -82), size: point(54, 32), color: "#28569a" },
         { id: "fr-roundabout-green", kind: "park", center: point(0, 0), size: point(32, 32), color: "#6d914f" },
-        { id: "fr-commercial-parade", kind: "shops", center: point(124, -106), size: point(24, 14), color: "#b6803f" },
+        // Rides inside fr-commercial; moved with it off the ring-road curve.
+        { id: "fr-commercial-parade", kind: "shops", center: point(112, -100), size: point(22, 12), color: "#b6803f" },
         { id: "fr-parkway-green", kind: "park", center: point(55, 75), size: point(34, 26), color: "#5f9a4e" },
         frWestLoop.island,
       ],
@@ -1774,7 +1780,11 @@ export const MAP_PACKS: readonly MapPack[] = [
       blocks: [
         { id: "jp-block-west", center: point(-70, 46), size: point(64, 40), heightRange: [5, 14], density: 0.72, material: "plaster" },
         { id: "jp-block-center", center: point(10, 46), size: point(64, 40), heightRange: [6, 18], density: 0.78, material: "tile" },
-        { id: "jp-block-south", center: point(-48, -30), size: point(100, 50), heightRange: [5, 13], density: 0.7, material: "wood-plaster" },
+        // Split either side of the narrow shrine street: the old single
+        // 100 m rect spanned x[-98,2] and so ran straight across the
+        // jp-narrow lanes at x≈-30. The halves stop 3 m clear of each kerb.
+        { id: "jp-block-south-w", center: point(-66.25, -30), size: point(63.5, 50), heightRange: [5, 13], density: 0.7, material: "wood-plaster" },
+        { id: "jp-block-south-e", center: point(-11.75, -30), size: point(27.5, 50), heightRange: [5, 13], density: 0.7, material: "wood-plaster" },
         { id: "jp-block-north", center: point(-71, 116), size: point(72, 64), heightRange: [5, 15], density: 0.7, material: "plaster" },
         { id: "jp-block-west-lower", center: point(-186, -27), size: point(136, 72), heightRange: [5, 13], density: 0.68, material: "wood-plaster" },
         { id: "jp-block-west-upper", center: point(-186, 47), size: point(136, 44), heightRange: [6, 16], density: 0.72, material: "tile" },
@@ -1789,7 +1799,10 @@ export const MAP_PACKS: readonly MapPack[] = [
         { id: "jp-gas", kind: "gas_station", anchor: { laneId: "jp-south-east-1", distanceAlongM: 22 }, footprint: point(12, 8), label: "Setagaya Fuel", setbackM: 17.3 },
       ],
       gigVenues: [
-        { id: "jp-v1", kind: "restaurant", anchor: { laneId: "jp-narrow-north-1", distanceAlongM: 82 }, footprint: point(12, 9), name: "Gotokuji Bento" },
+        // West side of the narrow street (driver's right of the southbound
+        // lane): the old north-1@82 corner plot overlapped both the centre
+        // road's south edge and the Gotokuji station box.
+        { id: "jp-v1", kind: "restaurant", anchor: { laneId: "jp-narrow-south-1", distanceAlongM: 13 }, footprint: point(12, 9), name: "Gotokuji Bento" },
         { id: "jp-v2", kind: "shop", anchor: { laneId: "jp-uptown-east-2", distanceAlongM: 40 }, footprint: point(12, 9), name: "Miyanosaka Market" },
         { id: "jp-v3", kind: "residence", anchor: { laneId: "jp-north-east-2", distanceAlongM: 54 }, footprint: point(12, 10), name: "Setagaya Residence" },
         { id: "jp-v4", kind: "office", anchor: { laneId: "jp-dori-east-2", distanceAlongM: 60 }, footprint: point(14, 12), name: "Setagaya-dori Office" },
@@ -1975,6 +1988,18 @@ export const FINE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
   uk: 8,
   fr: 10,
   jp: 800,
+};
+
+/**
+ * Tow-and-repair bill when the car's condition hits zero. Roughly three
+ * fines' worth: wrecking the car should sting harder than a citation but
+ * never bankrupt a session — the wallet remains the only durable consequence.
+ */
+export const REPAIR_FEE_BY_COUNTRY: Readonly<Record<CountryId, number>> = {
+  us: 25,
+  uk: 25,
+  fr: 30,
+  jp: 2500,
 };
 
 /** Starting cash a new (or migrated) player holds in each country's currency. */
