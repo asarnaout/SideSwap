@@ -94,4 +94,52 @@ describe("simulation runtime adapter (free-roam)", () => {
       expect(snapshot.status).toBe("running");
     }
   });
+
+  it("carries Cromwell Road's bus lane through the Exhibition Road signal", () => {
+    // The bus lane used to dead-end at the junction, so `advanceNpcAlongLegalRoute`
+    // recycled the double-decker the moment the light went green and it popped
+    // out of existence in front of the player (#128).
+    const BUS_LANE_ID = "london-cromwell-east-bus";
+    const CONTINUATION_LANE_IDS = new Set([
+      "london-cromwell-east-2",
+      "london-exhibition-shared-1",
+    ]);
+    const freeDrive = FREE_DRIVES.find(
+      (candidate) => candidate.mapId === "london-south-kensington",
+    );
+    expect(freeDrive).toBeDefined();
+    if (!freeDrive) return;
+    const lesson = freeDriveLesson(freeDrive);
+    const simulation = new SimulationCore(
+      buildSimulationCoreConfig({
+        lesson,
+        mapPack: getMapPack(freeDrive.mapId),
+        trafficSide: lesson.trafficSide,
+        speedUnit: canvasSpeedUnit(freeDrive),
+      }),
+    );
+
+    const vanished: string[] = [];
+    let continuations = 0;
+    let previousLaneIds = new Map<string, string>();
+    for (let tick = 0; tick < 60 * 120; tick += 1) {
+      simulation.step(1 / 60);
+      const laneIds = new Map(
+        simulation.getSnapshot().npcs.map((npc) => [npc.id, npc.laneId]),
+      );
+      for (const [npcId, laneId] of previousLaneIds) {
+        if (laneId !== BUS_LANE_ID) continue;
+        const current = laneIds.get(npcId);
+        if (current === undefined) {
+          vanished.push(`${npcId} vanished out of the bus lane at tick ${tick}`);
+        } else if (CONTINUATION_LANE_IDS.has(current)) {
+          continuations += 1;
+        }
+      }
+      previousLaneIds = laneIds;
+    }
+
+    expect(vanished).toEqual([]);
+    expect(continuations).toBeGreaterThan(0);
+  });
 });

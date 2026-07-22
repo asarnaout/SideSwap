@@ -538,6 +538,45 @@ const londonNodes = {
   kensingtonExhibition: node("london-node-kensington-exhibition", 42, 220),
 };
 
+const polylineLengthM = (points: readonly WorldPoint[]): number =>
+  points
+    .slice(1)
+    .reduce(
+      (total, current, index) =>
+        total + distanceBetweenPoints(points[index], current),
+      0,
+    );
+
+/**
+ * Cromwell Road's signed bus lane is the one lane authored by hand rather than
+ * through `laneTrue`: it runs parallel to the road centreline for its whole
+ * length instead of radiating from the two junction nodes. It still has to
+ * *end* like every other lane — on the shared node — or a bus reaching the
+ * junction has nowhere legal to go and the simulation recycles it on the spot.
+ * The last few metres therefore ease across the divider onto the general
+ * running line, which is what a bus lane ending at a junction does anyway.
+ */
+const CROMWELL_BUS_LANE_MERGE = point(33, -26.9);
+const cromwellBusLaneCenterline: readonly WorldPoint[] = [
+  point(-108, -26.9),
+  point(-66, -26.9),
+  point(-14, -26.9),
+  // The signalled stop line sits at 140 m, square on this straight run.
+  CROMWELL_BUS_LANE_MERGE,
+  // Smoothstep across the 3.4 m to the general running line at z = -30.3.
+  point(34.7, -27.25),
+  point(36.4, -28.1),
+  point(38.1, -29.1),
+  point(39.8, -29.95),
+  point(41.5, -30.3),
+  londonNodes.exhibitionCromwell.position,
+];
+const cromwellBusLaneLengthM = polylineLengthM(cromwellBusLaneCenterline);
+const cromwellBusLaneConnectorM = distanceBetweenPoints(
+  cromwellBusLaneCenterline.at(-2)!,
+  cromwellBusLaneCenterline.at(-1)!,
+);
+
 const londonLanes: readonly LaneSegment[] = [
   // A calm local loop west of Queen's Gate. It is used for the first lesson.
   laneTrue(
@@ -658,16 +697,20 @@ const londonLanes: readonly LaneSegment[] = [
     widthM: 3.4,
     from: londonNodes.queenGateCromwell.id,
     to: londonNodes.exhibitionCromwell.id,
-    centerline: [
-      point(-108, -26.9),
-      point(-66, -26.9),
-      point(-14, -26.9),
-      point(42, -26.9),
-    ],
+    centerline: cromwellBusLaneCenterline,
     role: "travel",
     trafficSide: "left",
     speedLimit: 20,
-    successors: [],
+    // The same continuations the general lane gets: straight on past the
+    // museums, or left up Exhibition Road.
+    successors: ["london-cromwell-east-2", "london-exhibition-shared-1"],
+    connectorRanges: [
+      {
+        startDistanceAlongM: cromwellBusLaneLengthM - cromwellBusLaneConnectorM,
+        endDistanceAlongM: cromwellBusLaneLengthM,
+        conflictZoneId: "london-cromwell-exhibition-conflict",
+      },
+    ],
   },
   laneTrue(
     "london-cromwell-east-2",
@@ -1109,7 +1152,8 @@ export const LONDON_MAP_PACK: MapPack = {
         roadMarking("london-queen-gate-centre", "centre_dashed", [londonNodes.queenGateSouth.position, londonNodes.queenGateFarNorth.position], "white"),
       ]),
       roadSurface("london-cromwell-west", [point(-108, -30.3), point(42, -30.3)], 11.4, ["london-cromwell-east-1", "london-cromwell-east-bus", "london-cromwell-west-2"], "standard", [
-        roadMarking("london-cromwell-bus-divider", "lane_solid", [point(-108, -28.6), point(42, -28.6)], "white"),
+        // Stops where the bus lane starts its merge, so nothing crosses a solid line.
+        roadMarking("london-cromwell-bus-divider", "lane_solid", [point(-108, -28.6), point(CROMWELL_BUS_LANE_MERGE.x, -28.6)], "white"),
         roadMarking("london-cromwell-centre-west", "centre_dashed", [point(-108, -32), point(42, -32)], "white"),
         roadMarking("london-cromwell-box", "box_junction", [point(37, -36), point(47, -36), point(47, -25), point(37, -25), point(37, -36)], "yellow"),
       ]),
