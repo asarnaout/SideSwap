@@ -14,6 +14,8 @@ import type {
   ScenarioClock,
   ScoringConfig,
   SpeedUnit,
+  StaticObstacle,
+  StaticObstacleTag,
   TrafficSide,
 } from "./types";
 
@@ -47,6 +49,30 @@ const NPC_BODY_CLEARANCE_M = 3.8;
 const NPC_INCIDENT_KNOCK_SECONDS = 2.5;
 const NPC_INCIDENT_STUCK_SECONDS = 6;
 const NPC_INCIDENT_KNOCK_RAD = 0.16;
+// A car the player crashes into sits knocked askew and holds position this
+// long (in ticks) before pulling away again; behind it the ordinary jam
+// machinery clears any pile-up exactly as for NPC-NPC knocks.
+const NPC_STRUCK_TICKS = 360;
+// The static world resolves against a two-circle capsule rather than the
+// single traffic disc: the visible car is ~4.4 m long, and one centre circle
+// would let the bonnet bury itself a metre deep into a facade before contact.
+const PLAYER_CAPSULE_HALF_LENGTH_M = 1.15;
+const PLAYER_CAPSULE_RADIUS_M = 1.0;
+// Below this normal approach speed a wall contact is a silent scrape (still
+// resolved, never penalised); above it a collision event is emitted.
+const STATIC_IMPACT_EVENT_MIN_MPS = 2;
+// Near-head-on contacts (approach direction mostly into the wall) rebound
+// slightly instead of sliding: an arcade "bonk" that reads as a crash without
+// ping-ponging the car around on touch controls.
+const STATIC_BONK_DOT = 0.72;
+const STATIC_BONK_MIN_MPS = 6;
+const STATIC_BONK_REBOUND_FRACTION = 0.08;
+const STATIC_BONK_REBOUND_MAX_MPS = 1.2;
+// Scraping a wall bleeds speed at this per-second rate scaled by how head-on
+// the contact is. The push-out already cancels the into-wall displacement, so
+// a shallow graze keeps most of its pace while a 45° grind slows hard —
+// applied per fixed step, it must stay a rate, never a flat factor.
+const STATIC_SCRAPE_FRICTION_PER_S = 3.5;
 // Never recycle (vanish) a jammed car this close to the player; hold it visible
 // until they have moved on, so traffic never pops out of existence beside them.
 const NPC_INCIDENT_PLAYER_CLEARANCE_M = 26;
@@ -349,6 +375,12 @@ export interface SimulationCoreConfig {
    * open-world / gig sessions, whose event stream feeds the police-fine hook.
    */
   readonly enforcement?: "coach" | "reset";
+  /**
+   * Solid world geometry (buildings, venue lots, world edges) the player car
+   * is resolved against every step. Plain data from the adapter; omitting it
+   * (tests, the default yard) leaves the world open exactly as before.
+   */
+  readonly staticObstacles?: readonly StaticObstacle[];
 }
 
 export interface SimulationInput {
@@ -599,6 +631,8 @@ interface NpcInternal extends MutablePose {
   jamSeconds: number;
   /** Display-only lean applied to the rendered pose during an incident. */
   incidentLeanRad: number;
+  /** Tick until which this car holds position after the player struck it. */
+  struckUntilTick: number;
   decisionCooldown: number;
   previousX: number;
   previousZ: number;
@@ -645,6 +679,111 @@ interface RoadState {
   offRoad: boolean;
 }
 
+/**
+ * A solid obstacle normalized for the 60 Hz narrow phase: boxes become
+ * centre + explicit U/V axes (an AABB is just an axis-aligned OBB), circles
+ * keep a radius, and every entry carries broad-phase reject bounds already
+ * inflated by the capsule reach so the hot loop is one rectangle test.
+ */
+interface StaticObstacleInternal {
+  readonly id: string;
+  readonly tag: StaticObstacleTag;
+  readonly x: number;
+  readonly z: number;
+  readonly ux: number;
+  readonly uz: number;
+  readonly halfU: number;
+  readonly halfV: number;
+  readonly radius: number;
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+}
+
+const STATIC_OBSTACLE_MESSAGES: Readonly<
+  Record<StaticObstacleTag, { message: string; correction: string }>
+> = {
+  building: {
+    message: "Your vehicle hit a building.",
+    correction: "Brake earlier and keep to the carriageway.",
+  },
+  landmark: {
+    message: "Your vehicle hit a roadside structure.",
+    correction: "Brake earlier and keep to the carriageway.",
+  },
+  venue: {
+    message: "Your vehicle hit a building.",
+    correction: "Brake earlier and keep to the carriageway.",
+  },
+  worldEdge: {
+    message: "You have reached the edge of the city.",
+    correction: "Turn back toward the streets.",
+  },
+};
+
+function normalizeStaticObstacle(
+  obstacle: StaticObstacle,
+  inflateM: number,
+): StaticObstacleInternal {
+  if (obstacle.kind === "circle") {
+    return {
+      id: obstacle.id,
+      tag: obstacle.tag,
+      x: obstacle.x,
+      z: obstacle.z,
+      ux: 1,
+      uz: 0,
+      halfU: 0,
+      halfV: 0,
+      radius: Math.max(0, obstacle.radius),
+      minX: obstacle.x - obstacle.radius - inflateM,
+      maxX: obstacle.x + obstacle.radius + inflateM,
+      minZ: obstacle.z - obstacle.radius - inflateM,
+      maxZ: obstacle.z + obstacle.radius + inflateM,
+    };
+  }
+  if (obstacle.kind === "aabb") {
+    return {
+      id: obstacle.id,
+      tag: obstacle.tag,
+      x: (obstacle.minX + obstacle.maxX) / 2,
+      z: (obstacle.minZ + obstacle.maxZ) / 2,
+      ux: 1,
+      uz: 0,
+      halfU: Math.max(0, (obstacle.maxX - obstacle.minX) / 2),
+      halfV: Math.max(0, (obstacle.maxZ - obstacle.minZ) / 2),
+      radius: 0,
+      minX: obstacle.minX - inflateM,
+      maxX: obstacle.maxX + inflateM,
+      minZ: obstacle.minZ - inflateM,
+      maxZ: obstacle.maxZ + inflateM,
+    };
+  }
+  const axisLength = Math.hypot(obstacle.ux, obstacle.uz) || 1;
+  const ux = obstacle.ux / axisLength;
+  const uz = obstacle.uz / axisLength;
+  const reach =
+    Math.abs(ux) * obstacle.halfU + Math.abs(uz) * obstacle.halfV;
+  const reachZ =
+    Math.abs(uz) * obstacle.halfU + Math.abs(ux) * obstacle.halfV;
+  return {
+    id: obstacle.id,
+    tag: obstacle.tag,
+    x: obstacle.x,
+    z: obstacle.z,
+    ux,
+    uz,
+    halfU: Math.max(0, obstacle.halfU),
+    halfV: Math.max(0, obstacle.halfV),
+    radius: 0,
+    minX: obstacle.x - reach - inflateM,
+    maxX: obstacle.x + reach + inflateM,
+    minZ: obstacle.z - reachZ - inflateM,
+    maxZ: obstacle.z + reachZ + inflateM,
+  };
+}
+
 type ScoreCategory = "safety" | "ruleUse" | "vehicleControl";
 
 const RULE_COOLDOWNS: Readonly<Partial<Record<RuleCode, number>>> = {
@@ -657,6 +796,9 @@ const RULE_COOLDOWNS: Readonly<Partial<Record<RuleCode, number>>> = {
   incomplete_stop: 5,
   unsafe_gap: 5,
   observation: 8,
+  // Grinding along a wall or a knocked car re-contacts every step; one event
+  // per contact burst is what the damage/fine layers upstream want to see.
+  collision: 2.5,
 };
 
 const DEFAULT_SCORING: ScoringConfig = {
@@ -1017,6 +1159,7 @@ export class SimulationCore {
   private readonly boxJunctions: SimulationBoxJunctionDefinition[];
   private readonly routeGuidanceStates: RouteGuidanceInternal[];
   private readonly maneuverStates: OvertakeManeuverInternal[];
+  private readonly staticObstacles: StaticObstacleInternal[];
   private readonly initialSeed: number;
   private readonly initialTrafficSide: TrafficSide;
   private readonly initialSpeedUnit: SpeedUnit;
@@ -1276,6 +1419,14 @@ export class SimulationCore {
         ),
         exitClearanceM: clamp(junction.exitClearanceM ?? 12, 3, 40),
       }));
+
+    // Broad-phase bounds are tested against the player centre, so inflate by
+    // the capsule's full reach plus one step of travel headroom.
+    const obstacleInflationM =
+      PLAYER_CAPSULE_HALF_LENGTH_M + PLAYER_CAPSULE_RADIUS_M + 1;
+    this.staticObstacles = (configuration.staticObstacles ?? []).map(
+      (obstacle) => normalizeStaticObstacle(obstacle, obstacleInflationM),
+    );
 
     this.random = new SeededRandom(this.initialSeed);
     this.player = { ...spawn };
@@ -1630,6 +1781,47 @@ export class SimulationCore {
   }
 
   /**
+   * Renderer-detected contact with an externally modelled object — a
+   * pedestrian, cyclist, or street prop. Under coach enforcement the car
+   * shrugs it off physically (speed scrubbed by `speedScale`) and the contact
+   * lands in the event stream as a non-terminating collision for the
+   * damage/fine layers; under reset enforcement it escalates to the classic
+   * critical incident, preserving lesson semantics. The scrub always applies
+   * while running, even when the collision cooldown swallows the event, so a
+   * second hit inside the window still physically slows the car. Returns
+   * false only when the sim is not running (caller skips its reaction too).
+   */
+  reportExternalContact(
+    message: string,
+    correction: string,
+    speedScale: number,
+    evidence: Readonly<Record<string, string | number | boolean>> = {},
+  ): boolean {
+    if (this.disposed || this.status !== "running") return false;
+    if (this.config.enforcement !== "coach") {
+      this.triggerCritical(
+        "collision",
+        message,
+        correction,
+        this.penaltyFor("collision", 50),
+        { ...evidence, externalRoadUser: true },
+      );
+      return this.activeIncident !== null;
+    }
+    this.signedSpeedMps *= clamp(speedScale, 0, 1);
+    this.emitEvent({
+      code: "collision",
+      severity: "minor",
+      message,
+      correction,
+      penalty: this.penaltyFor("collision", 50),
+      category: "safety",
+      evidence: { ...evidence, externalRoadUser: true },
+    });
+    return true;
+  }
+
+  /**
    * Switches jurisdiction coaching after an authored border transition.
    * Directed lane geometry remains the authority for legal travel direction.
    */
@@ -1911,6 +2103,7 @@ export class SimulationCore {
     this.player.x += Math.sin(this.player.heading) * travelled;
     this.player.z += Math.cos(this.player.heading) * travelled;
     this.distanceTravelledM += Math.abs(travelled);
+    this.resolveStaticCollisions(true);
 
     const lateralAcceleration =
       (Math.abs(this.continuousInput.steer) * absoluteSpeed * absoluteSpeed) / 3.1;
@@ -1944,6 +2137,158 @@ export class SimulationCore {
         this.signalAutoCancelSeconds -= deltaSeconds;
         if (this.signalAutoCancelSeconds <= 0) this.setSignal("off");
       }
+    }
+  }
+
+  /**
+   * Keeps the player car out of the solid world: the car is a two-circle
+   * capsule along its heading, each obstacle a box or circle, and a contact
+   * pushes the car out along the contact normal. The velocity response is the
+   * arcade wall recipe — a grazing contact slides (tangential speed kept,
+   * lightly scrubbed), a near-head-on contact stops with a small rebound — so
+   * scraping a facade slows the car until it steers parallel rather than
+   * pin-balling it. Emits at most one collision rule event per contact burst;
+   * `allowEvents` lets the NPC crash path re-resolve without double-reporting.
+   * Allocation-free: everything below is scalar arithmetic on locals.
+   */
+  private resolveStaticCollisions(allowEvents: boolean): void {
+    if (!this.staticObstacles.length) return;
+    const forwardX = Math.sin(this.player.heading);
+    const forwardZ = Math.cos(this.player.heading);
+    let maxApproachMps = 0;
+    let hitTag: StaticObstacleTag | null = null;
+    let hitId = "";
+
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      let deepest = 0;
+      let normalX = 0;
+      let normalZ = 0;
+      const px = this.player.x;
+      const pz = this.player.z;
+      for (const obstacle of this.staticObstacles) {
+        if (
+          px < obstacle.minX ||
+          px > obstacle.maxX ||
+          pz < obstacle.minZ ||
+          pz > obstacle.maxZ
+        ) {
+          continue;
+        }
+        for (let end = -1; end <= 1; end += 2) {
+          const cx = px + forwardX * PLAYER_CAPSULE_HALF_LENGTH_M * end;
+          const cz = pz + forwardZ * PLAYER_CAPSULE_HALF_LENGTH_M * end;
+          const dx = cx - obstacle.x;
+          const dz = cz - obstacle.z;
+          let penetration: number;
+          let nx: number;
+          let nz: number;
+          if (obstacle.radius > 0) {
+            const distance = Math.hypot(dx, dz);
+            penetration =
+              obstacle.radius + PLAYER_CAPSULE_RADIUS_M - distance;
+            if (penetration <= deepest) continue;
+            if (distance > 1e-6) {
+              nx = dx / distance;
+              nz = dz / distance;
+            } else {
+              nx = forwardX;
+              nz = forwardZ;
+            }
+          } else {
+            const du = dx * obstacle.ux + dz * obstacle.uz;
+            // V is the U axis rotated a quarter turn: (uz, -ux).
+            const dv = dx * obstacle.uz - dz * obstacle.ux;
+            const insideU = obstacle.halfU - Math.abs(du);
+            const insideV = obstacle.halfV - Math.abs(dv);
+            if (insideU > 0 && insideV > 0) {
+              // Centre inside the box: exit along the shallower face.
+              if (insideU < insideV) {
+                const sign = du >= 0 ? 1 : -1;
+                nx = obstacle.ux * sign;
+                nz = obstacle.uz * sign;
+                penetration = insideU + PLAYER_CAPSULE_RADIUS_M;
+              } else {
+                const sign = dv >= 0 ? 1 : -1;
+                nx = obstacle.uz * sign;
+                nz = -obstacle.ux * sign;
+                penetration = insideV + PLAYER_CAPSULE_RADIUS_M;
+              }
+            } else {
+              const qu = Math.max(-obstacle.halfU, Math.min(obstacle.halfU, du));
+              const qv = Math.max(-obstacle.halfV, Math.min(obstacle.halfV, dv));
+              const gapX = dx - (obstacle.ux * qu + obstacle.uz * qv);
+              const gapZ = dz - (obstacle.uz * qu - obstacle.ux * qv);
+              const distance = Math.hypot(gapX, gapZ);
+              penetration = PLAYER_CAPSULE_RADIUS_M - distance;
+              if (penetration <= deepest) continue;
+              if (distance > 1e-6) {
+                nx = gapX / distance;
+                nz = gapZ / distance;
+              } else {
+                nx = forwardX;
+                nz = forwardZ;
+              }
+            }
+          }
+          if (penetration > deepest) {
+            deepest = penetration;
+            normalX = nx;
+            normalZ = nz;
+            hitTag = obstacle.tag;
+            hitId = obstacle.id;
+          }
+        }
+      }
+      if (deepest <= 0) break;
+
+      this.player.x += normalX * deepest;
+      this.player.z += normalZ * deepest;
+      const travelSign = this.signedSpeedMps >= 0 ? 1 : -1;
+      const directionDot =
+        (forwardX * normalX + forwardZ * normalZ) * travelSign;
+      if (directionDot < 0) {
+        const approachMps = -directionDot * Math.abs(this.signedSpeedMps);
+        maxApproachMps = Math.max(maxApproachMps, approachMps);
+        if (-directionDot >= STATIC_BONK_DOT) {
+          this.signedSpeedMps =
+            approachMps >= STATIC_BONK_MIN_MPS
+              ? -travelSign *
+                Math.min(
+                  STATIC_BONK_REBOUND_MAX_MPS,
+                  approachMps * STATIC_BONK_REBOUND_FRACTION,
+                )
+              : // Pressing head-on below bonk speed: the wall wins outright.
+                this.signedSpeedMps * (1 + directionDot);
+        } else {
+          this.signedSpeedMps *= Math.max(
+            0,
+            1 +
+              STATIC_SCRAPE_FRICTION_PER_S *
+                directionDot *
+                FIXED_STEP_SECONDS,
+          );
+        }
+      }
+    }
+
+    if (
+      allowEvents &&
+      hitTag &&
+      maxApproachMps >= STATIC_IMPACT_EVENT_MIN_MPS &&
+      this.status === "running"
+    ) {
+      const text = STATIC_OBSTACLE_MESSAGES[hitTag];
+      this.flagCritical(
+        "collision",
+        text.message,
+        text.correction,
+        this.penaltyFor("collision", 50),
+        {
+          obstacle: hitTag,
+          obstacleId: hitId,
+          impactSpeedMps: Math.round(maxApproachMps * 10) / 10,
+        },
+      );
     }
   }
 
@@ -1981,6 +2326,7 @@ export class SimulationCore {
         stoppedSeconds: 0,
         jamSeconds: 0,
         incidentLeanRad: 0,
+        struckUntilTick: 0,
         decisionCooldown: Number.POSITIVE_INFINITY,
         x: pose.x,
         z: pose.z,
@@ -2023,6 +2369,7 @@ export class SimulationCore {
         stoppedSeconds: 0,
         jamSeconds: 0,
         incidentLeanRad: 0,
+        struckUntilTick: 0,
         decisionCooldown: 4 + this.random.next() * 8,
         x: pose.x,
         z: pose.z,
@@ -2223,6 +2570,7 @@ export class SimulationCore {
     npc.laneChangeProgress = 0;
     npc.jamSeconds = 0;
     npc.incidentLeanRad = 0;
+    npc.struckUntilTick = 0;
   }
 
   private activateQueuedNpcs(): void {
@@ -2285,6 +2633,9 @@ export class SimulationCore {
     this.activateQueuedNpcs();
     for (const npc of this.npcs) {
       if (!npc.active) continue;
+      // A struck car makes no decisions while it sits knocked; moveNpcs owns
+      // the hold and the release.
+      if (this.tick < npc.struckUntilTick) continue;
       const lane = this.lanesById.get(npc.laneId);
       if (!lane) continue;
       npc.decisionCooldown = Math.max(0, npc.decisionCooldown - TRAFFIC_DECISION_SECONDS);
@@ -2471,6 +2822,17 @@ export class SimulationCore {
       if (!npc.active) continue;
       npc.previousX = npc.x;
       npc.previousZ = npc.z;
+      if (this.tick < npc.struckUntilTick) {
+        // Knocked by the player: hold position (and the askew lean) until the
+        // struck window expires, then rejoin traffic normally.
+        npc.speedMps = 0;
+        npc.targetSpeedMps = 0;
+        continue;
+      }
+      if (npc.struckUntilTick !== 0) {
+        npc.struckUntilTick = 0;
+        npc.incidentLeanRad = 0;
+      }
       const deceleration = npc.targetSpeedMps < npc.speedMps ? 4.4 : 0;
       const acceleration = deceleration || 2.2;
       npc.speedMps = moveTowards(
@@ -2575,6 +2937,10 @@ export class SimulationCore {
   private updateNpcIncidents(deltaSeconds: number): void {
     for (const npc of this.npcs) {
       if (!npc.active || npc.scriptedManeuverId) continue;
+      // A player-struck car already sits askew on its own timer; the jam
+      // machinery must neither clear that lean nor recycle the car while the
+      // player is right next to it.
+      if (this.tick < npc.struckUntilTick) continue;
       const lane = this.lanesById.get(npc.laneId);
       if (!lane) continue;
       const barelyMoved =
@@ -3283,17 +3649,67 @@ export class SimulationCore {
           );
           continue;
         }
+        const evidence = {
+          vehicleId: npc.id,
+          laneId: npc.laneId,
+          npcSpeedMps: Math.round(npc.speedMps * 10) / 10,
+          impactSpeedMps: Math.round(Math.abs(this.signedSpeedMps) * 10) / 10,
+        };
+        if (this.config.enforcement === "coach") {
+          // Open world: a crash is physical, not terminal. Separate the cars,
+          // scrub the player's speed (a hard hit bonks back a touch), and sit
+          // the struck car knocked askew for a few seconds; the ordinary jam
+          // machinery clears any pile-up that forms behind it.
+          const dx = this.player.x - npc.x;
+          const dz = this.player.z - npc.z;
+          const distance = Math.hypot(dx, dz);
+          const nx =
+            distance > 1e-6 ? dx / distance : Math.sin(this.player.heading);
+          const nz =
+            distance > 1e-6 ? dz / distance : Math.cos(this.player.heading);
+          const overlap = collisionRadius - distance;
+          if (overlap > 0) {
+            this.player.x += nx * overlap;
+            this.player.z += nz * overlap;
+          }
+          const closingMps = Math.abs(this.signedSpeedMps) + npc.speedMps;
+          const travelSign = this.signedSpeedMps >= 0 ? 1 : -1;
+          this.signedSpeedMps =
+            closingMps >= STATIC_BONK_MIN_MPS
+              ? -travelSign *
+                Math.min(
+                  STATIC_BONK_REBOUND_MAX_MPS,
+                  closingMps * STATIC_BONK_REBOUND_FRACTION,
+                )
+              : this.signedSpeedMps * 0.25;
+          npc.struckUntilTick = this.tick + NPC_STRUCK_TICKS;
+          npc.speedMps = 0;
+          npc.targetSpeedMps = 0;
+          npc.state = "recovering";
+          npc.signal = "off";
+          npc.incidentLeanRad =
+            (this.numericNpcId(npc.id) % 2 === 0 ? 1 : -1) *
+            NPC_INCIDENT_KNOCK_RAD;
+          // The separation shove must not bury the player in a facade.
+          this.resolveStaticCollisions(false);
+          this.emitEvent({
+            code: "collision",
+            severity: "minor",
+            message: "Your vehicle collided with another road user.",
+            correction:
+              "Brake earlier, keep a safe gap, and check the space around the vehicle.",
+            penalty: this.penaltyFor("collision", 50),
+            category: "safety",
+            evidence,
+          });
+          continue;
+        }
         this.triggerCritical(
           "collision",
           "Your vehicle collided with another road user.",
           "Brake earlier, keep a safe gap, and check the space around the vehicle.",
           this.penaltyFor("collision", 50),
-          {
-            vehicleId: npc.id,
-            laneId: npc.laneId,
-            npcSpeedMps: Math.round(npc.speedMps * 10) / 10,
-            impactSpeedMps: Math.round(Math.abs(this.signedSpeedMps) * 10) / 10,
-          },
+          evidence,
         );
         return;
       }

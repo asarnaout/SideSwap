@@ -12,7 +12,7 @@ import type {
   TrafficLightDefinition,
   TrafficLightSequence,
 } from "./simulation";
-import type { OvertakeExercise } from "./types";
+import type { OvertakeExercise, StaticObstacle } from "./types";
 import type {
   GameCanvasLane,
   GameCanvasLesson,
@@ -765,6 +765,197 @@ function buildOvertakeExercises(
   });
 }
 
+/** The park landmark's centre feature renders as a ~4.5 m-wide conifer. */
+const PARK_FEATURE_TREE_RADIUS_M = 2.25;
+/** Venue buildings sit this far off their anchor lane unless tuned per site. */
+const DEFAULT_VENUE_SETBACK_M = 13;
+/** World-edge fences stand this far beyond the sim bounds, so the
+ * out-of-bounds warning still fires on the grass before the car stops. */
+const WORLD_EDGE_STANDOFF_M = 8;
+const WORLD_EDGE_THICKNESS_M = 6;
+
+/**
+ * The solid, movement-blocking world the core resolves the player car against.
+ * Sources are exactly the authored map-pack fields the renderer builds visuals
+ * from, so a wall stands wherever something is drawn:
+ *
+ * - blocks -> their full rect (the street wall / facade grid hugs the edges;
+ *   interiors and the 1.6 m building gaps are narrower than the car anyway).
+ *   London museum blocks mirror the renderer's two-wing layout instead, so the
+ *   forecourt gap between the wings stays open.
+ * - building-like landmarks (station/terminal/shops as drawn boxes, tower as
+ *   its cylinder) -> solid; parks keep only their centre feature tree; railway
+ *   rails and roundabout-island pads stay drivable.
+ * - gig venues -> their footprint box at the renderer's setback pose.
+ * - world edges -> fences just outside the bounds.
+ *
+ * Gas-station lots are deliberately NOT solid: the car must drive onto the
+ * forecourt to refuel.
+ */
+export function buildStaticObstacles(
+  mapPack: GameCanvasMapPack,
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
+): StaticObstacle[] {
+  const obstacles: StaticObstacle[] = [];
+  const london = mapPack.id.includes("london");
+
+  for (const block of mapPack.geometry.blocks) {
+    if (london && block.material.endsWith("-museum")) {
+      // Mirrors the renderer's two-wing museum layout (GameCanvas
+      // buildEnvironment): the central forecourt between the wings is open
+      // ground the car can legitimately roll onto.
+      const wingWidth = Math.max(12, block.size.x * 0.23);
+      const wingDepth = block.size.z * 0.82;
+      for (const side of [-1, 1]) {
+        const wingX = block.center.x + side * block.size.x * 0.37;
+        obstacles.push({
+          kind: "aabb",
+          id: `${block.id}-wing-${side}`,
+          tag: "building",
+          minX: wingX - wingWidth / 2,
+          maxX: wingX + wingWidth / 2,
+          minZ: block.center.z - wingDepth / 2,
+          maxZ: block.center.z + wingDepth / 2,
+        });
+      }
+      continue;
+    }
+    obstacles.push({
+      kind: "aabb",
+      id: block.id,
+      tag: "building",
+      minX: block.center.x - block.size.x / 2,
+      maxX: block.center.x + block.size.x / 2,
+      minZ: block.center.z - block.size.z / 2,
+      maxZ: block.center.z + block.size.z / 2,
+    });
+  }
+
+  for (const landmark of mapPack.geometry.landmarks) {
+    switch (landmark.kind) {
+      case "park":
+        // The flat pad is drivable grass; only the centre feature tree stands.
+        obstacles.push({
+          kind: "circle",
+          id: `${landmark.id}-feature`,
+          tag: "landmark",
+          x: landmark.center.x,
+          z: landmark.center.z,
+          radius: PARK_FEATURE_TREE_RADIUS_M,
+        });
+        break;
+      case "tower":
+        // Rendered as a cylinder of diameter max(4, size.x * 0.4).
+        obstacles.push({
+          kind: "circle",
+          id: landmark.id,
+          tag: "landmark",
+          x: landmark.center.x,
+          z: landmark.center.z,
+          radius: Math.max(4, landmark.size.x * 0.4) / 2,
+        });
+        break;
+      case "station":
+      case "terminal":
+      case "shops":
+        obstacles.push({
+          kind: "aabb",
+          id: landmark.id,
+          tag: "landmark",
+          minX: landmark.center.x - landmark.size.x / 2,
+          maxX: landmark.center.x + landmark.size.x / 2,
+          minZ: landmark.center.z - landmark.size.z / 2,
+          maxZ: landmark.center.z + landmark.size.z / 2,
+        });
+        break;
+      default:
+        // "railway" rails lie flat on the ground; anything unknown stays open
+        // rather than raising an invisible wall.
+        break;
+    }
+  }
+
+  for (const venue of mapPack.geometry.gigVenues ?? []) {
+    const pose = resolveSimulationLaneAnchor(
+      mapPack.laneGraph.lanes,
+      venue.anchor,
+    );
+    if (!pose) continue;
+    // Mirrors the renderer's venue placement: the building centre sits off the
+    // anchor along the driver's-right normal, facade (footprint.x) parallel to
+    // the road, depth (footprint.z) extending away from it.
+    const setback = venue.setbackM ?? DEFAULT_VENUE_SETBACK_M;
+    obstacles.push({
+      kind: "obb",
+      id: venue.id,
+      tag: "venue",
+      x: pose.x + Math.cos(pose.heading) * setback,
+      z: pose.z - Math.sin(pose.heading) * setback,
+      ux: Math.sin(pose.heading),
+      uz: Math.cos(pose.heading),
+      halfU: venue.footprint.x / 2,
+      halfV: venue.footprint.z / 2,
+    });
+  }
+
+  const fenceMinX = bounds.minX - WORLD_EDGE_STANDOFF_M;
+  const fenceMaxX = bounds.maxX + WORLD_EDGE_STANDOFF_M;
+  const fenceMinZ = bounds.minZ - WORLD_EDGE_STANDOFF_M;
+  const fenceMaxZ = bounds.maxZ + WORLD_EDGE_STANDOFF_M;
+  const edges: readonly (readonly [string, number, number, number, number])[] = [
+    ["north", fenceMinX - WORLD_EDGE_THICKNESS_M, fenceMaxX + WORLD_EDGE_THICKNESS_M, fenceMaxZ, fenceMaxZ + WORLD_EDGE_THICKNESS_M],
+    ["south", fenceMinX - WORLD_EDGE_THICKNESS_M, fenceMaxX + WORLD_EDGE_THICKNESS_M, fenceMinZ - WORLD_EDGE_THICKNESS_M, fenceMinZ],
+    ["east", fenceMaxX, fenceMaxX + WORLD_EDGE_THICKNESS_M, fenceMinZ, fenceMaxZ],
+    ["west", fenceMinX - WORLD_EDGE_THICKNESS_M, fenceMinX, fenceMinZ, fenceMaxZ],
+  ];
+  for (const [name, minX, maxX, minZ, maxZ] of edges) {
+    obstacles.push({
+      kind: "aabb",
+      id: `world-edge-${name}`,
+      tag: "worldEdge",
+      minX,
+      maxX,
+      minZ,
+      maxZ,
+    });
+  }
+
+  return obstacles;
+}
+
+/**
+ * Distance from a point to a solid obstacle's surface (0 when inside). Test
+ * and tooling helper — the core keeps its own inlined version of this math in
+ * its 60 Hz loop.
+ */
+export function distanceToStaticObstacle(
+  obstacle: StaticObstacle,
+  x: number,
+  z: number,
+): number {
+  if (obstacle.kind === "circle") {
+    return Math.max(
+      0,
+      Math.hypot(x - obstacle.x, z - obstacle.z) - obstacle.radius,
+    );
+  }
+  if (obstacle.kind === "aabb") {
+    const dx = Math.max(obstacle.minX - x, 0, x - obstacle.maxX);
+    const dz = Math.max(obstacle.minZ - z, 0, z - obstacle.maxZ);
+    return Math.hypot(dx, dz);
+  }
+  const axisLength = Math.hypot(obstacle.ux, obstacle.uz) || 1;
+  const ux = obstacle.ux / axisLength;
+  const uz = obstacle.uz / axisLength;
+  const dx = x - obstacle.x;
+  const dz = z - obstacle.z;
+  const du = dx * ux + dz * uz;
+  const dv = dx * uz - dz * ux;
+  const su = Math.max(0, Math.abs(du) - obstacle.halfU);
+  const sv = Math.max(0, Math.abs(dv) - obstacle.halfV);
+  return Math.hypot(su, sv);
+}
+
 export function buildSimulationCoreConfig({
   lesson,
   mapPack,
@@ -884,6 +1075,7 @@ export function buildSimulationCoreConfig({
     enforcement: lesson.kind === "free_drive" ? "coach" : "reset",
     lanes,
     bounds,
+    staticObstacles: buildStaticObstacles(mapPack, bounds),
     spawn: { x: start.x, z: start.z, heading: start.heading },
     checkpoints,
     routeGuidance: buildRouteGuidance(lesson, mapPack),

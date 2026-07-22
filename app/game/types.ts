@@ -461,6 +461,46 @@ export interface MapPack {
   readonly laneGraph: LaneGraph;
 }
 
+/** What a solid obstacle is, for collision-event evidence and messaging. */
+export type StaticObstacleTag = "building" | "landmark" | "venue" | "worldEdge";
+
+/**
+ * Solid, movement-blocking world geometry the simulation resolves the player
+ * car against — plain data with no renderer coupling. Built once per session
+ * by the adapter from authored map-pack fields (blocks, building-like
+ * landmarks, gig-venue lots, world edges). OBB axes are given explicitly as
+ * the unit U (half-width) direction; V is its perpendicular (uz, -ux).
+ */
+export type StaticObstacle =
+  | {
+      readonly kind: "aabb";
+      readonly id: string;
+      readonly tag: StaticObstacleTag;
+      readonly minX: number;
+      readonly maxX: number;
+      readonly minZ: number;
+      readonly maxZ: number;
+    }
+  | {
+      readonly kind: "obb";
+      readonly id: string;
+      readonly tag: StaticObstacleTag;
+      readonly x: number;
+      readonly z: number;
+      readonly ux: number;
+      readonly uz: number;
+      readonly halfU: number;
+      readonly halfV: number;
+    }
+  | {
+      readonly kind: "circle";
+      readonly id: string;
+      readonly tag: StaticObstacleTag;
+      readonly x: number;
+      readonly z: number;
+      readonly radius: number;
+    };
+
 export type ManeuverPhase =
   | "approach"
   | "observe"
