@@ -131,6 +131,7 @@ import {
   characterModelUrls,
   type CharacterVisual,
 } from "./characterMeshes";
+import { PED_TURN_PAUSE_S, stepStroll } from "./pedestrianStroll";
 
 export type TrafficSide = "left" | "right";
 export type SteeringSide = "left" | "right";
@@ -1358,12 +1359,15 @@ export function resolveNpcVisualSlotAssignments(
 
 interface Pedestrian {
   node: TransformNode;
-  phase: number;
+  /** Distance along the walk strip in metres, within [0, span]. */
+  distanceM: number;
   speed: number;
   z: number;
   origin?: GameCanvasPoint;
   heading?: number;
   span?: number;
+  walkDir?: 1 | -1;
+  pauseRemaining?: number;
   kind?: "pedestrian" | "cyclist";
   /** Model (or procedural-fallback) visual under `node`; null before build. */
   visual?: CharacterVisual | null;
@@ -4924,12 +4928,13 @@ class BabylonGameSession {
       const visual = this.buildRoadUserVisual(node, `crowd-ped-${i}`, false, i, clothing, speed);
       this.pedestrians.push({
         node,
-        phase: (i * 2.3) % 18,
+        distanceM: (i * 1.53) % 12,
         speed,
         z: person.z,
         origin: { x: person.x, z: person.z },
         heading: walkHeading,
         span: 12,
+        walkDir: i % 2 === 0 ? 1 : -1,
         kind: "pedestrian",
         visual,
         variant: i,
@@ -5225,19 +5230,37 @@ class BabylonGameSession {
 
   private animatePedestrians(dt: number) {
     for (const pedestrian of this.pedestrians) {
-      pedestrian.phase = (pedestrian.phase + pedestrian.speed * dt) % 18;
-      const progress = pedestrian.phase / 18;
-      pedestrian.visual?.advancePedals?.(pedestrian.speed * dt);
+      const span = pedestrian.span ?? 16;
+      // The sawtooth this replaced covered `span` metres in 18 phase units, so
+      // this keeps every road user's ground speed exactly as tuned.
+      const metersPerSec = (span * pedestrian.speed) / 18;
+      const next = stepStroll(
+        {
+          distanceM: pedestrian.distanceM,
+          walkDir: pedestrian.walkDir ?? 1,
+          pauseRemaining: pedestrian.pauseRemaining ?? 0,
+        },
+        span,
+        metersPerSec,
+        pedestrian.kind === "cyclist" ? 0.4 : PED_TURN_PAUSE_S,
+        dt,
+      );
+      pedestrian.distanceM = next.distanceM;
+      pedestrian.walkDir = next.walkDir;
+      pedestrian.pauseRemaining = next.pauseRemaining;
+      const moving = next.pauseRemaining <= 0;
+      pedestrian.visual?.setMoving?.(moving);
+      if (moving) pedestrian.visual?.advancePedals?.(metersPerSec * dt);
+      const flip = next.walkDir === 1 ? 0 : Math.PI;
       if (pedestrian.origin && pedestrian.heading !== undefined) {
-        const span = pedestrian.span ?? 16;
-        const along = -span / 2 + progress * span;
+        const along = -span / 2 + next.distanceM;
         pedestrian.node.position.x = pedestrian.origin.x + Math.sin(pedestrian.heading) * along;
         pedestrian.node.position.z = pedestrian.origin.z + Math.cos(pedestrian.heading) * along;
-        pedestrian.node.rotation.y = pedestrian.heading;
+        pedestrian.node.rotation.y = pedestrian.heading + flip;
       } else {
-        pedestrian.node.position.x = -8 + progress * 16;
+        pedestrian.node.position.x = -8 + next.distanceM;
         pedestrian.node.position.z = pedestrian.z;
-        pedestrian.node.rotation.y = Math.PI / 2;
+        pedestrian.node.rotation.y = Math.PI / 2 + flip;
       }
     }
   }
@@ -8432,9 +8455,9 @@ class BabylonGameSession {
       const speed = 1.2 + index * 0.12;
       const visual = this.buildRoadUserVisual(node, `yard-pedestrian-${index}`, false, index, clothingColor, speed);
       const z = index < 2 ? 4.5 : -10.5;
-      const phase = index * 4.1;
-      this.pedestrians.push({ node, phase, speed, z, visual, variant: index, clothingColor });
-      node.position.set(-8 + (phase / 18) * 16, 0.08, z);
+      const distanceM = (index * 4.1) % 16;
+      this.pedestrians.push({ node, distanceM, speed, z, visual, variant: index, clothingColor });
+      node.position.set(-8 + distanceM, 0.08, z);
     }
   }
 
@@ -8606,17 +8629,17 @@ class BabylonGameSession {
         clothingColor,
         speed,
       );
-      const phase = random() * 18;
+      const span = isCyclist ? 34 : mapPack.geometry.roadWidth + 6;
       node.position.set(source.x, 0.08, source.z);
       node.rotation.y = heading;
       this.pedestrians.push({
         node,
-        phase,
+        distanceM: random() * span,
         speed,
         z: source.z,
         origin: { x: source.x, z: source.z },
         heading,
-        span: isCyclist ? 34 : mapPack.geometry.roadWidth + 6,
+        span,
         kind: isCyclist ? "cyclist" : "pedestrian",
         visual,
         variant,

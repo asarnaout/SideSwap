@@ -28,6 +28,8 @@ export interface CharacterVisual {
   readonly root: TransformNode;
   /** Advances the cyclist's pedal cycle by a ground distance (cyclists only). */
   advancePedals?(distanceMeters: number): void;
+  /** Pauses/resumes the walk clip so a stopped pedestrian stands still. */
+  setMoving?(moving: boolean): void;
   dispose(): void;
 }
 
@@ -174,8 +176,15 @@ export function buildPedestrianVisual(
   const walk = playClip(instance.animationGroups, config.walkClip, walkSpeedRatio);
 
   let disposed = false;
+  let moving = true;
   return {
     root,
+    setMoving(next) {
+      if (disposed || !walk || next === moving) return;
+      moving = next;
+      if (next) walk.play(true);
+      else walk.pause();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
