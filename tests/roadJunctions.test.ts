@@ -167,4 +167,41 @@ describe("collectRoadJunctionFills", () => {
       }
     }
   });
+
+  it("keeps every fill star-shaped about its pivot", () => {
+    // The fill is drawn as a triangle fan from the pivot, so the pivot has to
+    // see the whole boundary. An outline that doubles back fans triangles over
+    // each other: they z-fight, and any wound backwards face down and light
+    // black. Tokyo's 46-degree fork at (54,18) did exactly that — the two arms
+    // still overlap where the fill ends, so one arm's outer corner sat behind
+    // the next arm's in bearing.
+    const cross = (
+      a: { x: number; z: number },
+      b: { x: number; z: number },
+      c: { x: number; z: number },
+    ) => (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+    for (const pack of MAP_PACKS) {
+      const surfaces = pack.geometry.roadSurfaces;
+      if (!surfaces?.length) continue;
+      for (const fill of collectRoadJunctionFills(surfaces)) {
+        const { polygon, pivot } = fill;
+        const where = `${pack.id} junction at ${pivot.x},${pivot.z}`;
+        const areas = polygon.map((_, index) =>
+          cross(pivot, polygon[index], polygon[(index + 1) % polygon.length]),
+        );
+        // One consistent winding, and no zero-area slivers from a doubled point.
+        expect(areas.every((area) => area < 0), `${where} winding`).toBe(true);
+        // Bearings must advance monotonically the whole way round the ring.
+        const bearings = polygon.map((point) =>
+          Math.atan2(point.z - pivot.z, point.x - pivot.x),
+        );
+        let wraps = 0;
+        for (let index = 0; index < bearings.length; index += 1) {
+          const next = bearings[(index + 1) % bearings.length];
+          if (next >= bearings[index]) wraps += 1;
+        }
+        expect(wraps, `${where} bearing order`).toBe(1);
+      }
+    }
+  });
 });

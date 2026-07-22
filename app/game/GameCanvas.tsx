@@ -505,7 +505,12 @@ function junctionCornerVertices(
       : chamfer;
   }
   if (meeting.alongA < 1e-3 || meeting.alongB < 1e-3) return chamfer;
-  if (meeting.alongA > a.reach || meeting.alongB > b.reach) return chamfer;
+  // The kerbs meet beyond where this fill ends, so these two carriageways are
+  // still overlapping at its edge — there is no inner corner inside the fill to
+  // round off. Bridge straight between the arms' outer corners: chamfering here
+  // would cut back to within `half` of the node, notching paved surface out of
+  // the throat of an acute fork and doubling the outline back on itself.
+  if (meeting.alongA > a.reach || meeting.alongB > b.reach) return [];
   const corner = at(a, 1, meeting.alongA);
   const wedge = Math.acos(
     clamp(dotRoadDirections(a.direction, b.direction), -1, 1),
@@ -570,6 +575,66 @@ function junctionCornerVertices(
  * the exact opposite of what the pavement wants — rounding the shoulder fill
  * would balloon the footway out past the building line at every block corner.
  */
+/** Two ring points closer than this in bearing are the same corner twice. */
+const JUNCTION_RING_BEARING_EPSILON_RAD = 1e-4;
+
+/**
+ * Orders a traced junction outline into a ring the pivot can see all of.
+ *
+ * The fill is drawn as a triangle fan from the shared node, which is only valid
+ * if the boundary is star-shaped about it. Tracing leg by leg in heading order
+ * gives that for free when the legs are properly separated — but where two
+ * arms fork at an acute angle they still overlap at the fill's edge, so one
+ * arm's outer corner sits *behind* the next arm's in bearing and the outline
+ * doubles back. Fanning that folds triangles over each other: they z-fight,
+ * and the ones that come out wound backwards face down and light black.
+ *
+ * Sorting by bearing restores the invariant. For a well-formed junction the
+ * trace is already in bearing order, so this returns it unchanged; where two
+ * points share a bearing the farther one wins, which is the one that keeps the
+ * carriageway paved.
+ */
+function starShapedRing(
+  pivot: GameCanvasPoint,
+  polygon: readonly GameCanvasPoint[],
+): GameCanvasPoint[] {
+  const ordered = polygon
+    .map((point) => ({
+      point,
+      bearing: Math.atan2(point.z - pivot.z, point.x - pivot.x),
+      radius: Math.hypot(point.x - pivot.x, point.z - pivot.z),
+    }))
+    .filter((entry) => entry.radius > 1e-6)
+    // Descending, to keep the winding the leg walk already produced.
+    .sort(
+      (first, second) =>
+        second.bearing - first.bearing || second.radius - first.radius,
+    );
+  const ring: typeof ordered = [];
+  for (const entry of ordered) {
+    const previous = ring[ring.length - 1];
+    if (
+      previous &&
+      previous.bearing - entry.bearing <= JUNCTION_RING_BEARING_EPSILON_RAD
+    ) {
+      continue;
+    }
+    ring.push(entry);
+  }
+  // The seam wraps, so the last point can still double the first.
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (
+    ring.length > 2 &&
+    first &&
+    last &&
+    first.bearing + 2 * Math.PI - last.bearing <= JUNCTION_RING_BEARING_EPSILON_RAD
+  ) {
+    ring.pop();
+  }
+  return ring.map((entry) => entry.point);
+}
+
 export function collectRoadJunctionFills(
   surfaces: readonly RoadJunctionSource[],
   lateralInflationM = 0,
@@ -676,7 +741,8 @@ export function collectRoadJunctionFills(
         ),
       );
     }
-    if (polygon.length >= 3) fills.push({ polygon, pivot });
+    const ring = starShapedRing(pivot, polygon);
+    if (ring.length >= 3) fills.push({ polygon: ring, pivot });
   }
   return fills;
 }
