@@ -38,9 +38,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
-  distanceToPolygon,
   isPointInPolygon,
-  isRestrictionWindowActive,
   SimulationCore,
   type NpcVehicleVariant,
   type SimulationInput,
@@ -59,7 +57,6 @@ import {
 import { DriveAudio } from "./audio/DriveAudio";
 import {
   authoredSignalAspectAt,
-  authoredSignalRequiresStop,
   type AuthoredSignalAspect,
   type AuthoredSignalStyle,
 } from "./trafficSignals";
@@ -1231,10 +1228,6 @@ export interface GameCanvasMapPack {
   }>;
 }
 
-type GameCanvasTrafficControl = GameCanvasMapPack["laneGraph"]["controls"][number];
-type GameCanvasTrafficControlApproach = NonNullable<
-  GameCanvasTrafficControl["approaches"]
->[number];
 
 export interface GameCanvasProps {
   trafficSide: TrafficSide;
@@ -1339,13 +1332,6 @@ interface PlayerState {
 
 type NpcPathSegment = NpcPathSegmentData;
 
-interface NpcRenderSnapshot {
-  readonly x: number;
-  readonly z: number;
-  readonly heading: number;
-  readonly active: boolean;
-}
-
 interface NpcVehicle {
   node: TransformNode;
   visual: VehicleMeshVisual;
@@ -1358,19 +1344,8 @@ interface NpcVehicle {
   z: number;
   laneX: number;
   laneId?: string;
-  path?: readonly GameCanvasPoint[];
-  pathSegment?: number;
-  pathDistance?: number;
-  pathSegments?: readonly NpcPathSegment[];
   active?: boolean;
-  loop?: boolean;
-  /** Segment the circuit restarts from once the route's run-in is done. */
-  loopStartSegment?: number;
   currentSpeed?: number;
-  respawnAfterSeconds?: number;
-  spawnIndex?: number;
-  spawnPathSegment?: number;
-  spawnPathDistance?: number;
   signal?: TurnIndicator;
   braking?: boolean;
   /** Marked patrol car: its presence turns a nearby violation into a fine. */
@@ -2905,7 +2880,6 @@ class BabylonGameSession {
   private completed = false;
   private contextLost = false;
   private accumulator = 0;
-  private trafficAccumulator = 0;
   private lastFrameTime = 0;
   private lastHudTime = 0;
   private lastSpeedingEvent = -10_000;
@@ -3996,469 +3970,6 @@ class BabylonGameSession {
     };
   }
 
-  private evaluateLesson(dt: number) {
-    if (this.options.lesson && this.options.mapPack && this.routePoints.length >= 2) {
-      this.evaluateAuthoredLesson(dt);
-      return;
-    }
-    const state = this.playerState;
-    const now = eventNow();
-    const laneSign = this.options.trafficSide === "right" ? 1 : -1;
-    const movingForward = Math.cos(state.heading) > 0.45 && state.gear === "D";
-    const onWrongHalf = movingForward && state.x * laneSign < -0.55;
-    this.wrongSideSeconds = onWrongHalf ? this.wrongSideSeconds + dt : 0;
-
-    if (this.wrongSideSeconds > 2.5) {
-      const expected = this.options.trafficSide === "right" ? "right" : "left";
-      this.reset(`You crossed onto opposing traffic. Keep to the ${expected} side.`);
-      return;
-    }
-
-    const onRoad =
-      Math.abs(state.x) < 7 ||
-      Math.abs(state.z) < 7 ||
-      Math.hypot(state.x, state.z - 32) < 13;
-    if (!onRoad && Math.abs(state.x) < 24 && state.z > -62 && state.z < 84) {
-      this.reset("You left the driveable surface. Slow down before steering and rejoin safely.");
-      return;
-    }
-
-    for (const npc of this.npcVehicles) {
-      if (
-        npc.active !== false &&
-        now >= this.collisionGraceUntil &&
-        Math.hypot(state.x - npc.laneX, state.z - npc.z) < 2.35
-      ) {
-        if (state.speedMps < 0.2 && (npc.currentSpeed ?? npc.speed) > 0.4) {
-          npc.active = false;
-          npc.respawnAfterSeconds = 3;
-          npc.currentSpeed = 0;
-          npc.node.setEnabled(false);
-          this.coach("Traffic recovered safely behind you. Continue when you are ready.");
-          continue;
-        }
-        npc.z += npc.direction > 0 ? -22 : 22;
-        this.reset("Collision detected. Leave a larger following gap and scan before moving.");
-        return;
-      }
-    }
-    for (const pedestrian of this.pedestrians) {
-      const x = pedestrian.node.position.x;
-      if (Math.hypot(state.x - x, state.z - pedestrian.z) < 1.6) {
-        this.reset("A pedestrian was in the crossing. Brake early and yield until it is clear.");
-        return;
-      }
-    }
-
-    if (state.speedMps > 14.2 && now - this.lastSpeedingEvent > 7000) {
-      this.lastSpeedingEvent = now;
-      this.score = Math.max(0, this.score - 3);
-      this.coach("Ease off the accelerator: this training road is limited to 30 mph / 50 km/h.");
-    }
-
-    const crossedSignal = state.previousZ < -4 && state.z >= -4;
-    if (crossedSignal && this.trafficLightIsRed) {
-      this.reset("Red light entered. Stop before the line and wait for a green signal.");
-      return;
-    }
-
-    if (state.z > -8 && this.checkpoint.z < -8) {
-      this.checkpoint = { x: state.x, z: -8, heading: state.heading };
-      this.instruction = "Check both sides at the crossing, then continue toward the roundabout.";
-      this.coach(this.instruction);
-    }
-    if (state.z > 39 && this.checkpoint.z < 39) {
-      this.checkpoint = { x: state.x, z: 39, heading: state.heading };
-      this.instruction = `Keep ${this.options.trafficSide} as you leave the roundabout area.`;
-      this.coach(this.instruction);
-    }
-    if (state.z >= FINISH_Z && !this.completed) {
-      this.completed = true;
-      state.speedMps = 0;
-      this.instruction = "Orientation complete — safe positioning achieved.";
-      this.emit("complete", this.instruction);
-      this.callbacks.onComplete?.({ ...this.simulationSnapshot.score });
-      this.publishHud(true);
-    }
-  }
-
-  private evaluateAuthoredLesson(dt: number) {
-    const lesson = this.options.lesson;
-    const mapPack = this.options.mapPack;
-    if (!lesson || !mapPack) return;
-    const state = this.playerState;
-    const routeProjection = this.projectToAuthoredRoute(state.x, state.z);
-    const roadProjection = this.projectToScenarioLanes(
-      state.x,
-      state.z,
-      mapPack.laneGraph.lanes,
-    );
-    const directionHeading = state.gear === "R" ? state.heading + Math.PI : state.heading;
-    const headingError = roadProjection
-      ? Math.abs(this.angleDifference(directionHeading, roadProjection.heading))
-      : 0;
-    const wrongWay = state.speedMps > 1.1 && headingError > Math.PI / 2;
-    this.wrongSideSeconds = wrongWay
-      ? this.wrongSideSeconds + dt
-      : Math.max(0, this.wrongSideSeconds - dt * 2);
-
-    const projectedLane = roadProjection
-      ? mapPack.laneGraph.lanes.find((lane) => lane.id === roadProjection.laneId)
-      : null;
-    const roadTolerance =
-      (projectedLane?.widthM ?? Math.min(3.5, mapPack.geometry.roadWidth * 0.45)) / 2 +
-      (mapPack.geometry.shoulderWidth ?? 1);
-    const offRoad = !roadProjection || roadProjection.distance > roadTolerance;
-    this.offRoadSeconds = offRoad
-      ? this.offRoadSeconds + dt
-      : Math.max(0, this.offRoadSeconds - dt * 2);
-    if (this.wrongSideSeconds > 2.4) {
-      this.reset(
-        `Wrong-way travel detected. Follow the marked route and keep ${this.activeTrafficSide}.`,
-      );
-      this.offRoadSeconds = 0;
-      return;
-    }
-    if (this.offRoadSeconds > 1.25) {
-      this.reset(
-        "You left the driveable surface. Slow down, look through the turn, and rejoin safely.",
-      );
-      this.offRoadSeconds = 0;
-      return;
-    }
-
-    const now = eventNow();
-    for (const npc of this.npcVehicles) {
-      if (
-        npc.active !== false &&
-        now >= this.collisionGraceUntil &&
-        Math.hypot(
-          state.x - npc.node.position.x,
-          state.z - npc.node.position.z,
-        ) < 2.35
-      ) {
-        if (state.speedMps < 0.2 && (npc.currentSpeed ?? npc.speed) > 0.4) {
-          npc.active = false;
-          npc.respawnAfterSeconds = 3;
-          npc.currentSpeed = 0;
-          npc.node.setEnabled(false);
-          this.coach("Traffic recovered safely behind you. Continue when you are ready.");
-          continue;
-        }
-        this.reset("Collision detected. Leave a larger following gap and scan before moving.");
-        return;
-      }
-    }
-    for (const roadUser of this.pedestrians) {
-      const safetyRadius = roadUser.kind === "cyclist" ? 1.9 : 1.55;
-      if (
-        Math.hypot(
-          state.x - roadUser.node.position.x,
-          state.z - roadUser.node.position.z,
-        ) < safetyRadius
-      ) {
-        this.reset(
-          roadUser.kind === "cyclist"
-            ? "A cyclist was in your path. Leave more clearance and wait for a safe pass."
-            : "A pedestrian was in the crossing. Brake early and yield until it is clear.",
-        );
-        return;
-      }
-    }
-
-    if (this.evaluateAuthoredSignalEntry(mapPack)) return;
-
-    const displayLimit =
-      roadProjection?.speedLimit ?? (this.options.speedUnit === "mph" ? 30 : 50);
-    const limitMps =
-      this.options.speedUnit === "mph"
-        ? displayLimit / 2.236936
-        : displayLimit / 3.6;
-    if (state.speedMps > limitMps + 1.1 && now - this.lastSpeedingEvent > 7000) {
-      this.lastSpeedingEvent = now;
-      this.score = Math.max(0, this.score - 3);
-      this.coach(
-        `Ease off the accelerator. This lane is limited to ${Math.round(displayLimit)} ${this.options.speedUnit}.`,
-      );
-    }
-
-    this.evaluateAuthoredRuleZones(
-      dt,
-      lesson,
-      mapPack,
-      roadProjection,
-      roadTolerance,
-    );
-
-    if (routeProjection && routeProjection.distance < roadTolerance * 1.4) {
-      this.routeSegment = Math.max(this.routeSegment, routeProjection.segmentIndex);
-      const candidateProgress =
-        this.routeLength > 0 ? routeProjection.distanceAlong / this.routeLength : 0;
-      if (candidateProgress <= this.routeProgress + 0.2) {
-        this.routeProgress = Math.max(
-          this.routeProgress,
-          clamp(candidateProgress, 0, 1),
-        );
-      }
-    }
-
-    this.advanceAuthoredCheckpoints(lesson);
-    for (const prompt of lesson.coachPrompts) {
-      if (
-        prompt.trigger.type === "route_progress" &&
-        this.routeProgress >= prompt.trigger.value &&
-        !this.triggeredPrompts.has(prompt.id)
-      ) {
-        this.triggeredPrompts.add(prompt.id);
-        this.coach(prompt.message);
-      }
-    }
-
-    const endpoint = this.routePoints[this.routePoints.length - 1];
-    const endpointReached = Math.hypot(state.x - endpoint.x, state.z - endpoint.z) <= 7;
-    const checkpointsComplete =
-      this.authoredCheckpoints.length === 0 ||
-      this.checkpointIndex >= this.authoredCheckpoints.length;
-    const maneuversComplete = (this.simulationSnapshot.maneuvers ?? []).every(
-      (maneuver) => maneuver.phase === "complete",
-    );
-    if (
-      !this.completed &&
-      lesson.kind !== "free_drive" &&
-      checkpointsComplete &&
-      maneuversComplete &&
-      (endpointReached || this.routeProgress >= 0.97)
-    ) {
-      this.completed = true;
-      state.speedMps = 0;
-      this.routeProgress = 1;
-      this.instruction = `${lesson.title} complete — review your score and incident timeline.`;
-      this.emit("complete", this.instruction);
-      this.callbacks.onComplete?.({ ...this.simulationSnapshot.score });
-      this.publishHud(true);
-    }
-  }
-
-  private evaluateAuthoredRuleZones(
-    dt: number,
-    lesson: GameCanvasLesson,
-    mapPack: GameCanvasMapPack,
-    roadProjection: ScenarioLaneProjection | null,
-    roadTolerance: number,
-  ) {
-    if (
-      roadProjection &&
-      (lesson.kind === "free_drive" || lesson.assessedRules?.includes("box_junction"))
-    ) {
-      const conflictZones = mapPack.laneGraph.conflictZones ?? [];
-      const zonesById = new Map(conflictZones.map((zone) => [zone.id, zone]));
-      for (const control of mapPack.laneGraph.controls) {
-        if (control.type !== "box_junction") continue;
-        for (const zoneId of control.conflictZoneIds ?? []) {
-          const zone = zonesById.get(zoneId);
-          if (!zone) continue;
-          const laneRelevant =
-            control.laneIds.includes(roadProjection.laneId) ||
-            zone.laneIds.includes(roadProjection.laneId);
-          const entered =
-            laneRelevant &&
-            !isPointInPolygon(
-              { x: this.playerState.previousX, z: this.playerState.previousZ },
-              zone.polygon,
-            ) &&
-            isPointInPolygon(this.playerState, zone.polygon);
-          if (!entered || this.playerState.speedMps < 0.5) continue;
-          const blockingNpc = this.findBlockingAuthoredExit(
-            roadProjection,
-            zone.polygon,
-            mapPack.laneGraph.lanes,
-          );
-          if (!blockingNpc) continue;
-          this.assessAuthoredRule(
-            lesson,
-            "box_junction",
-            "You entered the yellow box before your exit was clear.",
-            "Wait before the box until there is room to clear it completely.",
-            6,
-            {
-              junctionId: control.id,
-              conflictZoneId: zone.id,
-              laneId: roadProjection.laneId,
-              blockingVehicle: blockingNpc.node.name,
-              exitBlocked: true,
-            },
-          );
-        }
-      }
-    }
-
-    const restrictions = mapPack.laneGraph.restrictions ?? [];
-    const clock = lesson.scenarioClock;
-    const assessRestrictions =
-      lesson.kind === "free_drive" ||
-      Boolean(lesson.assessedRules?.includes("restricted_lane"));
-    for (const restriction of restrictions) {
-      const activeWindow = clock
-        ? restriction.activeWindows.find((window) =>
-            isRestrictionWindowActive(clock, window),
-          )
-        : undefined;
-      const usingRestrictedLane =
-        assessRestrictions &&
-        Boolean(activeWindow) &&
-        roadProjection?.laneId === restriction.laneId &&
-        roadProjection.distance <= roadTolerance &&
-        this.playerState.speedMps >= 0.8;
-      const sustainedSeconds = usingRestrictedLane
-        ? (this.restrictedLaneSeconds.get(restriction.id) ?? 0) + dt
-        : 0;
-      this.restrictedLaneSeconds.set(restriction.id, sustainedSeconds);
-      if (sustainedSeconds < 2.5 || !clock || !activeWindow) continue;
-      this.assessAuthoredRule(
-        lesson,
-        "restricted_lane",
-        restriction.message,
-        "Read the signed operating times and move into a general-traffic lane when it is safe.",
-        4,
-        {
-          restrictionId: restriction.id,
-          laneId: restriction.laneId,
-          weekday: clock.weekday,
-          scenarioTime: clock.label,
-          sourceReferenceId: restriction.sourceReferenceId,
-          activeWindow: `${activeWindow.startMinutes}-${activeWindow.endMinutes}`,
-          sustainedSeconds: 2.5,
-        },
-      );
-      this.restrictedLaneSeconds.set(restriction.id, 0);
-    }
-  }
-
-  private authoredSignalAspect(
-    control: GameCanvasTrafficControl,
-    approach: GameCanvasTrafficControlApproach,
-  ): AuthoredSignalAspect {
-    const signalInstallation = (control.installations ?? []).find(
-      (installation) =>
-        (installation.style === "nyc_signal" || installation.style === "uk_signal") &&
-        installation.approachIds?.includes(approach.id),
-    );
-    const style: AuthoredSignalStyle =
-      signalInstallation?.style === "uk_signal" ||
-      this.options.mapPack?.id.includes("london")
-        ? "uk_signal"
-        : "nyc_signal";
-    return authoredSignalAspectAt({
-      elapsedSeconds: this.trafficLightSeconds,
-      controlId: control.id,
-      phaseGroup: approach.phaseGroup,
-      phaseGroups: (control.approaches ?? []).map((candidate) => candidate.phaseGroup),
-      style,
-    });
-  }
-
-  private evaluateAuthoredSignalEntry(mapPack: GameCanvasMapPack): boolean {
-    const state = this.playerState;
-    if (state.gear !== "D" || state.speedMps < 0.25) return false;
-    for (const control of mapPack.laneGraph.controls) {
-      if (control.type !== "signal") continue;
-      for (const approach of control.approaches ?? []) {
-        const lane = mapPack.laneGraph.lanes.find(
-          (candidate) => candidate.id === approach.stopLine.laneId,
-        );
-        if (!lane) continue;
-        const previous = this.projectToScenarioLanes(
-          state.previousX,
-          state.previousZ,
-          [lane],
-        );
-        const current = this.projectToScenarioLanes(state.x, state.z, [lane]);
-        const laneTolerance = (lane.widthM ?? 3.2) / 2 + 0.7;
-        const stopDistance = approach.stopLine.distanceAlongM;
-        const crossedStopLine =
-          Boolean(previous && current) &&
-          previous!.distance <= laneTolerance &&
-          current!.distance <= laneTolerance &&
-          previous!.distanceAlong < stopDistance - 0.08 &&
-          current!.distanceAlong >= stopDistance - 0.08;
-        if (!crossedStopLine) continue;
-        const aspect = this.authoredSignalAspect(control, approach);
-        if (!authoredSignalRequiresStop(aspect)) continue;
-        this.reset(
-          "Red signal entered. Stop before the line and wait for your approach to turn green.",
-        );
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private findBlockingAuthoredExit(
-    playerProjection: ScenarioLaneProjection,
-    polygon: readonly GameCanvasPoint[],
-    lanes: readonly GameCanvasLane[],
-  ): NpcVehicle | null {
-    const currentLane = lanes.find((lane) => lane.id === playerProjection.laneId);
-    if (!currentLane) return null;
-    const exitLaneIds = new Set([
-      currentLane.id,
-      ...(currentLane.successors ?? []),
-    ]);
-    for (const npc of this.npcVehicles) {
-      if (!npc.laneId || !exitLaneIds.has(npc.laneId)) continue;
-      const npcPoint = { x: npc.node.position.x, z: npc.node.position.z };
-      if (distanceToPolygon(npcPoint, polygon) > 14) continue;
-      if (npc.laneId === currentLane.id) {
-        const npcProjection = this.projectToScenarioLanes(
-          npcPoint.x,
-          npcPoint.z,
-          [currentLane],
-        );
-        if (!npcProjection) continue;
-        const gap = npcProjection.distanceAlong - playerProjection.distanceAlong;
-        if (gap > 0.5 && gap <= 34) return npc;
-        continue;
-      }
-      return npc;
-    }
-    return null;
-  }
-
-  private assessAuthoredRule(
-    lesson: GameCanvasLesson,
-    ruleCode: "box_junction" | "restricted_lane",
-    message: string,
-    correction: string,
-    penalty: number,
-    evidence: Record<string, string | number | boolean>,
-  ): boolean {
-    if ((this.authoredRuleCooldownUntil.get(ruleCode) ?? 0) > this.ruleElapsedSeconds) {
-      return false;
-    }
-    const prompt = lesson.coachPrompts.find(
-      (candidate) =>
-        candidate.trigger.type === "rule_event" &&
-        candidate.trigger.ruleCode === ruleCode &&
-        !this.triggeredPrompts.has(candidate.id),
-    );
-    if (prompt) this.triggeredPrompts.add(prompt.id);
-    const actionableCorrection = prompt?.message ?? correction;
-    this.score = Math.max(0, this.score - penalty);
-    this.instruction = actionableCorrection;
-    this.authoredRuleCooldownUntil.set(
-      ruleCode,
-      this.ruleElapsedSeconds + (ruleCode === "box_junction" ? 10 : 12),
-    );
-    this.emit(
-      "coaching",
-      `${message} ${actionableCorrection}`,
-      "warning",
-      { ruleCode, penalty, evidence },
-    );
-    this.publishHud(true);
-    return true;
-  }
-
   private advanceAuthoredCheckpoints(lesson: GameCanvasLesson) {
     const reachedCheckpointIds = new Set(
       this.simulationSnapshot.reachedCheckpointIds,
@@ -4567,13 +4078,6 @@ class BabylonGameSession {
     return best;
   }
 
-  private angleDifference(first: number, second: number) {
-    let difference = first - second;
-    while (difference > Math.PI) difference -= Math.PI * 2;
-    while (difference < -Math.PI) difference += Math.PI * 2;
-    return difference;
-  }
-
   private buildConnectedNpcPath(
     mapPack: GameCanvasMapPack,
     startLaneId: string,
@@ -4620,152 +4124,6 @@ class BabylonGameSession {
       if (Math.hypot(other.laneX - x, other.z - z) < requiredGap) return false;
     }
     return true;
-  }
-
-  private tryActivateQueuedNpc(npc: NpcVehicle): boolean {
-    const segments = npc.pathSegments;
-    if (!segments?.length) return false;
-    const segmentIndex = Math.min(npc.spawnPathSegment ?? 0, segments.length - 1);
-    const segment = segments[segmentIndex];
-    const distance = clamp(npc.spawnPathDistance ?? 0, 0, segment.length);
-    const amount = distance / segment.length;
-    const x = segment.start.x + (segment.end.x - segment.start.x) * amount;
-    const z = segment.start.z + (segment.end.z - segment.start.z) * amount;
-    const heading = Math.atan2(
-      segment.end.x - segment.start.x,
-      segment.end.z - segment.start.z,
-    );
-    if (!this.isNpcPositionSafe(npc, x, z, heading, true)) return false;
-    npc.pathSegment = segmentIndex;
-    npc.pathDistance = distance;
-    npc.laneId = segment.laneId;
-    npc.laneX = x;
-    npc.z = z;
-    npc.currentSpeed = 0;
-    npc.active = true;
-    npc.respawnAfterSeconds = 0;
-    npc.node.setEnabled(true);
-    npc.node.position.set(x, 0.12, z);
-    npc.node.rotation.y = heading;
-    return true;
-  }
-
-  private npcTargetSpeed(npc: NpcVehicle, segment: NpcPathSegment): number {
-    let target = npc.speed;
-    const heading = Math.atan2(segment.end.x - segment.start.x, segment.end.z - segment.start.z);
-    const forwardX = Math.sin(heading);
-    const forwardZ = Math.cos(heading);
-    const desiredGap = 4 + Math.max(0, npc.currentSpeed ?? npc.speed) * 1.8;
-    const applyLead = (x: number, z: number, leadSpeed: number) => {
-      const dx = x - npc.laneX;
-      const dz = z - npc.z;
-      const ahead = dx * forwardX + dz * forwardZ;
-      const lateral = Math.abs(dx * forwardZ - dz * forwardX);
-      if (ahead <= 0 || lateral > 2.2) return;
-      if (ahead <= 3) target = 0;
-      else if (ahead < desiredGap) target = Math.min(target, Math.max(0, leadSpeed * (ahead / desiredGap)));
-    };
-    const playerLane = this.options.mapPack
-      ? this.projectToScenarioLanes(
-          this.playerState.x,
-          this.playerState.z,
-          this.options.mapPack.laneGraph.lanes,
-        )
-      : null;
-    if (playerLane?.laneId === segment.laneId) {
-      applyLead(this.playerState.x, this.playerState.z, this.playerState.speedMps);
-    }
-    for (const other of this.npcVehicles) {
-      if (other === npc || other.active === false || other.laneId !== segment.laneId) continue;
-      applyLead(other.laneX, other.z, other.currentSpeed ?? other.speed);
-    }
-    if (this.options.mapPack) {
-      for (const control of this.options.mapPack.laneGraph.controls) {
-        if (control.type !== "signal" && control.type !== "railway_signal") continue;
-        for (const approach of control.approaches ?? []) {
-          if (!approach.laneIds.includes(segment.laneId)) continue;
-          const mustStop =
-            control.type === "railway_signal"
-              ? this.trafficLightIsRed
-              : authoredSignalRequiresStop(
-                  this.authoredSignalAspect(control, approach),
-                  true,
-                );
-          if (!mustStop) continue;
-          const stop = resolveLaneAnchor(this.options.mapPack.laneGraph.lanes, approach.stopLine);
-          if (stop) applyLead(stop.x, stop.z, 0);
-        }
-      }
-    }
-    return target;
-  }
-
-  private computeNpcRenderSnapshots(dt: number): NpcRenderSnapshot[] {
-    const snapshots: NpcRenderSnapshot[] = [];
-    for (const npc of this.npcVehicles) {
-      if (npc.active === false) {
-        npc.respawnAfterSeconds = Math.max(0, (npc.respawnAfterSeconds ?? 0) - dt);
-        if ((npc.respawnAfterSeconds ?? 0) <= 0) this.tryActivateQueuedNpc(npc);
-      }
-      const segments = npc.pathSegments;
-      if (npc.active === false || !segments?.length) {
-        snapshots.push({ x: npc.laneX, z: npc.z, heading: npc.node.rotation.y, active: false });
-        continue;
-      }
-      let segmentIndex = npc.pathSegment ?? 0;
-      let segment = segments[segmentIndex];
-      const targetSpeed = this.npcTargetSpeed(npc, segment);
-      const currentSpeed = npc.currentSpeed ?? npc.speed;
-      const speedDelta = clamp(targetSpeed - currentSpeed, -5 * dt, 2.2 * dt);
-      npc.currentSpeed = Math.max(0, currentSpeed + speedDelta);
-      let distance = (npc.pathDistance ?? 0) + npc.currentSpeed * dt;
-      while (distance > segment.length) {
-        distance -= segment.length;
-        segmentIndex += 1;
-        if (segmentIndex >= segments.length) {
-          // Back to the top of the circuit — not to the top of the route, which
-          // may begin with an approach the car only ever drives once.
-          if (npc.loop) segmentIndex = npc.loopStartSegment ?? 0;
-          else {
-            npc.active = false;
-            npc.respawnAfterSeconds = 2.5;
-            npc.currentSpeed = 0;
-            break;
-          }
-        }
-        segment = segments[segmentIndex];
-      }
-      if (npc.active === false) {
-        snapshots.push({ x: npc.laneX, z: npc.z, heading: npc.node.rotation.y, active: false });
-        continue;
-      }
-      segment = segments[segmentIndex];
-      const amount = clamp(distance / segment.length, 0, 1);
-      npc.pathSegment = segmentIndex;
-      npc.pathDistance = distance;
-      npc.laneId = segment.laneId;
-      npc.laneX = segment.start.x + (segment.end.x - segment.start.x) * amount;
-      npc.z = segment.start.z + (segment.end.z - segment.start.z) * amount;
-      snapshots.push({
-        x: npc.laneX,
-        z: npc.z,
-        heading: Math.atan2(segment.end.x - segment.start.x, segment.end.z - segment.start.z),
-        active: true,
-      });
-    }
-    return snapshots;
-  }
-
-  private applyNpcRenderSnapshots(snapshots: readonly NpcRenderSnapshot[]) {
-    for (let index = 0; index < snapshots.length; index += 1) {
-      const npc = this.npcVehicles[index];
-      const snapshot = snapshots[index];
-      if (!npc || !snapshot) continue;
-      npc.node.setEnabled(snapshot.active);
-      if (!snapshot.active) continue;
-      npc.node.position.set(snapshot.x, 0.12, snapshot.z);
-      npc.node.rotation.y = snapshot.heading;
-    }
   }
 
   private ensureNpcVehicleVisual(
@@ -7309,31 +6667,6 @@ class BabylonGameSession {
     return segment;
   }
 
-  private createOffsetFlatSegment(
-    name: string,
-    start: GameCanvasPoint,
-    end: GameCanvasPoint,
-    offset: number,
-    width: number,
-    y: number,
-    material: StandardMaterial,
-  ) {
-    const dx = end.x - start.x;
-    const dz = end.z - start.z;
-    const length = Math.hypot(dx, dz);
-    if (length < 0.01) return;
-    const lateralX = (dz / length) * offset;
-    const lateralZ = (-dx / length) * offset;
-    this.createFlatSegment(
-      name,
-      { x: start.x + lateralX, z: start.z + lateralZ },
-      { x: end.x + lateralX, z: end.z + lateralZ },
-      width,
-      y,
-      material,
-    );
-  }
-
   private createDashedPath(
     name: string,
     points: readonly GameCanvasPoint[],
@@ -8829,19 +8162,10 @@ class BabylonGameSession {
         z,
         laneX: x,
         laneId: pathSegment.laneId,
-        pathSegments: connectedPath.segments,
-        pathSegment: segment,
-        pathDistance: initialDistance,
-        spawnPathSegment: segment,
-        spawnPathDistance: initialDistance,
-        spawnIndex: index % Math.max(1, vehicleSpawns.length),
-        loop: connectedPath.loop,
-        loopStartSegment: connectedPath.loopStartSegment,
         active: true,
       };
       const safeAtStart = this.isNpcPositionSafe(npc, x, z, heading, false);
       npc.active = safeAtStart;
-      npc.respawnAfterSeconds = safeAtStart ? 0 : 2.5;
       node.position.set(x, 0.12, z);
       node.rotation.y = heading;
       node.setEnabled(safeAtStart);

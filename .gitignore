@@ -47,5 +47,7 @@ next-env.d.ts
 # raw model in this public repo. It is present locally and in private builds;
 # regenerate it from your purchased OBJ with:
 #   node tools/build-london-bus.mjs <path-to/LowPoly-LondonBus_OBJ.obj>
-# When absent, the game falls back to the procedural double-decker automatically.
+# When absent, London's buses stand in with the committed single-deck city bus
+# recoloured to the same red (see createVehicleMesh); there is no procedural
+# vehicle fallback any more.
 /public/models/vehicles/london-double-decker.glb
