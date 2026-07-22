@@ -10,7 +10,11 @@ import {
   Vector3,
 } from "@babylonjs/core";
 import type { Material } from "@babylonjs/core";
-import type { PlateRegion, VehicleAppearance } from "./vehicleVisuals";
+import type {
+  PlateRegion,
+  PoliceLivery,
+  VehicleAppearance,
+} from "./vehicleVisuals";
 import {
   instantiateModel,
   isModelReady,
@@ -30,6 +34,11 @@ export interface VehicleMeshVisual {
   readonly brakeLights: readonly Mesh[];
   setSignal(signal: VehicleMeshSignal, blinkOn: boolean): void;
   setBraking(active: boolean): void;
+  /**
+   * Drives a patrol car's roof light bar; `red`/`blue` are 0..1 lamp brightness
+   * (see policeBeaconLamps). A no-op on every vehicle without a light bar.
+   */
+  setBeacon(red: number, blue: number): void;
   /** Hides small trim outside useful gameplay range without changing silhouette. */
   setDetailVisible(visible: boolean): void;
   /** Disposes only this visual's nodes and meshes; scene-cached materials survive. */
@@ -331,6 +340,422 @@ export function computePlatePlacements(
   };
 }
 
+// --- Patrol-car light bar + livery -----------------------------------------
+//
+// Both are synthesized from the model's own measured geometry, in the same
+// pre-yaw/pre-scale space as the plates and contact shadow. The bar used to be
+// bolted to the NPC's parent node at a hard-coded Y of 1.5m, which floated it
+// 0.19-0.35m above a sedan's roof and sank it 0.10-0.15m into an SUV's (issue
+// #117): every model has a different roof height, so the only correct anchor is
+// the measured one.
+
+/** Vertical slice, below the highest point, treated as the flat roof panel. */
+const ROOF_PAD_BAND_M = 0.05;
+/** Fraction of the roof panel's width the bar spans. */
+const LIGHT_BAR_WIDTH_FRACTION = 0.84;
+const LIGHT_BAR_MAX_DEPTH_M = 0.24;
+/** Gap between the bar's rear face and the back of the roof panel. */
+const LIGHT_BAR_FRONT_INSET_M = 0.04;
+const LIGHT_BAR_BASE_HEIGHT_M = 0.038;
+const LIGHT_BAR_LENS_HEIGHT_M = 0.072;
+
+/** The flat top panel of a body, in the model root's local space. */
+export interface RoofPad {
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+  /** Highest point of the model — where a roof-mounted part rests. */
+  readonly topY: number;
+}
+
+/** Runs `visit` over every vertex of `root`'s meshes, in `root`'s local space. */
+function forEachModelVertex(
+  root: TransformNode,
+  visit: (x: number, y: number, z: number) => void,
+  skipWheels = false,
+) {
+  const point = new Vector3();
+  for (const mesh of root.getChildMeshes(false)) {
+    if (skipWheels && /wheel/i.test(mesh.name)) continue;
+    const positions = mesh.getVerticesData("position");
+    if (!positions) continue;
+    const matrix = mesh.computeWorldMatrix(true);
+    for (let index = 0; index < positions.length; index += 3) {
+      point.set(positions[index], positions[index + 1], positions[index + 2]);
+      Vector3.TransformCoordinatesToRef(point, matrix, point);
+      visit(point.x, point.y, point.z);
+    }
+  }
+}
+
+/**
+ * Measures the flat panel at the top of a body: the footprint of every vertex
+ * within ROOF_PAD_BAND_M of the model's highest point. That is the surface a
+ * light bar actually rests on, and it differs per model both in height and in
+ * where it sits along the car (a sedan's roof straddles the centre; an SUV's
+ * runs from the middle to the tailgate). Falls back to the whole bounding box
+ * if a model somehow has no vertices near its top.
+ */
+export function measureRoofPad(
+  root: TransformNode,
+  bounds: { min: Vector3; max: Vector3 },
+): RoofPad {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const threshold = bounds.max.y - ROOF_PAD_BAND_M;
+  forEachModelVertex(root, (x, y, z) => {
+    if (y < threshold) return;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  });
+  if (minX > maxX || minZ > maxZ) {
+    return {
+      minX: bounds.min.x,
+      maxX: bounds.max.x,
+      minZ: bounds.min.z,
+      maxZ: bounds.max.z,
+      topY: bounds.max.y,
+    };
+  }
+  return { minX, maxX, minZ, maxZ, topY: bounds.max.y };
+}
+
+export interface LightBarPlacement {
+  /**
+   * Centre of the bar's *base*, in the model root's local space — so
+   * `position.y` is exactly the roof height and the bar stacks upward from it.
+   */
+  readonly position: Vector3;
+  readonly rotationY: number;
+  /** Across the car. */
+  readonly width: number;
+  /** Along the car. */
+  readonly depth: number;
+  readonly height: number;
+}
+
+/**
+ * Seats a light bar on the front of a measured roof panel. Like the plates, this
+ * anticipates the root's later `yawOffset` spin so the bar runs across the car
+ * whatever orientation the model imported in. Exported for unit testing.
+ */
+export function computeLightBarPlacement(
+  pad: RoofPad,
+  yawOffset: number,
+): LightBarPlacement {
+  const forward = new Vector3(-Math.sin(yawOffset), 0, Math.cos(yawOffset));
+  const lateral = new Vector3(Math.cos(yawOffset), 0, Math.sin(yawOffset));
+  const spanX = pad.maxX - pad.minX;
+  const spanZ = pad.maxZ - pad.minZ;
+  const forwardExtent =
+    Math.abs(forward.x) * spanX + Math.abs(forward.z) * spanZ;
+  const lateralExtent =
+    Math.abs(lateral.x) * spanX + Math.abs(lateral.z) * spanZ;
+  const width = lateralExtent * LIGHT_BAR_WIDTH_FRACTION;
+  const depth = Math.min(LIGHT_BAR_MAX_DEPTH_M, forwardExtent * 0.4);
+  // Sit against the leading edge of the roof panel, just behind the windscreen
+  // header, rather than at the panel's centre.
+  const offset = Math.max(
+    0,
+    forwardExtent / 2 - depth / 2 - LIGHT_BAR_FRONT_INSET_M,
+  );
+  const centerX = (pad.minX + pad.maxX) / 2;
+  const centerZ = (pad.minZ + pad.maxZ) / 2;
+  return {
+    position: new Vector3(
+      centerX + forward.x * offset,
+      pad.topY,
+      centerZ + forward.z * offset,
+    ),
+    // Cancels the root's yaw so the bar's own +X runs across the car.
+    rotationY: -yawOffset,
+    width,
+    depth,
+    height: LIGHT_BAR_BASE_HEIGHT_M + LIGHT_BAR_LENS_HEIGHT_M,
+  };
+}
+
+/** Belt-band of the body (as fractions of its height) that markings sit in. */
+const LIVERY_BAND_LOW = 0.33;
+const LIVERY_BAND_HIGH = 0.63;
+/** Fraction of the car's length the door panel covers. */
+const LIVERY_LENGTH_FRACTION = 0.44;
+/** Nudge forward from the centre, so the panel lands on the doors. */
+const LIVERY_FORWARD_BIAS = 0.05;
+/** Stand-off from the measured door skin, so the decal never sinks into it. */
+const LIVERY_PROUD_M = 0.006;
+
+export interface LiveryPanelPlacement {
+  readonly position: Vector3;
+  readonly rotationY: number;
+  /** Along the car. */
+  readonly length: number;
+  readonly height: number;
+}
+
+/**
+ * Door-panel decal transforms for both flanks, in the model root's local space.
+ *
+ * The lateral offset is *measured* from the door skin rather than taken from the
+ * bounding box: the box half-width includes the mirrors, so a panel placed on it
+ * would hang off the doors in mid-air. Vertices are sampled only inside the belt
+ * band and the middle of the wheelbase, which is the flat part of these bodies
+ * (measured spread there is under 2cm on every passenger model).
+ */
+export function computeLiveryPanels(
+  root: TransformNode,
+  bounds: { min: Vector3; max: Vector3 },
+  yawOffset: number,
+): { left: LiveryPanelPlacement; right: LiveryPanelPlacement } {
+  const forward = new Vector3(-Math.sin(yawOffset), 0, Math.cos(yawOffset));
+  const lateral = new Vector3(Math.cos(yawOffset), 0, Math.sin(yawOffset));
+  const size = bounds.max.subtract(bounds.min);
+  const center = bounds.min.add(bounds.max).scale(0.5);
+  const forwardExtent =
+    Math.abs(forward.x) * size.x + Math.abs(forward.z) * size.z;
+  const lateralExtent =
+    Math.abs(lateral.x) * size.x + Math.abs(lateral.z) * size.z;
+
+  const length = forwardExtent * LIVERY_LENGTH_FRACTION;
+  const forwardCenter = forwardExtent * LIVERY_FORWARD_BIAS;
+  const lowY = bounds.min.y + size.y * LIVERY_BAND_LOW;
+  const highY = bounds.min.y + size.y * LIVERY_BAND_HIGH;
+
+  // Measure the door skin across exactly the span the panel will cover.
+  let skin = 0;
+  forEachModelVertex(
+    root,
+    (x, y, z) => {
+      if (y < lowY || y > highY) return;
+      const along = (x - center.x) * forward.x + (z - center.z) * forward.z;
+      if (Math.abs(along - forwardCenter) > length / 2) return;
+      const across = Math.abs(
+        (x - center.x) * lateral.x + (z - center.z) * lateral.z,
+      );
+      if (across > skin) skin = across;
+    },
+    true,
+  );
+  // A model with no vertices in the band still gets a plausible panel.
+  if (skin <= 0) skin = (lateralExtent / 2) * 0.93;
+  const offset = skin + LIVERY_PROUD_M;
+
+  const make = (side: 1 | -1): LiveryPanelPlacement => ({
+    position: new Vector3(
+      center.x + forward.x * forwardCenter + lateral.x * offset * side,
+      (lowY + highY) / 2,
+      center.z + forward.z * forwardCenter + lateral.z * offset * side,
+    ),
+    // Present the box's -Z face outward on each flank — the face whose default
+    // UVs render a DynamicTexture upright (the +Z face comes out rotated 180°,
+    // as the plates discovered, which mirrors the lettering *and* flips it).
+    // Babylon's left-handed yaw sends local -Z to (-sin θ, 0, -cos θ), so the
+    // right flank (+lateral) needs -90° and the left flank +90°.
+    rotationY: (side === 1 ? -Math.PI / 2 : Math.PI / 2) - yawOffset,
+    length,
+    height: size.y * (LIVERY_BAND_HIGH - LIVERY_BAND_LOW),
+  });
+  return { left: make(-1), right: make(1) };
+}
+
+const LIVERY_DECALS_BY_SCENE = new WeakMap<
+  Scene,
+  Map<string, StandardMaterial>
+>();
+
+/**
+ * The force's flank markings, drawn once per scene and shared by every patrol
+ * car on the map (unlike plates, a fleet's livery is identical by definition).
+ * Transparent everywhere the body paint should show through.
+ */
+function liveryDecalMaterial(
+  scene: Scene,
+  livery: PoliceLivery,
+): StandardMaterial {
+  let cache = LIVERY_DECALS_BY_SCENE.get(scene);
+  if (!cache) {
+    cache = new Map();
+    LIVERY_DECALS_BY_SCENE.set(scene, cache);
+  }
+  const existing = cache.get(livery.force);
+  if (existing) return existing;
+
+  const height = 128;
+  const width = height * 4;
+  const texture = new DynamicTexture(
+    `livery-${livery.force}`,
+    { width, height },
+    scene,
+    true,
+  );
+  const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
+  const sans = "Arial, 'Helvetica Neue', sans-serif";
+  ctx.clearRect(0, 0, width, height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const fitFont = (text: string, maxWidth: number, startPx: number) => {
+    let size = startPx;
+    ctx.font = `bold ${size}px ${sans}`;
+    while (ctx.measureText(text).width > maxWidth && size > 8) {
+      size -= 2;
+      ctx.font = `bold ${size}px ${sans}`;
+    }
+  };
+
+  if (livery.style === "battenburg") {
+    // Two rows of alternating squares over the lower half, "POLICE" above them.
+    const rows = 2;
+    const cell = height * 0.28;
+    const columns = Math.ceil(width / cell);
+    const top = height - rows * cell;
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        ctx.fillStyle =
+          (row + column) % 2 === 0 ? livery.markingHex : livery.secondaryHex;
+        ctx.fillRect(column * cell, top + row * cell, cell, cell);
+      }
+    }
+    ctx.fillStyle = livery.letteringHex;
+    fitFont(livery.lettering, width * 0.42, Math.round(height * 0.34));
+    ctx.fillText(livery.lettering, width / 2, top * 0.52);
+  } else if (livery.style === "half-black") {
+    // Japanese 白黒: the body's lower half blacked out, word mark on the white.
+    ctx.fillStyle = livery.markingHex;
+    ctx.fillRect(0, height * 0.46, width, height * 0.54);
+    ctx.fillStyle = livery.letteringHex;
+    fitFont(livery.lettering, width * 0.4, Math.round(height * 0.3));
+    ctx.fillText(livery.lettering, width / 2, height * 0.72);
+  } else {
+    // One belt stripe with the force's word mark riding above it.
+    ctx.fillStyle = livery.markingHex;
+    ctx.fillRect(0, height * 0.62, width, height * 0.24);
+    ctx.fillStyle = livery.secondaryHex;
+    ctx.fillRect(0, height * 0.86, width, height * 0.07);
+    ctx.fillStyle = livery.letteringHex;
+    fitFont(livery.lettering, width * 0.46, Math.round(height * 0.42));
+    ctx.fillText(livery.lettering, width / 2, height * 0.32);
+  }
+  texture.update();
+  texture.hasAlpha = true;
+
+  const material = new StandardMaterial(`livery-${livery.force}-material`, scene);
+  material.diffuseTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.specularColor = new Color3(0.14, 0.14, 0.14);
+  material.specularPower = 46;
+  // Retroreflective markings stay readable when the car is in shadow, which on
+  // the night maps is most of the time.
+  material.emissiveTexture = texture;
+  material.emissiveColor = new Color3(0.22, 0.22, 0.22);
+  cache.set(livery.force, material);
+  return material;
+}
+
+/**
+ * Bolts the patrol light bar onto the roof and the force's markings onto both
+ * doors. Returns the per-vehicle lamp handles `setBeacon` drives, plus the
+ * materials this vehicle owns and must dispose.
+ */
+function attachPoliceKit(
+  scene: Scene,
+  root: TransformNode,
+  name: string,
+  bounds: { min: Vector3; max: Vector3 },
+  yawOffset: number,
+  livery: PoliceLivery,
+): {
+  setBeacon: (red: number, blue: number) => void;
+  materials: StandardMaterial[];
+} {
+  const placement = computeLightBarPlacement(measureRoofPad(root, bounds), yawOffset);
+  const bar = new TransformNode(`${name}-light-bar`, scene);
+  bar.parent = root;
+  bar.position.copyFrom(placement.position);
+  bar.rotation.y = placement.rotationY;
+
+  const housing = new StandardMaterial(`${name}-light-bar-housing`, scene);
+  housing.diffuseColor = new Color3(0.09, 0.1, 0.12);
+  housing.specularColor = new Color3(0.2, 0.2, 0.2);
+  const base = MeshBuilder.CreateBox(
+    `${name}-light-bar-base`,
+    {
+      width: placement.width,
+      height: LIGHT_BAR_BASE_HEIGHT_M,
+      depth: placement.depth,
+    },
+    scene,
+  );
+  base.material = housing;
+  base.position.y = LIGHT_BAR_BASE_HEIGHT_M / 2;
+  base.parent = bar;
+  base.isPickable = false;
+
+  // Two lenses meeting at the centre line, with the housing left proud at both
+  // ends. The old bar left a 12cm gap between its halves, which is what made it
+  // read as two separate floating boxes rather than one light bar.
+  const lensWidth = placement.width * 0.47;
+  const makeLens = (side: 1 | -1, tint: Color3) => {
+    const material = new StandardMaterial(
+      `${name}-light-bar-lens-${side > 0 ? "blue" : "red"}`,
+      scene,
+    );
+    material.diffuseColor = tint.scale(0.55);
+    material.emissiveColor = tint.scale(0.06);
+    material.specularColor = new Color3(0.35, 0.35, 0.35);
+    const lens = MeshBuilder.CreateBox(
+      `${name}-light-bar-lens-${side > 0 ? "blue" : "red"}`,
+      {
+        width: lensWidth,
+        height: LIGHT_BAR_LENS_HEIGHT_M,
+        depth: placement.depth * 0.86,
+      },
+      scene,
+    );
+    lens.material = material;
+    lens.position.set(
+      side * placement.width * 0.235,
+      LIGHT_BAR_BASE_HEIGHT_M + LIGHT_BAR_LENS_HEIGHT_M / 2,
+      0,
+    );
+    lens.parent = bar;
+    lens.isPickable = false;
+    return { material, tint };
+  };
+  const red = makeLens(-1, new Color3(0.95, 0.08, 0.1));
+  const blue = makeLens(1, new Color3(0.12, 0.25, 1));
+
+  const decal = liveryDecalMaterial(scene, livery);
+  const panels = computeLiveryPanels(root, bounds, yawOffset);
+  const panelThickness = 0.012;
+  for (const [side, panel] of Object.entries(panels)) {
+    const mesh = MeshBuilder.CreateBox(
+      `${name}-livery-${side}`,
+      { width: panel.length, height: panel.height, depth: panelThickness },
+      scene,
+    );
+    mesh.material = decal;
+    mesh.position.copyFrom(panel.position);
+    mesh.rotation.y = panel.rotationY;
+    mesh.parent = root;
+    mesh.isPickable = false;
+    mesh.receiveShadows = false;
+  }
+
+  return {
+    setBeacon(redLevel, blueLevel) {
+      // Lenses are dark glass at rest and blaze when the lamp fires.
+      red.material.emissiveColor = red.tint.scale(0.06 + redLevel * 0.94);
+      blue.material.emissiveColor = blue.tint.scale(0.06 + blueLevel * 0.94);
+    },
+    materials: [housing, red.material, blue.material],
+  };
+}
+
 /**
  * Builds a vehicle from a preloaded glb, honouring the same VehicleMeshVisual
  * contract as the procedural path. Returns null when no model is registered for
@@ -459,6 +884,13 @@ function buildModelVehicle(
     return plate;
   });
 
+  // Patrol kit: roof light bar seated on the measured roof, force markings on
+  // the doors. Authored in the same pre-scale space as the plates above.
+  const police = appearance.livery
+    ? attachPoliceKit(scene, root, name, bounds, config.yawOffset, appearance.livery)
+    : null;
+  if (police) ownedMaterials.push(...police.materials);
+
   // Normalise scale, facing and ground contact (lowest point at LOCAL_GROUND_Y).
   root.scaling.setAll(config.scale);
   root.rotation.y = config.yawOffset;
@@ -487,6 +919,10 @@ function buildModelVehicle(
       for (const material of taillightMaterials) {
         material.emissiveColor = active ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
       }
+    },
+    setBeacon(red, blue) {
+      if (disposed) return;
+      police?.setBeacon(red, blue);
     },
     setDetailVisible(visible) {
       // The synthesized number plates are the model's only removable trim; cull
@@ -559,6 +995,7 @@ function emptyVehicleVisual(
     brakeLights: [],
     setSignal() {},
     setBraking() {},
+    setBeacon() {},
     setDetailVisible() {},
     dispose() {
       if (disposed) return;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPatrolVehicle,
   plateNumberForVehicle,
+  policeBeaconLamps,
+  policeLiveryForMap,
   resolvePlayerVehicleAppearance,
   resolveTrafficVehicleAppearance,
   type PassengerVehicleStyle,
@@ -61,13 +64,17 @@ describe("modern fleet variety", () => {
     resolveTrafficVehicleAppearance(passengerInput(index + 1)),
   );
 
+  const civilians = fleet.filter((appearance) => appearance.role === "car");
+
   it("uses every passenger silhouette across a normal busy fleet", () => {
-    const models = new Set(fleet.map((appearance) => appearance.model));
+    const models = new Set(civilians.map((appearance) => appearance.model));
     expect(models).toEqual(PASSENGER_STYLES);
   });
 
   it("uses at least six tasteful body colors instead of cloning every car", () => {
-    expect(new Set(fleet.map((appearance) => appearance.paintHex)).size).toBeGreaterThanOrEqual(6);
+    expect(
+      new Set(civilians.map((appearance) => appearance.paintHex)).size,
+    ).toBeGreaterThanOrEqual(6);
   });
 
   it("gives the player a fixed electric flagship distinct from NPC identity", () => {
@@ -237,6 +244,166 @@ describe("vehicle appearance data integrity", () => {
       expect(appearance.dimensions.height).toBeLessThanOrEqual(1.72);
       expect(appearance.dimensions.wheelDiameter).toBeGreaterThanOrEqual(0.64);
       expect(appearance.dimensions.wheelDiameter).toBeLessThanOrEqual(0.78);
+    }
+  });
+});
+
+// --- Patrol cars ------------------------------------------------------------
+//
+// Issue #124: patrol cars drew a random passenger paint, so two cop cars on the
+// same street were different colours and no city's fleet looked like its real
+// one. A force's fleet is uniform by definition, so the livery is a property of
+// the map's country, not of the individual car.
+describe("patrol car liveries", () => {
+  const CITIES = [
+    "nyc-upper-west-side",
+    "london-south-kensington",
+    "milton-keynes-oldbrook",
+    "calais-coquelles",
+    "tokyo-setagaya",
+  ] as const;
+
+  const patrolsOn = (mapId: string, trafficSeed = 512) =>
+    Array.from({ length: 60 }, (_, index) =>
+      resolveTrafficVehicleAppearance({
+        vehicleId: `npc-${index + 1}`,
+        trafficSeed,
+        variant: "car",
+        mapId,
+      }),
+    ).filter((appearance) => appearance.role === "police");
+
+  it("gives every patrol in a city one identical, shared scheme", () => {
+    for (const mapId of CITIES) {
+      const patrols = patrolsOn(mapId);
+      expect(patrols.length, `no patrols on ${mapId}`).toBeGreaterThan(3);
+      const [first] = patrols;
+      for (const patrol of patrols) {
+        expect(patrol.model).toBe(first.model);
+        expect(patrol.paintHex).toBe(first.paintHex);
+        expect(patrol.accentHex).toBe(first.accentHex);
+        expect(patrol.livery).toEqual(first.livery);
+      }
+      // ...but each still carries its own registration.
+      expect(new Set(patrols.map((p) => p.plateNumber)).size).toBeGreaterThan(1);
+    }
+  });
+
+  it("wears each country's real scheme, and differs between countries", () => {
+    const livery = (mapId: string) => patrolsOn(mapId)[0].livery!;
+
+    // NYPD: white RMP with a navy belt stripe.
+    expect(livery("nyc-upper-west-side")).toMatchObject({
+      style: "stripe",
+      lettering: "NYPD",
+      bodyHex: "#eef1f4",
+      markingHex: "#123c78",
+    });
+    // UK forces: white under blue-and-yellow Battenburg.
+    expect(livery("london-south-kensington")).toMatchObject({
+      style: "battenburg",
+      lettering: "POLICE",
+      markingHex: "#0b4ea2",
+      secondaryHex: "#f5d417",
+    });
+    // Police nationale: white with a blue belt band.
+    expect(livery("calais-coquelles")).toMatchObject({
+      style: "stripe",
+      markingHex: "#1b3f92",
+    });
+    // Japanese patrol cars are the white-over-black 白黒 scheme.
+    expect(livery("tokyo-setagaya")).toMatchObject({
+      style: "half-black",
+      bodyHex: "#eceff1",
+      markingHex: "#14181c",
+    });
+
+    // Two UK cities share one national scheme; the four countries do not.
+    expect(livery("milton-keynes-oldbrook")).toEqual(
+      livery("london-south-kensington"),
+    );
+    expect(new Set(CITIES.map((city) => policeLiveryForMap(city).force)).size).toBe(4);
+  });
+
+  it("keeps patrols a minority of traffic, and only ever cars", () => {
+    for (const mapId of CITIES) {
+      const cars = Array.from({ length: 200 }, (_, index) => ({
+        vehicleId: `npc-${index + 1}`,
+        trafficSeed: 512,
+        variant: "car" as const,
+        mapId,
+      }));
+      const share = cars.filter(isPatrolVehicle).length / cars.length;
+      expect(share).toBeGreaterThan(0.1);
+      expect(share).toBeLessThan(0.32);
+
+      // A bus, van or taxi is never a patrol, whatever its id hashes to.
+      for (const variant of ["bus", "van", "taxi"] as const) {
+        for (let index = 0; index < 40; index += 1) {
+          const input = { vehicleId: `npc-${index}`, trafficSeed: 512, variant, mapId };
+          expect(isPatrolVehicle(input)).toBe(false);
+          expect(resolveTrafficVehicleAppearance(input).livery).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("leaves civilians and the player unmarked", () => {
+    expect(resolvePlayerVehicleAppearance("nyc-upper-west-side").livery).toBeNull();
+    const civilians = Array.from({ length: 60 }, (_, index) =>
+      resolveTrafficVehicleAppearance(passengerInput(index + 1)),
+    ).filter((appearance) => appearance.role === "car");
+    expect(civilians.length).toBeGreaterThan(20);
+    for (const civilian of civilians) expect(civilian.livery).toBeNull();
+  });
+
+  it("keeps a patrol a patrol, so a light bar never lands on a bus", () => {
+    // Patrol status is derived from the vehicle's own identity, not its render
+    // slot: resolving the same id twice must always agree.
+    for (const mapId of CITIES) {
+      for (let index = 1; index <= 40; index += 1) {
+        const input = { vehicleId: `npc-${index}`, trafficSeed: 9, variant: "car" as const, mapId };
+        expect(isPatrolVehicle(input)).toBe(isPatrolVehicle(input));
+        expect(resolveTrafficVehicleAppearance(input)).toEqual(
+          resolveTrafficVehicleAppearance(input),
+        );
+      }
+    }
+  });
+});
+
+// The old bar was two permanently-lit boxes. Real emergency lights strobe in
+// quick double blips and alternate sides.
+describe("policeBeaconLamps", () => {
+  // Exactly one full cycle, so each side's duty is counted once.
+  const samples = Array.from({ length: 440 }, (_, index) =>
+    policeBeaconLamps((index / 440) * 1.1),
+  );
+
+  it("blips each side twice per cycle, alternating, mostly dark", () => {
+    const redOn = samples.filter((lamp) => lamp.red > 0).length / samples.length;
+    const blueOn = samples.filter((lamp) => lamp.blue > 0).length / samples.length;
+    expect(redOn).toBeGreaterThan(0.05);
+    expect(redOn).toBeLessThan(0.25);
+    expect(blueOn).toBeCloseTo(redOn, 1);
+    // Never both at once — that would read as a steady purple glow.
+    expect(samples.some((lamp) => lamp.red > 0 && lamp.blue > 0)).toBe(false);
+
+    // Two separate flashes per side per cycle (count rising edges).
+    const edges = (pick: (lamp: { red: number; blue: number }) => number) =>
+      samples.filter(
+        (lamp, index) => pick(lamp) > 0 && (index === 0 || pick(samples[index - 1]) === 0),
+      ).length;
+    expect(edges((lamp) => lamp.red)).toBe(2);
+    expect(edges((lamp) => lamp.blue)).toBe(2);
+  });
+
+  it("repeats every cycle and stays defined for any elapsed time", () => {
+    for (const seconds of [0, 0.31, 0.77, 4.2, 913.6]) {
+      expect(policeBeaconLamps(seconds)).toEqual(policeBeaconLamps(seconds + 1.1 * 7));
+      const lamp = policeBeaconLamps(seconds);
+      expect(lamp.red === 0 || lamp.red === 1).toBe(true);
+      expect(lamp.blue === 0 || lamp.blue === 1).toBe(true);
     }
   });
 });
