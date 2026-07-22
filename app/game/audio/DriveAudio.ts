@@ -19,6 +19,7 @@ import { primeAudioContext } from "./audioContext";
 import { MasterBus, type MasterBusVolumes } from "./masterBus";
 import { AmbienceVoice } from "./voices/ambienceVoice";
 import { EngineVoice } from "./voices/engineVoice";
+import { FoleyVoice, type FoleyCue } from "./voices/foleyVoice";
 import { HornVoice } from "./voices/hornVoice";
 import { ImpactVoice } from "./voices/impactVoice";
 import { TyreVoice } from "./voices/tyreVoice";
@@ -40,6 +41,7 @@ export class DriveAudio {
   private readonly tyres: TyreVoice;
   private readonly horn: HornVoice;
   private readonly impacts: ImpactVoice;
+  private readonly foleyVoice: FoleyVoice;
   private readonly state: DriveAudioState = createAudioState();
   private readonly params: DriveAudioParams = createAudioParams();
   private disposed = false;
@@ -61,6 +63,7 @@ export class DriveAudio {
     this.tyres = new TyreVoice(voice);
     this.horn = new HornVoice(voice);
     this.impacts = new ImpactVoice(voice);
+    this.foleyVoice = new FoleyVoice(voice);
   }
 
   /**
@@ -122,6 +125,11 @@ export class DriveAudio {
     if (!this.disposed) this.impacts.trigger(impactSpeedMps, nowMs);
   }
 
+  /** Cutscene cues: car doors, the fuel pump's latch and glug loop, a chime. */
+  foley(cue: FoleyCue): void {
+    if (!this.disposed) this.foleyVoice.trigger(cue);
+  }
+
   /** Read by the headless QA harness; never used by gameplay. */
   debugSnapshot(): Readonly<Record<string, number>> {
     return {
@@ -149,6 +157,7 @@ export class DriveAudio {
         this.ambience.stop();
         this.tyres.stop();
         this.horn.stop();
+        this.foleyVoice.stop();
         try {
           this.jitterSource.stop();
         } catch {

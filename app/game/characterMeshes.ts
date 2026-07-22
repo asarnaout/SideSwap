@@ -276,6 +276,103 @@ export function buildPedestrianVisual(
   };
 }
 
+export type ActorClip = "idle" | "walk" | "run";
+
+/**
+ * A cutscene actor: the driver stepping out to pump fuel or run a delivery
+ * errand, or the passenger boarding and leaving the car. Unlike a pedestrian it
+ * switches between the rig's locomotion clips on demand.
+ */
+export interface ActorVisual {
+  readonly root: TransformNode;
+  setClip(clip: ActorClip, speedRatio?: number): void;
+  dispose(): void;
+}
+
+/** Clip name suffixes on the shared HumanArmature rigs ("…|Man_Walk",
+ * "…|Female_Idle"). Anchored so Run never matches RunningJump. */
+const ACTOR_CLIP_PATTERNS: readonly (readonly [ActorClip, RegExp])[] = [
+  ["idle", /_Idle$/i],
+  ["walk", /_Walk$/i],
+  ["run", /_Run$/i],
+];
+
+/**
+ * A character that idles, walks and runs under script control. Same clone
+ * pipeline as the pedestrians; retains the three locomotion clips (the other
+ * eight the clone carries are disposed) and blends between them so switches
+ * read as the character changing pace rather than popping.
+ */
+export function buildActorVisual(
+  scene: Scene,
+  parent: TransformNode,
+  name: string,
+  variant: number,
+  colors: CharacterColors,
+): ActorVisual | null {
+  const config = CHARACTER_MODELS[Math.abs(variant) % CHARACTER_MODELS.length];
+  if (!isModelReady(scene, config.url)) return null;
+  const instance = instantiateModel(scene, config.url);
+  const modelRoot = instance?.rootNodes[0] as TransformNode | undefined;
+  if (!instance || !modelRoot) return null;
+
+  const root = new TransformNode(`${name}-actor`, scene);
+  root.parent = parent;
+  root.rotation.y = config.yawOffset;
+  modelRoot.parent = root;
+  modelRoot.scaling.setAll(config.scale);
+
+  const owned = convertMaterials(
+    scene,
+    name,
+    root,
+    materialOverrides(config, colors),
+  );
+  addContactShadow(scene, name, root, 0.62, 0.5);
+
+  const clips = new Map<ActorClip, AnimationGroup>();
+  for (const group of instance.animationGroups) {
+    const match = ACTOR_CLIP_PATTERNS.find(
+      ([clip, pattern]) => !clips.has(clip) && pattern.test(group.name),
+    );
+    if (match) {
+      group.enableBlending = true;
+      group.blendingSpeed = 0.09;
+      clips.set(match[0], group);
+    } else {
+      group.dispose();
+    }
+  }
+
+  let disposed = false;
+  let active: AnimationGroup | undefined;
+  const visual: ActorVisual = {
+    root,
+    setClip(clip, speedRatio = 1) {
+      if (disposed) return;
+      const next = clips.get(clip);
+      if (!next) return;
+      if (active === next) {
+        next.speedRatio = speedRatio;
+        return;
+      }
+      active?.stop();
+      active = next;
+      next.speedRatio = speedRatio;
+      next.play(true);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const group of clips.values()) group.dispose();
+      root.dispose(false, false);
+      for (const material of owned) material.dispose(true, false);
+    },
+  };
+  visual.setClip("idle");
+  return visual;
+}
+
 /** Rigs a cyclist may ride: every model but the dress one — a knee-length
  * skirt skinned to two counter-phased pedalling legs shears unavoidably. */
 const CYCLIST_RIDER_MODELS: readonly CharacterModelConfig[] = CHARACTER_MODELS.filter(
