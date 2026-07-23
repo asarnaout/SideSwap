@@ -344,6 +344,102 @@ function nearestPointOnPolyline(
   return best;
 }
 
+/**
+ * Heading (radians, 0 = +z north) of the polyline segment nearest the query
+ * point, or null when the polyline has no usable segment.
+ */
+export function roadAxisHeadingNear(
+  polyline: readonly GameCanvasPoint[],
+  query: GameCanvasPoint,
+): number | null {
+  let best: number | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index + 1 < polyline.length; index += 1) {
+    const start = polyline[index];
+    const end = polyline[index + 1];
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const lengthSquared = dx * dx + dz * dz;
+    if (lengthSquared <= 0) continue;
+    const t = Math.max(
+      0,
+      Math.min(1, ((query.x - start.x) * dx + (query.z - start.z) * dz) / lengthSquared),
+    );
+    const distance = Math.hypot(
+      query.x - (start.x + dx * t),
+      query.z - (start.z + dz * t),
+    );
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = Math.atan2(dx, dz);
+    }
+  }
+  return best;
+}
+
+/**
+ * World-space segment for a signal approach's painted stop bar.
+ *
+ * The bar is anchored at the lane's stop point but laid square to the road
+ * surface's centreline, not the lane's local heading: a laneTrue centreline
+ * eases onto the shared junction node over its last few metres, and a bar
+ * perpendicular to that blended heading renders visibly slanted — adjacent
+ * lanes' bars kink into a shallow V at the road centre (#149).
+ *
+ * Lane widths are authored much narrower than the painted carriageway, so a
+ * half-lane-width bar reads as a short stub floating mid-lane. A centre line
+ * means a two-way road: the bar runs from the centre line to the near kerb so
+ * it never paints across the oncoming side. A one-way road (lane dividers
+ * only) gets a bar spanning the lane, widened toward the road edge — so
+ * adjacent lanes' bars meet into one continuous line — capped at the
+ * carriageway half-width so it never spills onto the shoulder.
+ */
+export function signalStopBarSegment(
+  stop: { readonly x: number; readonly z: number; readonly heading: number },
+  lane: { readonly widthM?: number },
+  surface:
+    | {
+        readonly centerline: readonly GameCanvasPoint[];
+        readonly widthM: number;
+        readonly markings?: readonly { readonly style: string }[];
+      }
+    | undefined,
+): { readonly start: GameCanvasPoint; readonly end: GameCanvasPoint } {
+  const roadHalfWidth = (surface?.widthM ?? lane.widthM ?? 3.2) / 2;
+  const axis = surface ? roadAxisHeadingNear(surface.centerline, stop) : null;
+  // Align the road axis with the lane's travel direction so `side` stays the
+  // driver's right regardless of which way the surface was authored.
+  const barHeading =
+    axis === null
+      ? stop.heading
+      : Math.abs(Math.atan2(Math.sin(axis - stop.heading), Math.cos(axis - stop.heading))) >
+          Math.PI / 2
+        ? axis + Math.PI
+        : axis;
+  const sideX = Math.cos(barHeading);
+  const sideZ = -Math.sin(barHeading);
+  const twoWay = (surface?.markings ?? []).some(
+    (marking) => marking.style === "centre_solid" || marking.style === "centre_dashed",
+  );
+  if (twoWay && surface) {
+    const centre = nearestPointOnPolyline(stop, surface.centerline);
+    const towardKerb =
+      (stop.x - centre.x) * sideX + (stop.z - centre.z) * sideZ >= 0 ? 1 : -1;
+    return {
+      start: centre,
+      end: {
+        x: centre.x + towardKerb * roadHalfWidth * sideX,
+        z: centre.z + towardKerb * roadHalfWidth * sideZ,
+      },
+    };
+  }
+  const halfWidth = Math.min((lane.widthM ?? 3.2) / 2 + 1.4, roadHalfWidth);
+  return {
+    start: { x: stop.x - sideX * halfWidth, z: stop.z - sideZ * halfWidth },
+    end: { x: stop.x + sideX * halfWidth, z: stop.z + sideZ * halfWidth },
+  };
+}
+
 /** Removes authored duplicate points while retaining the fact that a path is closed. */
 function normalizeRoadCenterline(
   points: readonly GameCanvasPoint[],
@@ -6966,47 +7062,14 @@ class BabylonGameSession {
           (candidate) => candidate.id === approach.stopLine.laneId,
         );
         if (!stop || !lane) continue;
-        // Lane widths are authored much narrower than the painted carriageway,
-        // so a half-lane-width bar reads as a short stub floating mid-lane.
-        // Size the bar off the road surface and widen toward its edge—so
-        // adjacent lanes' bars meet into one continuous line—capped at the
-        // carriageway half-width so it never spills onto the shoulder.
         const stopSurface = mapPack.geometry.roadSurfaces?.find((candidate) =>
           candidate.laneIds.includes(lane.id),
         );
-        const roadHalfWidth = (stopSurface?.widthM ?? lane.widthM ?? 3.2) / 2;
-        const sideX = Math.cos(stop.heading);
-        const sideZ = -Math.sin(stop.heading);
-        // A centre line means a two-way road: the bar runs from the centre line
-        // to the near kerb so it never paints across the oncoming side. A
-        // one-way road (lane dividers only) gets the full-width bar.
-        const twoWay = (stopSurface?.markings ?? []).some(
-          (marking) =>
-            marking.style === "centre_solid" || marking.style === "centre_dashed",
-        );
-        let stopStart: GameCanvasPoint;
-        let stopEnd: GameCanvasPoint;
-        if (twoWay && stopSurface) {
-          const centre = nearestPointOnPolyline(
-            { x: stop.x, z: stop.z },
-            stopSurface.centerline,
-          );
-          const towardKerb =
-            (stop.x - centre.x) * sideX + (stop.z - centre.z) * sideZ >= 0 ? 1 : -1;
-          stopStart = centre;
-          stopEnd = {
-            x: centre.x + towardKerb * roadHalfWidth * sideX,
-            z: centre.z + towardKerb * roadHalfWidth * sideZ,
-          };
-        } else {
-          const halfWidth = Math.min((lane.widthM ?? 3.2) / 2 + 1.4, roadHalfWidth);
-          stopStart = { x: stop.x - sideX * halfWidth, z: stop.z - sideZ * halfWidth };
-          stopEnd = { x: stop.x + sideX * halfWidth, z: stop.z + sideZ * halfWidth };
-        }
+        const bar = signalStopBarSegment(stop, lane, stopSurface);
         this.createFlatSegment(
           `${control.id}-${approach.id}-stop-line`,
-          stopStart,
-          stopEnd,
+          bar.start,
+          bar.end,
           0.28,
           0.147,
           laneMaterial,

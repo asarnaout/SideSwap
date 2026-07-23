@@ -41,7 +41,7 @@ import {
   LONDON_MAP_PACK,
   LONDON_RULE_REFERENCES,
 } from "./londonContent";
-import { buildLaneTrueGeometry } from "./laneConnectors";
+import { buildLaneTrueGeometry, CONNECTOR_BLEND_RUN_M } from "./laneConnectors";
 
 export const CONTENT_REVIEWED_ON = "2026-07-10";
 
@@ -501,11 +501,13 @@ const laneHeadingAtDistanceDeg = (lane: LaneSegment, distanceAlongM: number): nu
 
 /**
  * Builds a signalised junction from the lanes that arrive at it. Each arriving
- * lane gets a stop-line approach 6 m short of the node and a head facing that
- * lane's travel direction, mounted at the junction corner (clear of every lane).
- * North/south lanes and east/west lanes sit on alternating phase groups. This is
- * correct-by-construction, so head headings and stop distances can't drift from
- * the geometry the way hand-authored signals do.
+ * lane gets a stop-line approach 6 m short of the node; each approach
+ * *direction* gets one mast across the junction at the far corner — the way
+ * NYC hangs its signals — so the driver waiting at the stop line can see
+ * their own light, with parallel lanes sharing the mast (#149). North/south
+ * lanes and east/west lanes sit on alternating phase groups. This is
+ * correct-by-construction, so head headings and stop distances can't drift
+ * from the geometry the way hand-authored signals do.
  */
 const intersectionSignal = (
   id: string,
@@ -518,27 +520,52 @@ const intersectionSignal = (
   const laneIds = arms.map((arm) => arm.laneId);
   const approaches: TrafficControlApproach[] = [];
   const installations: TrafficControlInstallation[] = [];
+  const masts = new Map<
+    number,
+    { approachIds: string[]; firstLaneId: string; headingDeg: number }
+  >();
   for (const arm of arms) {
     const lane = laneById.get(arm.laneId);
     if (!lane) continue;
     const stopDistance = Math.max(0, laneLengthOf(lane) - 6);
-    const headingDeg = laneHeadingAtDistanceDeg(lane, stopDistance);
-    const rad = (headingDeg * Math.PI) / 180;
+    // Sample the heading clear of the junction connector blend: a laneTrue
+    // centreline eases onto the shared node over its last ~6 m, so the local
+    // heading right at the stop line sits a few degrees off the road axis
+    // (#149 — slanted stop bars and skewed mast corners).
+    const headingDeg = laneHeadingAtDistanceDeg(
+      lane,
+      Math.max(0, stopDistance - CONNECTOR_BLEND_RUN_M - 1),
+    );
+    const approachId = `${id}-${arm.laneId}-app`;
+    approaches.push(approach(approachId, arm.laneId, stopDistance, `${id}-${arm.phase}`, [zoneId]));
+    const mast = masts.get(Math.round(headingDeg));
+    if (mast) {
+      mast.approachIds.push(approachId);
+    } else {
+      masts.set(Math.round(headingDeg), {
+        approachIds: [approachId],
+        firstLaneId: arm.laneId,
+        headingDeg,
+      });
+    }
+  }
+  for (const mast of masts.values()) {
+    const rad = (mast.headingDeg * Math.PI) / 180;
     const dirX = Math.sin(rad);
     const dirZ = Math.cos(rad);
-    // Mount at the corner diagonally back-right of the approach, well clear of
-    // both carriageways (±8 m from a node whose lanes span only ~±3.4 m).
-    const headX = center.x + dirZ * 8 - dirX * 8;
-    const headZ = center.z - dirX * 8 - dirZ * 8;
-    approaches.push(approach(`${id}-${arm.laneId}-app`, arm.laneId, stopDistance, `${id}-${arm.phase}`, [zoneId]));
-    // The pole stands at the back-right corner, offset to the right of the
+    // Mount at the corner diagonally forward-right of the approach — across
+    // the junction, well clear of both carriageways (±8 m from a node whose
+    // lanes span only ~±3.4 m).
+    const headX = center.x + dirZ * 8 + dirX * 8;
+    const headZ = center.z - dirX * 8 + dirZ * 8;
+    // The pole stands past the junction, offset to the right of the
     // approach. Its mast arm has to reach back the other way — in over the
-    // carriageway — so the head hangs above the lane instead of out over the
-    // grass. The renderer extends the arm along `armHeadingDeg`, whose zero
-    // direction points the same way the pole is offset, so aim it opposite:
-    // headingDeg + 180.
-    const armHeadingDeg = headingDeg + 180;
-    installations.push(installation(`${id}-${arm.laneId}-head`, headX, headZ, headingDeg, "mast_arm", "nyc_signal", "primary", [`${id}-${arm.laneId}-app`], armHeadingDeg));
+    // carriageway — so the head hangs above the lanes it governs instead of
+    // out over the grass. The renderer extends the arm along `armHeadingDeg`,
+    // whose zero direction points the same way the pole is offset, so aim it
+    // opposite: headingDeg + 180.
+    const armHeadingDeg = mast.headingDeg + 180;
+    installations.push(installation(`${id}-${mast.firstLaneId}-head`, headX, headZ, mast.headingDeg, "mast_arm", "nyc_signal", "primary", mast.approachIds, armHeadingDeg));
   }
   const half = 7;
   return {
