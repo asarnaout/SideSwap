@@ -123,6 +123,12 @@ import {
   type StreetPropConfig,
 } from "./buildingSets";
 import { orientMergedFacesOutward } from "./buildingWinding";
+import {
+  pickStorefrontVariant,
+  STOREFRONT_MODEL_ID,
+  type StorefrontVariant,
+} from "./storefronts";
+import { assembleStorefrontVariantMaster } from "./storefrontMaster";
 import { streetAddressesForMap } from "./streetAddresses";
 import {
   buildConnectedNpcPath,
@@ -3115,8 +3121,10 @@ class BabylonGameSession {
    * a MultiMaterial), built lazily and hidden. Every placement is a single
    * `createInstance` of it, so a building costs one scene mesh (one cull check)
    * instead of ~15 — the fix for the culling spike on fast/turning driving.
+   * Keys are the url, or `url#variantId` for re-branded storefront masters.
    * null = merge failed for that url (falls back to the multi-mesh path). */
   private readonly buildingMasters = new Map<string, Mesh | null>();
+  private readonly storefrontSignMaterials = new Map<string, StandardMaterial>();
   private signalRedMaterial: StandardMaterial | null = null;
   private signalAmberMaterial: StandardMaterial | null = null;
   private signalGreenMaterial: StandardMaterial | null = null;
@@ -5218,6 +5226,94 @@ class BabylonGameSession {
     return master;
   }
 
+  /**
+   * A variant master for the one retail glb: same merged-master shape as
+   * getBuildingMaster, but with the baked "PIZZA" lettering swapped for the
+   * variant's fascia sign and awning tint (storefrontMaster.ts) so streets
+   * carry a mix of businesses instead of a row of identical pizzerias (#146).
+   * Any assembly failure falls back to the plain master — baked pizza beats a
+   * missing building.
+   */
+  private getStorefrontMaster(url: string, variant: StorefrontVariant): Mesh | null {
+    const key = `${url}#${variant.id}`;
+    const cached = this.buildingMasters.get(key);
+    if (cached !== undefined) return cached;
+    let master: Mesh | null = null;
+    const instance = instantiateModel(this.scene, url); // real clones, mergeable
+    const root = instance?.rootNodes[0] as TransformNode | undefined;
+    if (root) {
+      root.computeWorldMatrix(true);
+      const meshes = root
+        .getChildMeshes(false)
+        .filter((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
+      for (const mesh of meshes) mesh.computeWorldMatrix(true);
+      master = meshes.length
+        ? assembleStorefrontVariantMaster(
+            this.scene,
+            meshes,
+            variant,
+            this.getStorefrontSignMaterial(variant),
+            { nightGlow: this.visualPalette?.night ?? false },
+          )
+        : null;
+      root.dispose(false, false);
+      if (master) {
+        master.isVisible = false;
+        master.isPickable = false;
+      }
+    }
+    master ??= this.getBuildingMaster(url);
+    this.buildingMasters.set(key, master);
+    return master;
+  }
+
+  /** One DynamicTexture sign material per variant, shared by both of its
+   * fascia planes and every instance — the addRoofSign recipe (emissive so it
+   * reads on the night map, no culling so a winding flip can't drop it). */
+  private getStorefrontSignMaterial(variant: StorefrontVariant): StandardMaterial {
+    const cached = this.storefrontSignMaterials.get(variant.id);
+    if (cached) return cached;
+    const texture = new DynamicTexture(
+      `storefront-sign-${variant.id}-texture`,
+      { width: 512, height: 128 },
+      this.scene,
+      true,
+    );
+    const context = texture.getContext();
+    let fontSize = 88;
+    context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    while (
+      fontSize > 24 &&
+      context.measureText(variant.signText).width > 512 * 0.86
+    ) {
+      fontSize -= 6;
+      context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    }
+    texture.drawText(
+      variant.signText,
+      null,
+      null,
+      `bold ${fontSize}px Figtree, Arial, sans-serif`,
+      variant.signFg,
+      variant.signBg,
+      true,
+    );
+    context.strokeStyle = variant.signFg;
+    context.lineWidth = 6;
+    context.strokeRect(8, 8, 512 - 16, 128 - 16);
+    texture.update();
+    const material = new StandardMaterial(
+      `storefront-sign-${variant.id}`,
+      this.scene,
+    );
+    material.diffuseTexture = texture;
+    material.emissiveColor = new Color3(0.55, 0.55, 0.55);
+    material.specularColor = Color3.Black();
+    material.backFaceCulling = false;
+    this.storefrontSignMaterials.set(variant.id, material);
+    return material;
+  }
+
   private buildInstancedBuildings() {
     if (this.visualPalette?.night) this.applyBuildingNightGlow();
     for (const { block, setId, buildFallback } of this.pendingBuildingBlocks) {
@@ -5235,7 +5331,10 @@ class BabylonGameSession {
       );
       let placed = 0;
       for (const b of placements) {
-        const master = this.getBuildingMaster(b.url);
+        const master =
+          b.modelId === STOREFRONT_MODEL_ID
+            ? this.getStorefrontMaster(b.url, pickStorefrontVariant(b.x, b.z))
+            : this.getBuildingMaster(b.url);
         if (master) {
           // Fast path: one instance = one scene mesh = one cull check.
           const inst = master.createInstance(`bldg-${block.id}-${placed}`);
