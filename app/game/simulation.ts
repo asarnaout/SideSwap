@@ -53,6 +53,40 @@ const NPC_INCIDENT_KNOCK_RAD = 0.16;
 // long (in ticks) before pulling away again; behind it the ordinary jam
 // machinery clears any pile-up exactly as for NPC-NPC knocks.
 const NPC_STRUCK_TICKS = 360;
+// NPC heading is chased toward the lane pose rather than assigned, so a car
+// sweeps through a junction turn the way a steered vehicle would instead of
+// snapping to each new centreline segment (#19). The rate scales like a car
+// holding a tight urban corner (omega = v / r), floored so a crawling car
+// still completes its turn and capped so fast traffic cannot wag.
+const NPC_MIN_TURN_RADIUS_M = 4.6;
+const NPC_YAW_RATE_MIN_RAD_S = 0.9;
+const NPC_YAW_RATE_MAX_RAD_S = 2.6;
+// A pose-heading jump beyond this is an authored reversal (a turning-loop
+// apex, a U-turn successor), not a corner: snap instantly as before rather
+// than sweeping — a car should never visibly rotate ~180 degrees in place.
+const NPC_HEADING_SNAP_RAD = 2.4;
+// Within this arc distance of a lane hop the NPC's rendered pose rides a
+// corner arc between the two lane lines instead of the authored centreline,
+// which converges on the shared junction node (#19). The window covers the
+// ~6.3 m connector blends with margin, so the node convergence is never
+// visible: turns hug the true corner, straights stay straight.
+const NPC_CORNER_WINDOW_M = 7;
+// Hops bending less than this ride the straight chord between the window
+// ends; sharper hops get a quadratic arc around the lane-line intersection.
+const NPC_CORNER_MIN_TURN_RAD = 0.35;
+// An arc apex further than this from either window end means the lane lines
+// barely converge (near-parallel rays); the chord is the sane path.
+const NPC_CORNER_MAX_APEX_M = 40;
+// Samples for the arc-length table that maps window progress onto the corner
+// Bezier at uniform speed — raw Bezier parameterization runs up to ~1.4x
+// faster near a skewed apex, which would teleport the pose past the car's
+// physical travel for the tick.
+const NPC_CORNER_ARC_SAMPLES = 10;
+// An arc more than 10% longer than the lane window it replaces would force
+// the pose to sweep faster than the car drives; ride the chord instead (the
+// chord is never longer than the window, by the triangle inequality through
+// the node).
+const NPC_CORNER_MAX_ARC_STRETCH = 1.1;
 // The static world resolves against a two-circle capsule rather than the
 // single traffic disc: the visible car is ~4.4 m long, and one centre circle
 // would let the bonnet bury itself a metre deep into a facade before contact.
@@ -625,6 +659,13 @@ interface NpcInternal extends MutablePose {
   signal: TurnSignal;
   targetLaneId?: string;
   laneChangeProgress: number;
+  /**
+   * The lane this car just hopped off, kept while it is still inside the
+   * entry half of the corner-arc window so the arc pose can keep bridging
+   * both lanes (#19). Cleared once the car is past the window, and on any
+   * spawn or despawn.
+   */
+  cornerFromLaneId?: string;
   signalSeconds: number;
   stoppedSeconds: number;
   /** Seconds spent jammed against other traffic (no signal/yield reason). */
@@ -854,6 +895,12 @@ function angleDifference(a: number, b: number): number {
 
 function lerpAngle(a: number, b: number, amount: number): number {
   return wrapAngle(a + angleDifference(b, a) * amount);
+}
+
+function approachAngle(current: number, target: number, maxStep: number): number {
+  const difference = angleDifference(target, current);
+  if (Math.abs(difference) <= maxStep) return wrapAngle(target);
+  return wrapAngle(current + Math.sign(difference) * maxStep);
 }
 
 function smoothStep(value: number): number {
@@ -2545,16 +2592,21 @@ export class SimulationCore {
     npc.state = lane.kind === "roundabout" ? "roundabout" : "cruising";
     npc.signal = "off";
     npc.targetLaneId = undefined;
+    npc.cornerFromLaneId = undefined;
     npc.laneChangeProgress = 0;
     npc.signalSeconds = 0;
     npc.stoppedSeconds = 0;
     npc.jamSeconds = 0;
     npc.incidentLeanRad = 0;
-    npc.x = pose.x;
-    npc.z = pose.z;
-    npc.heading = pose.heading;
-    npc.previousX = pose.x;
-    npc.previousZ = pose.z;
+    // A gate can sit inside the corner-arc window of its lane's end; posing
+    // the spawn through the same overlay keeps the first moved tick from
+    // reading as a sideways teleport onto the arc.
+    const displayPose = this.npcCornerPose(npc, lane, pose);
+    npc.x = displayPose.x;
+    npc.z = displayPose.z;
+    npc.heading = displayPose.heading;
+    npc.previousX = displayPose.x;
+    npc.previousZ = displayPose.z;
     npc.activatedAtSeconds = initial
       ? Number.NEGATIVE_INFINITY
       : this.elapsedSeconds;
@@ -2567,6 +2619,7 @@ export class SimulationCore {
     npc.state = "recovering";
     npc.signal = "off";
     npc.targetLaneId = undefined;
+    npc.cornerFromLaneId = undefined;
     npc.laneChangeProgress = 0;
     npc.jamSeconds = 0;
     npc.incidentLeanRad = 0;
@@ -2817,6 +2870,199 @@ export class SimulationCore {
     }
   }
 
+  /**
+   * Turns the pose heading into a steering target instead of an assignment:
+   * the car yaws toward it at a speed-scaled rate, so junction turns sweep
+   * like a steered vehicle (#19). Authored reversals (turning-loop apexes)
+   * jump the target by more than NPC_HEADING_SNAP_RAD in one tick and keep
+   * the old snap. Spawn and respawn paths still assign the pose heading
+   * directly, so the chase never sweeps across a teleport.
+   */
+  private chaseNpcHeading(
+    npc: NpcInternal,
+    targetHeading: number,
+    deltaSeconds: number,
+  ): void {
+    if (Math.abs(angleDifference(targetHeading, npc.heading)) >= NPC_HEADING_SNAP_RAD) {
+      npc.heading = wrapAngle(targetHeading);
+      return;
+    }
+    const yawRate = clamp(
+      npc.speedMps / NPC_MIN_TURN_RADIUS_M,
+      NPC_YAW_RATE_MIN_RAD_S,
+      NPC_YAW_RATE_MAX_RAD_S,
+    );
+    npc.heading = approachAngle(
+      npc.heading,
+      targetHeading,
+      yawRate * deltaSeconds,
+    );
+  }
+
+  /**
+   * The rendered pose for a car crossing a lane hop: a corner arc spliced
+   * between the two lane lines, replacing the centreline's convergence onto
+   * the shared junction node (#19). `progressM` is arc distance from the
+   * window start on the departing lane. Near-straight hops ride the chord —
+   * which also irons out the node convergence for straight-throughs — while
+   * real turns follow a quadratic Bezier around the point where the two lane
+   * lines would meet, so position and tangent heading sweep together like a
+   * steered car. Returns null when the geometry degenerates; the caller keeps
+   * the centreline pose.
+   */
+  private cornerArcPose(
+    fromLane: NormalizedLane,
+    toLane: NormalizedLane,
+    progressM: number,
+  ): SimulationPose | null {
+    const fromWindow = Math.min(NPC_CORNER_WINDOW_M, fromLane.length / 2);
+    const toWindow = Math.min(NPC_CORNER_WINDOW_M, toLane.length / 2);
+    const total = fromWindow + toWindow;
+    if (total < 1) return null;
+    const t = clamp(progressM / total, 0, 1);
+    const start = this.pointOnLane(fromLane, fromLane.length - fromWindow);
+    const end = this.pointOnLane(toLane, toWindow);
+    const turn = angleDifference(end.heading, start.heading);
+    const chordX = end.x - start.x;
+    const chordZ = end.z - start.z;
+    if (Math.abs(turn) >= NPC_CORNER_MIN_TURN_RAD) {
+      // Apex: where the departing lane line, extended, meets the target lane
+      // line extended backwards — the true corner of the driving path.
+      const startDirX = Math.sin(start.heading);
+      const startDirZ = Math.cos(start.heading);
+      const endDirX = Math.sin(end.heading);
+      const endDirZ = Math.cos(end.heading);
+      const det = startDirX * endDirZ - startDirZ * endDirX;
+      if (Math.abs(det) > 1e-6) {
+        const toStart = (chordX * endDirZ - chordZ * endDirX) / det;
+        const toEnd = (startDirX * chordZ - startDirZ * chordX) / det;
+        if (
+          toStart > 0 &&
+          toEnd > 0 &&
+          toStart <= NPC_CORNER_MAX_APEX_M &&
+          toEnd <= NPC_CORNER_MAX_APEX_M
+        ) {
+          const apexX = start.x + startDirX * toStart;
+          const apexZ = start.z + startDirZ * toStart;
+          const bezierAt = (parameter: number) => {
+            const inverse = 1 - parameter;
+            return {
+              x:
+                inverse * inverse * start.x +
+                2 * inverse * parameter * apexX +
+                parameter * parameter * end.x,
+              z:
+                inverse * inverse * start.z +
+                2 * inverse * parameter * apexZ +
+                parameter * parameter * end.z,
+            };
+          };
+          // Cumulative-length table: progress maps onto the curve at uniform
+          // speed, so the pose advances exactly with the car's travel.
+          const arcLengths = [0];
+          let previous = bezierAt(0);
+          for (let sample = 1; sample <= NPC_CORNER_ARC_SAMPLES; sample += 1) {
+            const current = bezierAt(sample / NPC_CORNER_ARC_SAMPLES);
+            arcLengths.push(
+              arcLengths[sample - 1] +
+                Math.hypot(current.x - previous.x, current.z - previous.z),
+            );
+            previous = current;
+          }
+          const arcLength = arcLengths[NPC_CORNER_ARC_SAMPLES];
+          if (arcLength > 1e-6 && arcLength <= total * NPC_CORNER_MAX_ARC_STRETCH) {
+            const targetArc = t * arcLength;
+            let segment = 1;
+            while (
+              segment < NPC_CORNER_ARC_SAMPLES &&
+              arcLengths[segment] < targetArc
+            ) {
+              segment += 1;
+            }
+            const segmentSpan = arcLengths[segment] - arcLengths[segment - 1];
+            const within =
+              segmentSpan > 1e-9
+                ? (targetArc - arcLengths[segment - 1]) / segmentSpan
+                : 0;
+            const parameter =
+              (segment - 1 + clamp(within, 0, 1)) / NPC_CORNER_ARC_SAMPLES;
+            const inverse = 1 - parameter;
+            const tangentX =
+              inverse * (apexX - start.x) + parameter * (end.x - apexX);
+            const tangentZ =
+              inverse * (apexZ - start.z) + parameter * (end.z - apexZ);
+            const position = bezierAt(parameter);
+            return {
+              x: position.x,
+              z: position.z,
+              heading:
+                Math.abs(tangentX) + Math.abs(tangentZ) > 1e-9
+                  ? Math.atan2(tangentX, tangentZ)
+                  : start.heading,
+            };
+          }
+        }
+      }
+    }
+    const chordLength = Math.hypot(chordX, chordZ);
+    if (chordLength < 1e-6) return null;
+    return {
+      x: start.x + chordX * t,
+      z: start.z + chordZ * t,
+      heading: Math.atan2(chordX, chordZ),
+    };
+  }
+
+  /**
+   * Overlays the corner arc on a cruising car's centreline pose when it is
+   * inside the hop window: the exit half while approaching its deterministic
+   * successor, the entry half just after the hop (tracked by
+   * `cornerFromLaneId`). Falls back to the centreline pose whenever the hop
+   * is unknown, discontinuous, or geometrically degenerate.
+   */
+  private npcCornerPose(
+    npc: NpcInternal,
+    lane: NormalizedLane,
+    fallback: SimulationPose,
+  ): SimulationPose {
+    const exitWindow = Math.min(NPC_CORNER_WINDOW_M, lane.length / 2);
+    const exitStart = lane.length - exitWindow;
+    if (npc.distance >= exitStart) {
+      const next = this.nextLaneForNpc(npc, lane);
+      if (
+        next &&
+        next.id !== lane.id &&
+        this.areLaneEndpointsContinuous(lane, next)
+      ) {
+        return (
+          this.cornerArcPose(lane, next, npc.distance - exitStart) ?? fallback
+        );
+      }
+      return fallback;
+    }
+    if (npc.cornerFromLaneId) {
+      const entryWindow = Math.min(NPC_CORNER_WINDOW_M, lane.length / 2);
+      if (npc.distance < entryWindow) {
+        const previous = this.lanesById.get(npc.cornerFromLaneId);
+        if (previous) {
+          const previousWindow = Math.min(
+            NPC_CORNER_WINDOW_M,
+            previous.length / 2,
+          );
+          return (
+            this.cornerArcPose(
+              previous,
+              lane,
+              previousWindow + npc.distance,
+            ) ?? fallback
+          );
+        }
+      }
+      npc.cornerFromLaneId = undefined;
+    }
+    return fallback;
+  }
+
   private moveNpcs(deltaSeconds: number): void {
     for (const npc of this.npcs) {
       if (!npc.active) continue;
@@ -2875,7 +3121,9 @@ export class SimulationCore {
         npc.targetSpeedMps = 0;
         npc.state = "following";
       }
-      if (!this.advanceNpcAlongLegalRoute(npc, safeTravel)) continue;
+      if (!this.advanceNpcAlongLegalRoute(npc, safeTravel, deltaSeconds)) {
+        continue;
+      }
 
       const activeSourceLane = this.lanesById.get(npc.laneId);
       if (!activeSourceLane) continue;
@@ -2891,7 +3139,11 @@ export class SimulationCore {
             const targetPose = this.pointOnLane(targetLane, targetDistance);
             npc.x = sourcePose.x + (targetPose.x - sourcePose.x) * amount;
             npc.z = sourcePose.z + (targetPose.z - sourcePose.z) * amount;
-            npc.heading = lerpAngle(sourcePose.heading, targetPose.heading, amount);
+            this.chaseNpcHeading(
+              npc,
+              lerpAngle(sourcePose.heading, targetPose.heading, amount),
+              deltaSeconds,
+            );
             continue;
           }
           npc.laneChangeProgress = Math.min(
@@ -2904,7 +3156,11 @@ export class SimulationCore {
           const targetPose = this.pointOnLane(targetLane, targetDistance);
           npc.x = sourcePose.x + (targetPose.x - sourcePose.x) * amount;
           npc.z = sourcePose.z + (targetPose.z - sourcePose.z) * amount;
-          npc.heading = lerpAngle(sourcePose.heading, targetPose.heading, amount);
+          this.chaseNpcHeading(
+            npc,
+            lerpAngle(sourcePose.heading, targetPose.heading, amount),
+            deltaSeconds,
+          );
           if (npc.laneChangeProgress >= 1) {
             npc.laneId = targetLane.id;
             npc.distance = targetDistance;
@@ -2916,9 +3172,10 @@ export class SimulationCore {
           continue;
         }
       }
-      npc.x = sourcePose.x;
-      npc.z = sourcePose.z;
-      npc.heading = sourcePose.heading;
+      const displayPose = this.npcCornerPose(npc, activeSourceLane, sourcePose);
+      npc.x = displayPose.x;
+      npc.z = displayPose.z;
+      this.chaseNpcHeading(npc, displayPose.heading, deltaSeconds);
     }
   }
 
@@ -2996,6 +3253,7 @@ export class SimulationCore {
   private advanceNpcAlongLegalRoute(
     npc: NpcInternal,
     distanceDelta: number,
+    deltaSeconds: number,
   ): boolean {
     let remaining = Math.max(0, distanceDelta);
     let transitions = 0;
@@ -3036,15 +3294,20 @@ export class SimulationCore {
         // while also reporting zero speed creates a visible micro-teleport and
         // can put a waiting vehicle inside a converging predecessor lane.
         npc.distance = Math.min(npc.distance, Math.max(0, lane.length - 0.02));
-        const endPose = this.pointOnLane(lane, npc.distance);
+        const endPose = this.npcCornerPose(
+          npc,
+          lane,
+          this.pointOnLane(lane, npc.distance),
+        );
         npc.x = endPose.x;
         npc.z = endPose.z;
-        npc.heading = endPose.heading;
+        this.chaseNpcHeading(npc, endPose.heading, deltaSeconds);
         npc.speedMps = 0;
         npc.targetSpeedMps = 0;
         npc.state = "following";
         return false;
       }
+      npc.cornerFromLaneId = lane.id;
       npc.laneId = nextLane.id;
       npc.distance = 0;
       npc.transitionCount += 1;

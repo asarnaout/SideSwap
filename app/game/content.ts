@@ -41,6 +41,7 @@ import {
   LONDON_MAP_PACK,
   LONDON_RULE_REFERENCES,
 } from "./londonContent";
+import { buildLaneTrueGeometry } from "./laneConnectors";
 
 export const CONTENT_REVIEWED_ON = "2026-07-10";
 
@@ -174,8 +175,6 @@ const lane = (
   ...(adjacentLaneIds ? { adjacentLaneIds } : {}),
 });
 
-const CONNECTOR_LENGTH_M = 0.5;
-
 const distanceBetweenPoints = (a: WorldPoint, b: WorldPoint): number =>
   Math.hypot(a.x - b.x, a.z - b.z);
 
@@ -198,10 +197,11 @@ const conflictZoneForNode = (nodeId: string): string => {
 };
 
 /**
- * Keeps an authored lateral lane offset all the way to a junction, limiting
- * any convergence on a shared node to a short, explicit connector-sized
- * taper. The logical graph nodes remain shared so existing route IDs and
- * deterministic successor routing stay stable.
+ * Keeps an authored lateral lane offset all the way to a junction, easing any
+ * convergence on a shared node through a sampled S-curve blend (see
+ * `laneConnectors.ts`) so segment headings never jump junction-crossing NPCs
+ * sideways (#19). The logical graph nodes remain shared so existing route IDs
+ * and deterministic successor routing stay stable.
  */
 const laneTrue = (
   id: string,
@@ -217,48 +217,8 @@ const laneTrue = (
   widthM = laneWidthForLane(id),
   localSpeedUnit?: SpeedUnit,
 ): LaneSegment => {
-  const first = establishedPath[0];
-  const last = establishedPath.at(-1)!;
-  const dominantHorizontal =
-    Math.abs(to.position.x - from.position.x) >=
-    Math.abs(to.position.z - from.position.z);
-  const directionX = Math.sign(to.position.x - from.position.x);
-  const directionZ = Math.sign(to.position.z - from.position.z);
-  const startEstablished =
-    distanceBetweenPoints(from.position, first) <= 2
-      ? first
-      : dominantHorizontal
-        ? point(
-            from.position.x + directionX * CONNECTOR_LENGTH_M,
-            first.z,
-          )
-        : point(
-            first.x,
-            from.position.z + directionZ * CONNECTOR_LENGTH_M,
-          );
-  const endEstablished =
-    distanceBetweenPoints(to.position, last) <= 2
-      ? last
-      : dominantHorizontal
-        ? point(to.position.x - directionX * CONNECTOR_LENGTH_M, last.z)
-        : point(last.x, to.position.z - directionZ * CONNECTOR_LENGTH_M);
-  const centerline = [
-    from.position,
-    startEstablished,
-    ...establishedPath,
-    endEstablished,
-    to.position,
-  ];
-  const startConnectorLengthM = distanceBetweenPoints(
-    from.position,
-    startEstablished,
-  );
-  const endConnectorLengthM = distanceBetweenPoints(endEstablished, to.position);
-  const totalLengthM = centerline.slice(1).reduce(
-    (total, current, index) =>
-      total + distanceBetweenPoints(centerline[index], current),
-    0,
-  );
+  const { centerline, startConnectorLengthM, endConnectorLengthM, totalLengthM } =
+    buildLaneTrueGeometry(from.position, to.position, establishedPath);
 
   return {
     id,
@@ -1455,7 +1415,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         // clear the carriageway plus the full 3.4 m concrete sidewalk (not the
         // 1.5 m authored shoulder) before its 11.64 m half-width starts — else the
         // forecourt slab bleeds onto the sidewalk.
-        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 30 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 18.7 },
+        { id: "nyc-gas", kind: "gas_station", anchor: { laneId: "nyc-72-e-1", distanceAlongM: 29 }, footprint: point(14, 9), label: "Broadway Fuel", setbackM: 18.7 },
       ],
       gigVenues: [
         { id: "nyc-v1", kind: "restaurant", anchor: { laneId: "nyc-amst-n-1a", distanceAlongM: 262 }, footprint: point(28, 20), name: "Amsterdam Diner", setbackM: 18 },
@@ -1549,7 +1509,7 @@ export const MAP_PACKS: readonly MapPack[] = [
         // Anchored on the far-side lane of a left-hand-drive approach, so the
         // lot clears the full carriageway plus a 2 m shoulder. Nudged one metre
         // up the approach to keep its near corner off the south split's apron.
-        { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 23 }, footprint: point(14, 9), label: "Grafton Fuel", setbackM: 19 },
+        { id: "mk-gas", kind: "gas_station", anchor: { laneId: "uk-entry-south", distanceAlongM: 22 }, footprint: point(14, 9), label: "Grafton Fuel", setbackM: 19 },
       ],
       gigVenues: [
         { id: "mk-v1", kind: "shop", anchor: { laneId: "uk-dual-n-east", distanceAlongM: 48 }, footprint: point(16, 12), name: "Grafton Retail Park" },

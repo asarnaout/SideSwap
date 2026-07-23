@@ -20,6 +20,7 @@ import type {
   TrafficControlInstallation,
   WorldPoint,
 } from "./types";
+import { buildLaneTrueGeometry } from "./laneConnectors";
 
 export const LONDON_CONTENT_REVIEWED_ON = "2026-07-11";
 
@@ -135,8 +136,6 @@ const roadIdForLane = (id: string): string => {
   return id;
 };
 
-const CONNECTOR_LENGTH_M = 0.5;
-
 const distanceBetweenPoints = (a: WorldPoint, b: WorldPoint): number =>
   Math.hypot(a.x - b.x, a.z - b.z);
 
@@ -162,42 +161,8 @@ const laneTrue = (
   roadId: string = roadIdForLane(id),
   widthM = id.includes("cromwell") || id.includes("queen-gate") ? 3.4 : 3.2,
 ): LaneSegment => {
-  const first = establishedPath[0];
-  const last = establishedPath.at(-1)!;
-  const dominantHorizontal =
-    Math.abs(to.position.x - from.position.x) >=
-    Math.abs(to.position.z - from.position.z);
-  const directionX = Math.sign(to.position.x - from.position.x);
-  const directionZ = Math.sign(to.position.z - from.position.z);
-  const startEstablished =
-    distanceBetweenPoints(from.position, first) <= 2
-      ? first
-      : dominantHorizontal
-        ? point(from.position.x + directionX * CONNECTOR_LENGTH_M, first.z)
-        : point(first.x, from.position.z + directionZ * CONNECTOR_LENGTH_M);
-  const endEstablished =
-    distanceBetweenPoints(to.position, last) <= 2
-      ? last
-      : dominantHorizontal
-        ? point(to.position.x - directionX * CONNECTOR_LENGTH_M, last.z)
-        : point(last.x, to.position.z - directionZ * CONNECTOR_LENGTH_M);
-  const centerline = [
-    from.position,
-    startEstablished,
-    ...establishedPath,
-    endEstablished,
-    to.position,
-  ];
-  const startConnectorLengthM = distanceBetweenPoints(
-    from.position,
-    startEstablished,
-  );
-  const endConnectorLengthM = distanceBetweenPoints(endEstablished, to.position);
-  const totalLengthM = centerline.slice(1).reduce(
-    (total, current, index) =>
-      total + distanceBetweenPoints(centerline[index], current),
-    0,
-  );
+  const { centerline, startConnectorLengthM, endConnectorLengthM, totalLengthM } =
+    buildLaneTrueGeometry(from.position, to.position, establishedPath);
 
   return {
     id,
@@ -285,11 +250,11 @@ const anchor = (laneId: string, distanceAlongM: number): LaneAnchor => ({
   distanceAlongM,
 });
 
-// Distances include the short junction connector before each established
+// Distances include the eased junction connector before each established
 // running lane. These anchors resolve to the requested lane-true starts at
 // approximately (-121.98, -105.8) and (-109.7, -92).
-const LONDON_QUIET_START_DISTANCE_M = 15.35;
-const LONDON_QUEEN_GATE_START_DISTANCE_M = 13.27;
+const LONDON_QUIET_START_DISTANCE_M = 14.29;
+const LONDON_QUEEN_GATE_START_DISTANCE_M = 12.27;
 
 const roadMarking = (
   id: string,
@@ -563,12 +528,16 @@ const cromwellBusLaneCenterline: readonly WorldPoint[] = [
   point(-14, -26.9),
   // The signalled stop line sits at 140 m, square on this straight run.
   CROMWELL_BUS_LANE_MERGE,
-  // Smoothstep across the 3.4 m to the general running line at z = -30.3.
-  point(34.7, -27.25),
-  point(36.4, -28.1),
-  point(38.1, -29.1),
-  point(39.8, -29.95),
-  point(41.5, -30.3),
+  // One continuous smoothstep from the bus line down onto the shared node,
+  // arriving flat (heading east) so the hand-over to the general lane's
+  // connector blend carries no heading jolt (#19). The old tail eased onto
+  // the general running line and then elbowed 1.7 m sideways onto the node
+  // in half a metre, which snapped a departing bus ~106 degrees.
+  point(34.5, -27.28),
+  point(36, -28.22),
+  point(37.5, -29.45),
+  point(39, -30.68),
+  point(40.5, -31.62),
   londonNodes.exhibitionCromwell.position,
 ];
 const cromwellBusLaneLengthM = polylineLengthM(cromwellBusLaneCenterline);
@@ -1225,9 +1194,9 @@ export const LONDON_MAP_PACK: MapPack = {
       // 23.3 m slab can sit flush against the pair of them.
       // setbackM 18.6: the southbound lane sits at x-162.2 and the loop's west
       // shoulder ends at x-169.1, putting the slab's east edge at x≈-169.16.
-      // distanceAlongM 18.16 does the same to the north: Cromwell's south
+      // distanceAlongM 17.09 does the same to the north: Cromwell's south
       // shoulder ends at z-37.1 and the slab's north edge lands at z≈-37.15.
-      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-quiet-south-opposite", distanceAlongM: 18.16 }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
+      { id: "london-gas", kind: "gas_station", anchor: { laneId: "london-quiet-south-opposite", distanceAlongM: 17.09 }, footprint: point(12, 8), label: "Cromwell Fuel", setbackM: 18.6 },
     ],
     gigVenues: [
       { id: "london-v1", kind: "restaurant", anchor: { laneId: "london-cromwell-east-1", distanceAlongM: 44 }, footprint: point(14, 10), name: "Cromwell Cafe" },

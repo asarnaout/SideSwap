@@ -134,13 +134,13 @@ describe("London flagship content", () => {
     if (quietStart?.kind === "player") {
       expect(quietStart.anchor).toEqual({
         laneId: "london-local-west",
-        distanceAlongM: 15.35,
+        distanceAlongM: 14.29,
       });
     }
     if (queenGateStart?.kind === "player") {
       expect(queenGateStart.anchor).toEqual({
         laneId: "london-queen-gate-north-1",
-        distanceAlongM: 13.27,
+        distanceAlongM: 12.27,
       });
     }
   });
