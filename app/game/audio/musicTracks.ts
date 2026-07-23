@@ -29,6 +29,7 @@ export const MUSIC_TRACKS: readonly MusicTrack[] = [
   { id: "nyc-gridline-glow", title: "Gridline Glow", url: `${BASE}/nyc-gridline-glow.mp3`, destinationId: "us-nyc" },
   { id: "nyc-wet-bridge-run", title: "Wet Bridge Run", url: `${BASE}/nyc-wet-bridge-run.mp3`, destinationId: "us-nyc" },
   { id: "nyc-east-river-glide", title: "East River Glide", url: `${BASE}/nyc-east-river-glide.mp3`, destinationId: "us-nyc" },
+  { id: "nyc-tribeca-after-midnight", title: "Tribeca After Midnight", url: `${BASE}/nyc-tribeca-after-midnight.mp3`, destinationId: "us-nyc" },
   { id: "london-exhibition-road-glide-1", title: "Exhibition Road Glide", url: `${BASE}/london-exhibition-road-glide-1.mp3`, destinationId: "uk-london" },
   { id: "london-exhibition-road-glide-2", title: "Exhibition Road Glide (II)", url: `${BASE}/london-exhibition-road-glide-2.mp3`, destinationId: "uk-london" },
   { id: "calais-coast-run-1", title: "Calais Coast Run", url: `${BASE}/calais-coast-run-1.mp3`, destinationId: "fr-calais" },
