@@ -59,6 +59,8 @@ function parseColor(hex: string, fallback: string): Color3 {
 const MODEL_TAIL_GLOW = new Color3(0.32, 0.03, 0.02);
 const MODEL_BRAKE_GLOW = new Color3(0.95, 0.06, 0.03);
 const MODEL_HEAD_GLOW = new Color3(0.5, 0.46, 0.3);
+// Amber turn-indicator lens; emissive so a blink reads against the night palette.
+const MODEL_INDICATOR_AMBER = new Color3(1.0, 0.5, 0.05);
 
 export function readAlbedo(material: Material): Color3 {
   if (material instanceof PBRMaterial) return material.albedoColor;
@@ -338,6 +340,59 @@ export function computePlatePlacements(
     front: make(1, 0.3, Math.PI - yawOffset),
     rear: make(-1, 0.42, -yawOffset),
   };
+}
+
+// --- Turn-signal tail lamps -------------------------------------------------
+//
+// The imported car bodies carry one shared "TailLights" material across both
+// lenses (verified in the glbs), so nothing can brighten a single side. To make
+// a turn signal blink one flank again — signals stopped flashing when the
+// procedural cars that had real per-side lamps were deleted (issue #31) — a thin
+// amber panel is laid over each lens half and setSignal flashes the signalling
+// one. The split runs along the axis that becomes world-lateral after the
+// model's yawOffset, the same yaw-anticipating trick the plates use.
+
+/** Amber flash panel over one tail-lamp half, in the root's pre-yaw/pre-scale space. */
+export interface TailLampPanel {
+  readonly position: Vector3;
+  /** Box width (x) / height (y) / depth (z). */
+  readonly size: Vector3;
+  readonly side: "left" | "right";
+}
+
+/**
+ * Splits a car's measured tail-lamp bounds into a left and a right flash panel.
+ * Each covers ~44% of the lamp width (leaving the centre gap dark), the full
+ * height, and a little more than the lamp depth so the flash sits proud of the
+ * lens. "right" is the driver's right (world +X after the model's yaw), matching
+ * the "-X is left, +X is right" signal convention. Exported for unit testing.
+ */
+export function computeTailLampPanels(
+  tailBounds: { min: Vector3; max: Vector3 },
+  yawOffset: number,
+): readonly TailLampPanel[] {
+  const forward = new Vector3(-Math.sin(yawOffset), 0, Math.cos(yawOffset));
+  const lateral = new Vector3(Math.cos(yawOffset), 0, Math.sin(yawOffset));
+  const size = tailBounds.max.subtract(tailBounds.min);
+  const center = tailBounds.min.add(tailBounds.max).scale(0.5);
+  const lateralExtent =
+    Math.abs(lateral.x) * size.x + Math.abs(lateral.z) * size.z;
+  const forwardExtent =
+    Math.abs(forward.x) * size.x + Math.abs(forward.z) * size.z;
+  // yawOffset is a multiple of 90°, so lateral is exactly ±X or ±Z; size the
+  // axis-aligned box per axis rather than rotating it.
+  const lateralIsX = Math.abs(lateral.x) >= Math.abs(lateral.z);
+  const boxSize = lateralIsX
+    ? new Vector3(lateralExtent * 0.44, size.y * 1.05, forwardExtent * 1.3)
+    : new Vector3(forwardExtent * 1.3, size.y * 1.05, lateralExtent * 0.44);
+  const make = (side: "left" | "right"): TailLampPanel => ({
+    position: center.add(
+      lateral.scale((lateralExtent / 4) * (side === "right" ? 1 : -1)),
+    ),
+    size: boxSize,
+    side,
+  });
+  return [make("left"), make("right")];
 }
 
 // --- Patrol-car light bar + livery -----------------------------------------
@@ -789,6 +844,7 @@ function buildModelVehicle(
   const converted = new Map<Material, StandardMaterial>();
   const ownedMaterials: StandardMaterial[] = [];
   const taillightMaterials: StandardMaterial[] = [];
+  const taillightMeshes: Mesh[] = [];
   const shadowCasters: Mesh[] = [];
 
   for (const mesh of root.getChildMeshes(false)) {
@@ -819,6 +875,12 @@ function buildModelVehicle(
       ownedMaterials.push(standard);
     }
     mesh.material = standard;
+    if (
+      mesh instanceof Mesh &&
+      /taillight|back[_ ]?light|rear[_ ]?light/i.test(source.name)
+    ) {
+      taillightMeshes.push(mesh);
+    }
   }
 
   // Soft blob contact shadow directly under the car so it reads as grounded in
@@ -884,6 +946,47 @@ function buildModelVehicle(
     return plate;
   });
 
+  // Turn signals reuse the tail lamps: the models ship one shared TailLights
+  // material spanning both lenses, so a per-side blink needs its own geometry — a
+  // thin amber panel laid over each lens half, disabled until setSignal flashes
+  // the signalling side (issue #31). Measured from the tail-lamp meshes, in the
+  // same pre-yaw/pre-scale space as the plates, so they scale with the car. One
+  // shared amber material; a panel appearing IS the lit half.
+  const indicatorMaterial = new StandardMaterial(`${name}-signal`, scene);
+  indicatorMaterial.diffuseColor = MODEL_INDICATOR_AMBER;
+  indicatorMaterial.emissiveColor = MODEL_INDICATOR_AMBER;
+  indicatorMaterial.specularColor = Color3.Black();
+  ownedMaterials.push(indicatorMaterial);
+  const leftIndicators: Mesh[] = [];
+  const rightIndicators: Mesh[] = [];
+  if (taillightMeshes.length > 0) {
+    const tailMin = new Vector3(Infinity, Infinity, Infinity);
+    const tailMax = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const mesh of taillightMeshes) {
+      mesh.computeWorldMatrix(true);
+      const box = mesh.getBoundingInfo().boundingBox;
+      tailMin.minimizeInPlace(box.minimumWorld);
+      tailMax.maximizeInPlace(box.maximumWorld);
+    }
+    for (const panel of computeTailLampPanels(
+      { min: tailMin, max: tailMax },
+      config.yawOffset,
+    )) {
+      const lamp = MeshBuilder.CreateBox(
+        `${name}-signal-${panel.side}`,
+        { width: panel.size.x, height: panel.size.y, depth: panel.size.z },
+        scene,
+      );
+      lamp.material = indicatorMaterial;
+      lamp.position.copyFrom(panel.position);
+      lamp.parent = root;
+      lamp.isPickable = false;
+      lamp.receiveShadows = false;
+      lamp.setEnabled(false);
+      (panel.side === "left" ? leftIndicators : rightIndicators).push(lamp);
+    }
+  }
+
   // Patrol kit: roof light bar seated on the measured roof, force markings on
   // the doors. Authored in the same pre-scale space as the plates above.
   const police = appearance.livery
@@ -904,13 +1007,15 @@ function buildModelVehicle(
   return {
     root,
     shadowCasters,
-    leftIndicators: [],
-    rightIndicators: [],
+    leftIndicators,
+    rightIndicators,
     brakeLights: [],
-    setSignal() {
-      // Imported models have no separate indicator geometry, and their single
-      // tail-lamp material can't blink one side; the player's signal state is
-      // shown in the HUD. (A later pass could add modelled corner blinkers.)
+    setSignal(signal, blinkOn) {
+      if (disposed) return;
+      const leftOn = signal === "left" && blinkOn;
+      const rightOn = signal === "right" && blinkOn;
+      for (const lamp of leftIndicators) lamp.setEnabled(leftOn);
+      for (const lamp of rightIndicators) lamp.setEnabled(rightOn);
     },
     setBraking(active) {
       if (disposed) return;

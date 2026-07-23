@@ -12,6 +12,7 @@ import {
   computeLightBarPlacement,
   computeLiveryPanels,
   computePlatePlacements,
+  computeTailLampPanels,
   createVehicleMesh,
   measureRoofPad,
   type RoofPad,
@@ -142,6 +143,74 @@ describe("computePlatePlacements", () => {
     expect(rear.position.z).toBeCloseTo(-2.5, 6); // min.z
     expect(front.width).toBeCloseTo(2 * 0.28, 6); // 0.28 · X-extent
   });
+});
+
+// Issue #31: turn signals stopped flashing when the procedural cars (which had
+// real per-side lamps) were deleted, leaving the model path's setSignal a no-op.
+// The models share one TailLights material across both lenses, so a per-side
+// blink needs its own geometry — a thin amber panel over each lens half.
+// computeTailLampPanels splits the measured tail-lamp bounds; like the plates it
+// must anticipate the model's yawOffset so the van's split runs the right way.
+describe("computeTailLampPanels", () => {
+  // Babylon's left-handed Y rotation, matching the plate test above.
+  const rotateY = (v: Vector3, theta: number) =>
+    new Vector3(
+      v.x * Math.cos(theta) + v.z * Math.sin(theta),
+      v.y,
+      -v.x * Math.sin(theta) + v.z * Math.cos(theta),
+    );
+  const cases = [
+    {
+      // Sedan tail-lamp strip: wide on X, at the rear (low Z), front-first.
+      name: "front-first model (yawOffset 0): lenses split on X",
+      yawOffset: 0,
+      min: new Vector3(-0.8, 0.4, -2.05),
+      max: new Vector3(0.8, 0.75, -1.95),
+    },
+    {
+      // Van imports front-along-+X, so its tail lamps are wide on Z.
+      name: "van (yawOffset -90°): lenses split on Z",
+      yawOffset: -Math.PI / 2,
+      min: new Vector3(-2.05, 0.4, -0.8),
+      max: new Vector3(-1.95, 0.75, 0.8),
+    },
+  ] as const;
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const panels = computeTailLampPanels({ min: c.min, max: c.max }, c.yawOffset);
+      expect(panels).toHaveLength(2);
+      const left = panels.find((p) => p.side === "left")!;
+      const right = panels.find((p) => p.side === "right")!;
+
+      const worldCenter = rotateY(c.min.add(c.max).scale(0.5), c.yawOffset);
+      const worldLeft = rotateY(left.position, c.yawOffset);
+      const worldRight = rotateY(right.position, c.yawOffset);
+      // Right is the driver's right (world +X), left the other flank; the split
+      // is symmetric about the lamp centre.
+      expect(worldRight.x).toBeGreaterThan(worldCenter.x);
+      expect(worldLeft.x).toBeLessThan(worldCenter.x);
+      expect(worldRight.x - worldCenter.x).toBeCloseTo(
+        worldCenter.x - worldLeft.x,
+        6,
+      );
+      // Both stay level with the lamp (no vertical offset).
+      expect(worldLeft.y).toBeCloseTo(worldCenter.y, 6);
+
+      // Each panel is narrower than the full lamp along the split axis, so the
+      // centre gap between the lenses stays dark; both panels share one size.
+      const size = c.max.subtract(c.min);
+      const lateralExtent =
+        Math.abs(Math.cos(c.yawOffset)) * size.x +
+        Math.abs(Math.sin(c.yawOffset)) * size.z;
+      const panelLateral =
+        Math.abs(Math.cos(c.yawOffset)) * left.size.x +
+        Math.abs(Math.sin(c.yawOffset)) * left.size.z;
+      expect(panelLateral).toBeGreaterThan(0);
+      expect(panelLateral).toBeLessThan(lateralExtent);
+      expect(left.size).toEqual(right.size);
+    });
+  }
 });
 
 // --- Patrol light bar -------------------------------------------------------
