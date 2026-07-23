@@ -28,6 +28,12 @@ export interface BuildingPlacementConfig {
    * front is not on local -Z (the glTF-loader-flipped default) set this.
    */
   readonly frontOffset: number;
+  /**
+   * Derotation (radians) baked into the merged master so the model's walls run
+   * parallel to the street grid — for assets authored rotated off their own
+   * axes. Measured from the merged master's wall normals (#143).
+   */
+  readonly squareUpYaw?: number;
 }
 
 // Scales/ground offsets derived from each glb's native bounds (see tools note in
@@ -57,7 +63,10 @@ const PLACEMENTS: Record<string, BuildingPlacementConfig> = {
   "nyc-tenement": { scale: 1.1, groundY: 0, footprintM: 12, frontOffset: Math.PI },
   // Detached houses
   // house-a's door is on local -Z (already faces the street); house-b's is on +Z.
-  "nyc-house-a": { scale: 0.095, groundY: 0.11, footprintM: 11, frontOffset: 0 },
+  // house-a's glb also bakes a 10° yaw (walls sit -10° off the grid in master
+  // space, 100% of wall area) — squared up at master build so the house isn't
+  // skewed against the kerb.
+  "nyc-house-a": { scale: 0.095, groundY: 0.11, footprintM: 11, frontOffset: 0, squareUpYaw: (10 * Math.PI) / 180 },
   "nyc-house-b": { scale: 0.44, groundY: 0, footprintM: 11, frontOffset: Math.PI },
   // Ground-floor retail (storefront on local +Z)
   "nyc-shop-corner": { scale: 7.5, groundY: 0, footprintM: 10, frontOffset: Math.PI },

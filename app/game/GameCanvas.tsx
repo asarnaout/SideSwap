@@ -114,6 +114,7 @@ import {
   vehicleModelUrls,
 } from "./modelLibrary";
 import {
+  buildingPlacementConfig,
   buildingSetUrls,
   isBuildingSetId,
   NYC_VENDORS,
@@ -125,6 +126,7 @@ import {
 import {
   orientMergedFacesOutward,
   recentreMergedMasterXZ,
+  squareUpMergedMaster,
 } from "./buildingWinding";
 import {
   pickStorefrontVariant,
@@ -5200,7 +5202,7 @@ class BabylonGameSession {
    * null (cached) if the glb can't be merged, so the caller uses the multi-mesh
    * path for that url.
    */
-  private getBuildingMaster(url: string): Mesh | null {
+  private getBuildingMaster(url: string, squareUpYaw = 0): Mesh | null {
     const cached = this.buildingMasters.get(url);
     if (cached !== undefined) return cached;
     let master: Mesh | null = null;
@@ -5221,7 +5223,9 @@ class BabylonGameSession {
         // some models inside-out (street-facing walls back-face culled → hollow).
         // Reverse the winding of just those; see buildingWinding.ts.
         orientMergedFacesOutward(master);
-        // Placement slots assume the body is centred on the pivot (#143).
+        // Placement slots assume an axis-aligned body centred on the pivot;
+        // square up rotated assets, then recentre (#143).
+        squareUpMergedMaster(master, squareUpYaw);
         recentreMergedMasterXZ(master);
         master.isVisible = false;
         master.isPickable = false;
@@ -5339,7 +5343,10 @@ class BabylonGameSession {
         const master =
           b.modelId === STOREFRONT_MODEL_ID
             ? this.getStorefrontMaster(b.url, pickStorefrontVariant(b.x, b.z))
-            : this.getBuildingMaster(b.url);
+            : this.getBuildingMaster(
+                b.url,
+                buildingPlacementConfig(b.modelId)?.squareUpYaw ?? 0,
+              );
         if (master) {
           // Fast path: one instance = one scene mesh = one cull check.
           const inst = master.createInstance(`bldg-${block.id}-${placed}`);

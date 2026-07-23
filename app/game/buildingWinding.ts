@@ -69,6 +69,23 @@ export function orientMergedFacesOutward(mesh: Mesh): boolean {
   return false;
 }
 
+/** Yaw error below this (radians) is not worth a buffer rebuild. */
+const SQUARE_UP_EPSILON = 1e-4;
+
+/**
+ * Bakes a yaw into a merged building master to square its walls to the street
+ * grid — for glbs authored rotated off their own axes (nyc-house-a bakes a
+ * 10° yaw, so every instance stood skewed against the kerb, #143). Rotation
+ * has determinant +1 (no winding flip) and the bake rotates normals with the
+ * vertices, so lighting stays correct. Call before recentring: rotating
+ * off-centre geometry about the origin moves its bounding box.
+ */
+export function squareUpMergedMaster(mesh: Mesh, yaw: number): void {
+  if (Math.abs(yaw) > SQUARE_UP_EPSILON) {
+    mesh.bakeTransformIntoVertices(Matrix.RotationY(yaw));
+  }
+}
+
 /** Pivot error below this (native model units) is not worth a buffer rebuild. */
 const RECENTRE_EPSILON = 1e-4;
 

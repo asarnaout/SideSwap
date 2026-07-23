@@ -8,6 +8,7 @@ import {
   NullEngine,
   Scene,
   Vector3,
+  VertexBuffer,
 } from "@babylonjs/core";
 import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
 import { NYC_ENV_MODELS } from "../app/game/buildingCatalog";
@@ -20,6 +21,7 @@ import {
 import {
   orientMergedFacesOutward,
   recentreMergedMasterXZ,
+  squareUpMergedMaster,
 } from "../app/game/buildingWinding";
 import { getMapPack } from "../app/game/content";
 import { hashStringToSeed } from "../app/game/visuals";
@@ -68,10 +70,62 @@ const masterFor = async (model: { id: string; url: string }) => {
   const master = Mesh.MergeMeshes(meshes, true, true, undefined, false, true)!;
   expect(master, model.url).toBeTruthy();
   orientMergedFacesOutward(master);
+  squareUpMergedMaster(
+    master,
+    buildingPlacementConfig(model.id)?.squareUpYaw ?? 0,
+  );
   const offset = recentreMergedMasterXZ(master);
   const built = { master, offset };
   masters.set(model.id, built);
   return built;
+};
+
+/**
+ * Area-weighted dominant wall orientation of a merged master, folded mod 90°
+ * into (-45°, 45°]: 0 = walls parallel to the street grid. Near-horizontal
+ * faces (roofs, ground) are excluded; returns null for meshes with no walls.
+ */
+const dominantWallAngle = (
+  mesh: Mesh,
+): { angleDeg: number; share: number } | null => {
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const idx = mesh.getIndices();
+  if (!pos || !idx) return null;
+  const hist = new Map<number, number>();
+  let total = 0;
+  for (let t = 0; t + 2 < idx.length; t += 3) {
+    const a = idx[t] * 3;
+    const b = idx[t + 1] * 3;
+    const c = idx[t + 2] * 3;
+    const e1x = pos[b] - pos[a];
+    const e1y = pos[b + 1] - pos[a + 1];
+    const e1z = pos[b + 2] - pos[a + 2];
+    const e2x = pos[c] - pos[a];
+    const e2y = pos[c + 1] - pos[a + 1];
+    const e2z = pos[c + 2] - pos[a + 2];
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-9 || Math.hypot(nx, nz) / len < 0.85) continue;
+    let ang = (Math.atan2(nx, nz) * 180) / Math.PI;
+    ang = ((ang % 90) + 90) % 90;
+    if (ang > 45) ang -= 90;
+    const key = Math.round(ang * 4) / 4;
+    hist.set(key, (hist.get(key) ?? 0) + len / 2);
+    total += len / 2;
+  }
+  if (!total) return null;
+  const [modeAng] = [...hist.entries()].sort((x, y) => y[1] - x[1])[0];
+  let wSum = 0;
+  let aSum = 0;
+  for (const [ang, area] of hist) {
+    if (Math.abs(ang - modeAng) <= 1) {
+      wSum += ang * area;
+      aSum += area;
+    }
+  }
+  return { angleDeg: wSum / aSum, share: aSum / total };
 };
 
 describe("merged master pivot centring", () => {
@@ -83,6 +137,25 @@ describe("merged master pivot centring", () => {
       const scale = scaleFor(model)!;
       expect(Math.abs(centre.x) * scale, `${model.id} x-centre (m)`).toBeLessThanOrEqual(0.15);
       expect(Math.abs(centre.z) * scale, `${model.id} z-centre (m)`).toBeLessThanOrEqual(0.15);
+    },
+  );
+
+  // The blind spot the first #143 fix shipped with: positions were pinned but
+  // orientation wasn't, and house-a's glb also bakes a 10° yaw, so every
+  // white house stood skewed against the kerb. squareUpYaw derotates it at
+  // master build; this asserts every placeable model's walls end up parallel
+  // to the street grid. share < 0.5 (round/irregular architecture with no
+  // dominant wall direction) is skipped rather than asserted.
+  it.each(PLACEABLE.map((m) => [m.id, m] as const))(
+    "%s walls run parallel to the street grid",
+    async (_id, model) => {
+      const { master } = await masterFor(model);
+      const walls = dominantWallAngle(master);
+      if (!walls || walls.share < 0.5) return;
+      expect(
+        Math.abs(walls.angleDeg),
+        `${model.id} dominant wall angle ${walls.angleDeg.toFixed(2)}° (share ${(walls.share * 100).toFixed(0)}%)`,
+      ).toBeLessThanOrEqual(0.75);
     },
   );
 
