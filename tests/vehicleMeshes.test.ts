@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import {
+  Matrix,
   NullEngine,
   Scene,
   SceneLoader,
   TransformNode,
   Vector3,
+  VertexBuffer,
 } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import { describe, expect, it } from "vitest";
@@ -12,9 +14,9 @@ import {
   computeLightBarPlacement,
   computeLiveryPanels,
   computePlatePlacements,
-  computeTailLampPanels,
   createVehicleMesh,
   measureRoofPad,
+  splitTailLampIndices,
   type RoofPad,
 } from "../app/game/vehicleMeshes";
 import { VEHICLE_MODEL_REGISTRY } from "../app/game/modelLibrary";
@@ -147,70 +149,148 @@ describe("computePlatePlacements", () => {
 
 // Issue #31: turn signals stopped flashing when the procedural cars (which had
 // real per-side lamps) were deleted, leaving the model path's setSignal a no-op.
-// The models share one TailLights material across both lenses, so a per-side
-// blink needs its own geometry — a thin amber panel over each lens half.
-// computeTailLampPanels splits the measured tail-lamp bounds; like the plates it
-// must anticipate the model's yawOffset so the van's split runs the right way.
-describe("computeTailLampPanels", () => {
-  // Babylon's left-handed Y rotation, matching the plate test above.
-  const rotateY = (v: Vector3, theta: number) =>
-    new Vector3(
-      v.x * Math.cos(theta) + v.z * Math.sin(theta),
-      v.y,
-      -v.x * Math.sin(theta) + v.z * Math.cos(theta),
+// The glbs share one TailLights material across both lenses, so the tail-lamp
+// primitive is split into left/right lens meshes and the signalling side's
+// emissive flashes brake-bright. splitTailLampIndices does the classification;
+// like the plates it must anticipate the model's yawOffset, or the van (which
+// imports front-along-+X) would put both lenses on one flank.
+describe("splitTailLampIndices", () => {
+  // Two separated quads standing in for the two lens clusters.
+  const PAIR_INDICES = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+  const QUAD_A = [0, 1, 2, 0, 2, 3];
+  const QUAD_B = [4, 5, 6, 4, 6, 7];
+  /** Two lens quads centred at -1 / +1 along `axis`, in the vertical plane. */
+  const lensPair = (axis: "x" | "z"): number[] => {
+    const quad = (center: number) =>
+      axis === "x"
+        ? [
+            center - 0.2, 0, 0, center + 0.2, 0, 0,
+            center + 0.2, 0.4, 0, center - 0.2, 0.4, 0,
+          ]
+        : [
+            0, 0, center - 0.2, 0, 0, center + 0.2,
+            0, 0.4, center + 0.2, 0, 0.4, center - 0.2,
+          ];
+    return [...quad(-1), ...quad(1)];
+  };
+
+  it("sends each lens to its flank for a front-first model", () => {
+    const { left, right } = splitTailLampIndices(
+      lensPair("x"),
+      PAIR_INDICES,
+      null,
+      0,
+      0,
     );
-  const cases = [
-    {
-      // Sedan tail-lamp strip: wide on X, at the rear (low Z), front-first.
-      name: "front-first model (yawOffset 0): lenses split on X",
-      yawOffset: 0,
-      min: new Vector3(-0.8, 0.4, -2.05),
-      max: new Vector3(0.8, 0.75, -1.95),
-    },
-    {
-      // Van imports front-along-+X, so its tail lamps are wide on Z.
-      name: "van (yawOffset -90°): lenses split on Z",
-      yawOffset: -Math.PI / 2,
-      min: new Vector3(-2.05, 0.4, -0.8),
-      max: new Vector3(-1.95, 0.75, 0.8),
-    },
-  ] as const;
+    expect(left).toEqual(QUAD_A); // -X is the driver's left
+    expect(right).toEqual(QUAD_B);
+  });
 
-  for (const c of cases) {
-    it(c.name, () => {
-      const panels = computeTailLampPanels({ min: c.min, max: c.max }, c.yawOffset);
-      expect(panels).toHaveLength(2);
-      const left = panels.find((p) => p.side === "left")!;
-      const right = panels.find((p) => p.side === "right")!;
+  it("splits along the axis that becomes lateral after the model's yaw", () => {
+    // A van-like import: lenses spread on Z. With yawOffset -90° the lateral
+    // coordinate is -z, so the z=-1 quad is the driver's right.
+    const vanPair = lensPair("z");
+    const { left, right } = splitTailLampIndices(
+      vanPair,
+      PAIR_INDICES,
+      null,
+      -Math.PI / 2,
+      0,
+    );
+    expect(right).toEqual(QUAD_A);
+    expect(left).toEqual(QUAD_B);
+    // The regression the yaw guard prevents: a naive X split sees every
+    // centroid at x = 0 and starves one flank entirely.
+    const naive = splitTailLampIndices(vanPair, PAIR_INDICES, null, 0, 0);
+    expect(naive.right).toHaveLength(0);
+  });
 
-      const worldCenter = rotateY(c.min.add(c.max).scale(0.5), c.yawOffset);
-      const worldLeft = rotateY(left.position, c.yawOffset);
-      const worldRight = rotateY(right.position, c.yawOffset);
-      // Right is the driver's right (world +X), left the other flank; the split
-      // is symmetric about the lamp centre.
-      expect(worldRight.x).toBeGreaterThan(worldCenter.x);
-      expect(worldLeft.x).toBeLessThan(worldCenter.x);
-      expect(worldRight.x - worldCenter.x).toBeCloseTo(
-        worldCenter.x - worldLeft.x,
-        6,
+  it("carries the mesh's transform into the split space first", () => {
+    const { left, right } = splitTailLampIndices(
+      lensPair("x"),
+      PAIR_INDICES,
+      Matrix.Scaling(-1, 1, 1),
+      0,
+      0,
+    );
+    // Mirrored X swaps the flanks.
+    expect(left).toEqual(QUAD_B);
+    expect(right).toEqual(QUAD_A);
+  });
+
+  it("splits both lenses out of the shipped tail primitives, straight and rotated imports", async () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    for (const key of ["electric-fastback", "delivery-van"] as const) {
+      const config = VEHICLE_MODEL_REGISTRY[key];
+      if (!config) throw new Error(`no registry entry for ${key}`);
+      const glb = readFileSync(`public${config.url}`);
+      const container = await SceneLoader.LoadAssetContainerAsync(
+        `data:model/gltf-binary;base64,${glb.toString("base64")}`,
+        "",
+        scene,
+        null,
+        ".glb",
       );
-      // Both stay level with the lamp (no vertical offset).
-      expect(worldLeft.y).toBeCloseTo(worldCenter.y, 6);
+      const root = new TransformNode(`tail-${key}`, scene);
+      const entries = container.instantiateModelsToScene(undefined, false, {
+        doNotInstantiate: true,
+      });
+      entries.rootNodes[0].parent = root;
+      root.computeWorldMatrix(true);
+      // The same selection + split line buildModelVehicle uses.
+      const tailMeshes = root
+        .getChildMeshes(false)
+        .filter((mesh) =>
+          /taillight|back[_ ]?light|rear[_ ]?light/i.test(
+            mesh.material?.name ?? "",
+          ),
+        );
+      expect(tailMeshes.length, key).toBeGreaterThan(0);
+      const lateral = new Vector3(
+        Math.cos(config.yawOffset),
+        0,
+        Math.sin(config.yawOffset),
+      );
+      const min = new Vector3(Infinity, Infinity, Infinity);
+      const max = new Vector3(-Infinity, -Infinity, -Infinity);
+      for (const mesh of tailMeshes) {
+        mesh.computeWorldMatrix(true);
+        const box = mesh.getBoundingInfo().boundingBox;
+        min.minimizeInPlace(box.minimumWorld);
+        max.maximizeInPlace(box.maximumWorld);
+      }
+      const splitLateral = Vector3.Dot(min.add(max).scale(0.5), lateral);
 
-      // Each panel is narrower than the full lamp along the split axis, so the
-      // centre gap between the lenses stays dark; both panels share one size.
-      const size = c.max.subtract(c.min);
-      const lateralExtent =
-        Math.abs(Math.cos(c.yawOffset)) * size.x +
-        Math.abs(Math.sin(c.yawOffset)) * size.z;
-      const panelLateral =
-        Math.abs(Math.cos(c.yawOffset)) * left.size.x +
-        Math.abs(Math.sin(c.yawOffset)) * left.size.z;
-      expect(panelLateral).toBeGreaterThan(0);
-      expect(panelLateral).toBeLessThan(lateralExtent);
-      expect(left.size).toEqual(right.size);
-    });
-  }
+      let leftTriangles = 0;
+      let rightTriangles = 0;
+      for (const mesh of tailMeshes) {
+        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+        const indices = mesh.getIndices();
+        expect(positions, key).toBeTruthy();
+        expect(indices, key).toBeTruthy();
+        const halves = splitTailLampIndices(
+          positions!,
+          indices!,
+          mesh.getWorldMatrix(),
+          config.yawOffset,
+          splitLateral,
+        );
+        // Nothing lost, nothing duplicated.
+        expect(halves.left.length + halves.right.length, key).toBe(
+          indices!.length,
+        );
+        leftTriangles += halves.left.length / 3;
+        rightTriangles += halves.right.length / 3;
+      }
+      // A lens on each flank — what a naive X split fails on the van.
+      expect(leftTriangles, key).toBeGreaterThan(0);
+      expect(rightTriangles, key).toBeGreaterThan(0);
+      root.dispose(false, false);
+    }
+    scene.dispose();
+    engine.dispose();
+  }, 120_000);
 });
 
 // --- Patrol light bar -------------------------------------------------------
