@@ -8173,6 +8173,24 @@ class BabylonGameSession {
         activeCamera: this.scene.activeCamera?.name ?? null,
         dip: Math.round(this.cutsceneDipOffset * 1000) / 1000,
       });
+      // Rear-lamp glow per side, so QA can assert the signalling lens actually
+      // flashes bright while the other keeps the resting glow, numerically.
+      debugWindow.__sideswapLampDebug = () => {
+        const glow = (meshes?: ReadonlyArray<{ material: unknown }>) => {
+          const material = meshes?.[0]?.material as
+            | { emissiveColor?: { r: number } }
+            | null
+            | undefined;
+          return material?.emissiveColor
+            ? Math.round(material.emissiveColor.r * 100) / 100
+            : null;
+        };
+        return {
+          indicator: this.playerState.indicator,
+          left: glow(this.playerVehicleVisual?.leftIndicators),
+          right: glow(this.playerVehicleVisual?.rightIndicators),
+        };
+      };
       // Walker states + bubble, so the capture harness can assert the crowd
       // moves smoothly and never pops in or out on screen.
       debugWindow.__sideswapCrowdDebug = () => {

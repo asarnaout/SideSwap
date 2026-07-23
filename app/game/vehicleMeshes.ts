@@ -1,6 +1,7 @@
 import {
   Color3,
   DynamicTexture,
+  Matrix,
   Mesh,
   MeshBuilder,
   PBRMaterial,
@@ -8,6 +9,8 @@ import {
   StandardMaterial,
   TransformNode,
   Vector3,
+  VertexBuffer,
+  VertexData,
 } from "@babylonjs/core";
 import type { Material } from "@babylonjs/core";
 import type {
@@ -58,6 +61,9 @@ function parseColor(hex: string, fallback: string): Color3 {
 // resting/braking tail tint so brakes actually read on a modelled car.
 const MODEL_TAIL_GLOW = new Color3(0.32, 0.03, 0.02);
 const MODEL_BRAKE_GLOW = new Color3(0.95, 0.06, 0.03);
+// The turn-signal flash burns hotter than the brake glow so the blink carries
+// at distance, while staying unmistakably red rather than drifting amber.
+const MODEL_SIGNAL_GLOW = new Color3(1.0, 0.2, 0.16);
 const MODEL_HEAD_GLOW = new Color3(0.5, 0.46, 0.3);
 
 export function readAlbedo(material: Material): Color3 {
@@ -338,6 +344,65 @@ export function computePlatePlacements(
     front: make(1, 0.3, Math.PI - yawOffset),
     rear: make(-1, 0.42, -yawOffset),
   };
+}
+
+// --- Turn-signal tail lamps -------------------------------------------------
+//
+// The glb bodies carry one shared "TailLights" material spanning both lenses,
+// so no material tweak can blink a single side. Instead the tail-lamp primitive
+// is split into left/right lens meshes along the model's lateral axis, each
+// with its own clone of the lamp material, and setSignal flashes the signalling
+// side's emissive between the resting glow and the brake-bright red — the
+// backlight itself blinks, with nothing drawn outside the lens (issue #31).
+
+/**
+ * Classifies each triangle of a tail-lamp mesh by which flank of the vehicle
+ * its centroid lies on, in the model root's pre-yaw/pre-scale space, and
+ * returns an index buffer per side. `worldMatrix` carries the mesh's vertices
+ * into that space (null = already there); `yawOffset` picks the local axis that
+ * becomes world-lateral once the root is spun (the same derivation the plates
+ * use — a naive X split leaves the van, which imports front-along-+X, with both
+ * lenses on one side); `splitLateral` is that axis' coordinate of the split
+ * line, normally the tail assembly's lateral midpoint. "right" is the driver's
+ * right (world +X after the model's yaw). Exported for unit testing.
+ */
+export function splitTailLampIndices(
+  positions: ArrayLike<number>,
+  indices: ArrayLike<number>,
+  worldMatrix: Matrix | null,
+  yawOffset: number,
+  splitLateral: number,
+): { left: number[]; right: number[] } {
+  const lateralX = Math.cos(yawOffset);
+  const lateralZ = Math.sin(yawOffset);
+  const left: number[] = [];
+  const right: number[] = [];
+  const centroid = new Vector3();
+  const transformed = new Vector3();
+  for (let triangle = 0; triangle + 2 < indices.length; triangle += 3) {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (let corner = 0; corner < 3; corner += 1) {
+      const vertex = indices[triangle + corner] * 3;
+      x += positions[vertex];
+      y += positions[vertex + 1];
+      z += positions[vertex + 2];
+    }
+    centroid.set(x / 3, y / 3, z / 3);
+    let point = centroid;
+    if (worldMatrix) {
+      Vector3.TransformCoordinatesToRef(centroid, worldMatrix, transformed);
+      point = transformed;
+    }
+    const lateral = point.x * lateralX + point.z * lateralZ;
+    (lateral > splitLateral ? right : left).push(
+      indices[triangle],
+      indices[triangle + 1],
+      indices[triangle + 2],
+    );
+  }
+  return { left, right };
 }
 
 // --- Patrol-car light bar + livery -----------------------------------------
@@ -789,6 +854,7 @@ function buildModelVehicle(
   const converted = new Map<Material, StandardMaterial>();
   const ownedMaterials: StandardMaterial[] = [];
   const taillightMaterials: StandardMaterial[] = [];
+  const taillightMeshes: Mesh[] = [];
   const shadowCasters: Mesh[] = [];
 
   for (const mesh of root.getChildMeshes(false)) {
@@ -819,6 +885,12 @@ function buildModelVehicle(
       ownedMaterials.push(standard);
     }
     mesh.material = standard;
+    if (
+      mesh instanceof Mesh &&
+      /taillight|back[_ ]?light|rear[_ ]?light/i.test(source.name)
+    ) {
+      taillightMeshes.push(mesh);
+    }
   }
 
   // Soft blob contact shadow directly under the car so it reads as grounded in
@@ -884,6 +956,99 @@ function buildModelVehicle(
     return plate;
   });
 
+  // The turn signal is the backlight itself: split each tail-lamp primitive
+  // (one shared material across both lenses) into left/right lens meshes with
+  // their own material clones, so setSignal can flash one side's emissive
+  // between brake-bright red and the resting glow (issue #31). Triangles are
+  // classified in the same pre-yaw/pre-scale space as the plates, so the split
+  // is correct whatever the model's import orientation, and the lenses keep
+  // their exact silhouette — nothing is drawn outside the lamp.
+  const leftIndicators: Mesh[] = [];
+  const rightIndicators: Mesh[] = [];
+  const sideLampMaterials = {
+    left: [] as StandardMaterial[],
+    right: [] as StandardMaterial[],
+  };
+  const splitAwayMaterials = new Set<StandardMaterial>();
+  if (taillightMeshes.length > 0) {
+    const lateralAxis = new Vector3(
+      Math.cos(config.yawOffset),
+      0,
+      Math.sin(config.yawOffset),
+    );
+    const tailMin = new Vector3(Infinity, Infinity, Infinity);
+    const tailMax = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const mesh of taillightMeshes) {
+      mesh.computeWorldMatrix(true);
+      const box = mesh.getBoundingInfo().boundingBox;
+      tailMin.minimizeInPlace(box.minimumWorld);
+      tailMax.maximizeInPlace(box.maximumWorld);
+    }
+    const splitLateral = Vector3.Dot(
+      tailMin.add(tailMax).scale(0.5),
+      lateralAxis,
+    );
+    for (const mesh of taillightMeshes) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+      const meshIndices = mesh.getIndices();
+      const sourceMaterial = mesh.material;
+      if (!positions || !meshIndices || !(sourceMaterial instanceof StandardMaterial)) {
+        continue;
+      }
+      const halves = splitTailLampIndices(
+        positions,
+        meshIndices,
+        mesh.getWorldMatrix(),
+        config.yawOffset,
+        splitLateral,
+      );
+      const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
+      const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+      for (const side of ["left", "right"] as const) {
+        const sideIndices = halves[side];
+        if (!sideIndices.length) continue;
+        const lens = new Mesh(`${name}-taillight-${side}`, scene);
+        lens.parent = mesh.parent;
+        lens.position.copyFrom(mesh.position);
+        if (mesh.rotationQuaternion) {
+          lens.rotationQuaternion = mesh.rotationQuaternion.clone();
+        } else {
+          lens.rotation.copyFrom(mesh.rotation);
+        }
+        lens.scaling.copyFrom(mesh.scaling);
+        // The glTF root carries a handedness mirror, compensated on loaded
+        // meshes by this override; without it the lens winds inside-out and
+        // backface-culls to a hole where the lamp was.
+        lens.overrideMaterialSideOrientation = mesh.overrideMaterialSideOrientation;
+        // The full vertex buffers with a per-side index buffer: the unused
+        // verts are idle, and the lens triangles land exactly where they were.
+        const data = new VertexData();
+        data.positions = positions;
+        if (normals) data.normals = normals;
+        if (uvs) data.uvs = uvs;
+        data.indices = sideIndices;
+        data.applyToMesh(lens);
+        const lampMaterial = sourceMaterial.clone(`${name}-taillight-${side}`);
+        lampMaterial.emissiveColor = MODEL_TAIL_GLOW;
+        lens.material = lampMaterial;
+        lens.isPickable = false;
+        ownedMaterials.push(lampMaterial);
+        sideLampMaterials[side].push(lampMaterial);
+        (side === "left" ? leftIndicators : rightIndicators).push(lens);
+        shadowCasters.push(lens);
+      }
+      splitAwayMaterials.add(sourceMaterial);
+      const shadowIndex = shadowCasters.indexOf(mesh);
+      if (shadowIndex >= 0) shadowCasters.splice(shadowIndex, 1);
+      mesh.dispose();
+    }
+  }
+  // Tail materials still on unsplit meshes (a model whose lamp data was
+  // unreadable) keep the plain brighten-on-brake behaviour.
+  const residualTailMaterials = taillightMaterials.filter(
+    (material) => !splitAwayMaterials.has(material),
+  );
+
   // Patrol kit: roof light bar seated on the measured roof, force markings on
   // the doors. Authored in the same pre-scale space as the plates above.
   const police = appearance.livery
@@ -901,24 +1066,47 @@ function buildModelVehicle(
 
   let disposed = false;
   let detailVisible = true;
+  // One rear-lamp state feeds both controls: the signalling side flashes
+  // between brake-bright and the resting glow on the caller's blink cadence,
+  // while the other side simply follows the brake pedal — so braking never
+  // drowns a signal; the blinking lens reads against a solid-bright opposite.
+  let braking = false;
+  let activeSignal: VehicleMeshSignal = "off";
+  let signalLit = false;
+  const applyRearLamps = () => {
+    for (const side of ["left", "right"] as const) {
+      const signalling = activeSignal === side;
+      const glow = signalling
+        ? signalLit
+          ? MODEL_SIGNAL_GLOW
+          : MODEL_TAIL_GLOW
+        : braking
+          ? MODEL_BRAKE_GLOW
+          : MODEL_TAIL_GLOW;
+      for (const material of sideLampMaterials[side]) {
+        material.emissiveColor = glow;
+      }
+    }
+    for (const material of residualTailMaterials) {
+      material.emissiveColor = braking ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
+    }
+  };
   return {
     root,
     shadowCasters,
-    leftIndicators: [],
-    rightIndicators: [],
+    leftIndicators,
+    rightIndicators,
     brakeLights: [],
-    setSignal() {
-      // Imported models have no separate indicator geometry, and their single
-      // tail-lamp material can't blink one side; the player's signal state is
-      // shown in the HUD. (A later pass could add modelled corner blinkers.)
+    setSignal(signal, blinkOn) {
+      if (disposed) return;
+      activeSignal = signal;
+      signalLit = blinkOn;
+      applyRearLamps();
     },
     setBraking(active) {
       if (disposed) return;
-      // No toggleable brake mesh on the models — brighten their own tail-lamp
-      // material instead, which reads as real brake lights.
-      for (const material of taillightMaterials) {
-        material.emissiveColor = active ? MODEL_BRAKE_GLOW : MODEL_TAIL_GLOW;
-      }
+      braking = active;
+      applyRearLamps();
     },
     setBeacon(red, blue) {
       if (disposed) return;
