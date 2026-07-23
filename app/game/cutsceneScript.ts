@@ -270,22 +270,28 @@ export function buildBoardScript(
 }
 
 /**
- * The passenger steps out of the rear kerb-side door and wanders to the kerb
- * spot (or a few metres kerbward when the stop has none) before despawning.
+ * The passenger steps out of the rear kerb-side door and walks a few metres
+ * straight off that same kerb side before despawning.
+ *
+ * The target is deliberately car-relative rather than a fixed venue kerb spot.
+ * The player parks wherever they stop, at any heading, so a fixed world point
+ * can land across the car in its local frame — which made the passenger detour
+ * back around the body ("walks away, then comes back"). Walking straight out
+ * the door's own side is always a clean walk-off that never crosses the car,
+ * whatever the park, and the scene cuts as soon as they have stepped clear.
  */
 export function buildExitScript(
   car: CutsceneCarPose,
   trafficSide: TrafficSide,
-  kerbSpot: WorldPoint | null,
 ): CutsceneStep[] {
   const doorPoint = rearKerbDoorPoint(car, trafficSide);
   const lat = kerbLat(trafficSide);
-  const fallback = toWorld(
+  const away = toWorld(
     car,
     REAR_DOOR_FORWARD_M,
     lat + (lat >= 0 ? EXIT_WANDER_M : -EXIT_WANDER_M),
   );
-  const away = routeAroundCar(car, doorPoint, kerbSpot ?? fallback);
+  const walk = [doorPoint, away];
   return [
     {
       action: "show",
@@ -297,8 +303,8 @@ export function buildExitScript(
     },
     {
       action: "walk",
-      path: away,
-      seconds: legSeconds(away, WALK_SPEED_MPS),
+      path: walk,
+      seconds: legSeconds(walk, WALK_SPEED_MPS),
       sound: "door_close",
     },
     { action: "hide", seconds: 0.2 },
