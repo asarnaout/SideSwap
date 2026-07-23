@@ -51,6 +51,47 @@ export function pickGigKind(seed: number): GigKind {
   return hashToUnit(seed * 2 + 0x1f) < 0.4 ? "passenger" : "delivery";
 }
 
+/**
+ * The longest run of one kind a drive will serve before the next gig is forced
+ * to the other kind.
+ *
+ * `pickGigKind` is a pure hash of the seed, and a drive draws consecutive seeds
+ * (`trafficSeed`, `+1`, `+2`, …), so where a city's `trafficSeed` happens to
+ * land decides its opening run. New York's first eight seeds all hash to
+ * deliveries, so a player could finish half a dozen gigs without ever being
+ * offered a fare — the rideshare mechanic looks absent when it is only buried.
+ * Capping the streak guarantees variety, and a passenger fare within the first
+ * `MAX_SAME_KIND_STREAK + 1` gigs, in every city.
+ */
+export const MAX_SAME_KIND_STREAK = 2;
+
+/**
+ * Like `pickGigKind`, but forces the opposite kind once the last
+ * `MAX_SAME_KIND_STREAK` *served* gigs were all the kind this seed would
+ * naturally produce.
+ *
+ * `recentKinds` is the tail of kinds already offered this drive, newest last;
+ * only the final `MAX_SAME_KIND_STREAK` matter. Pass the kinds this function
+ * returned (not the raw `pickGigKind` draws) so a forced flip counts toward the
+ * next streak — that is what bounds every served run to `MAX_SAME_KIND_STREAK`.
+ * Pure and deterministic: the same `(seed, recentKinds)` always yields the same
+ * kind, so a drive replays identically from its `trafficSeed`.
+ */
+export function pickGigKindAvoidingStreak(
+  seed: number,
+  recentKinds: readonly GigKind[],
+): GigKind {
+  const natural = pickGigKind(seed);
+  const streak = recentKinds.slice(-MAX_SAME_KIND_STREAK);
+  if (
+    streak.length === MAX_SAME_KIND_STREAK &&
+    streak.every((kind) => kind === natural)
+  ) {
+    return natural === "passenger" ? "delivery" : "passenger";
+  }
+  return natural;
+}
+
 /** Venue kinds a meal or a parcel can actually originate from. */
 const PICKUP_SOURCE_KINDS = new Set(["restaurant", "shop", "depot"]);
 

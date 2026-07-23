@@ -54,10 +54,11 @@ import { useDriveMusic } from "./game/audio/musicPlayer";
 import {
   generateGigFromPools,
   gigTarget,
-  pickGigKind,
+  MAX_SAME_KIND_STREAK,
+  pickGigKindAvoidingStreak,
   selectGigPools,
 } from "./game/gigs";
-import type { Gig, GigVenuePosition } from "./game/gigs";
+import type { Gig, GigKind, GigVenuePosition } from "./game/gigs";
 import { streetAddressesForMap } from "./game/streetAddresses";
 import type {
   CameraMode,
@@ -230,33 +231,44 @@ function resolveGigAddresses(
 }
 
 /**
- * Builds the next gig for a drive: picks delivery vs. passenger deterministically
- * from the seed, then draws from the matching fare table so rides pay their
- * premium. Returns null when the map has too few places to work with. Which
- * places each end may use is `selectGigPools`' call.
+ * Builds the next gig for a drive. The kind (delivery vs. passenger) is a
+ * deterministic hash of the seed, capped against long single-kind runs by
+ * `pickGigKindAvoidingStreak`: a drive draws consecutive seeds, and some
+ * cities' `trafficSeed` hashes to a long opening run of one kind — NYC's first
+ * eight seeds are all deliveries — so without the cap a player could finish half
+ * a dozen gigs before ever being offered a fare. `recentKinds` is the tail of
+ * kinds already served this drive. Draws from the matching fare table so rides
+ * pay their premium. Returns null only when the map has too few places for
+ * either kind; a forced kind that cannot generate on this map falls back to the
+ * other, so the streak cap never strands the player without a gig.
  */
 function nextGigFor(
   map: ReturnType<typeof getMapPack>,
   country: CountryProfile,
   seed: number,
+  recentKinds: readonly GigKind[],
 ): Gig | null {
-  const kind = pickGigKind(seed);
-  const fare =
-    kind === "passenger"
-      ? PASSENGER_FARE_BY_COUNTRY[country.id]
-      : GIG_FARE_BY_COUNTRY[country.id];
-  const { pickups, dropoffs } = selectGigPools(
-    resolveGigVenues(map),
-    resolveGigAddresses(map),
-    kind,
-  );
-  return generateGigFromPools(
-    pickups,
-    dropoffs,
-    fare,
-    country.currency.code,
-    seed,
-    kind,
+  const venues = resolveGigVenues(map);
+  const addresses = resolveGigAddresses(map);
+  const buildGig = (kind: GigKind): Gig | null => {
+    const fare =
+      kind === "passenger"
+        ? PASSENGER_FARE_BY_COUNTRY[country.id]
+        : GIG_FARE_BY_COUNTRY[country.id];
+    const { pickups, dropoffs } = selectGigPools(venues, addresses, kind);
+    return generateGigFromPools(
+      pickups,
+      dropoffs,
+      fare,
+      country.currency.code,
+      seed,
+      kind,
+    );
+  };
+  const preferred = pickGigKindAvoidingStreak(seed, recentKinds);
+  return (
+    buildGig(preferred) ??
+    buildGig(preferred === "passenger" ? "delivery" : "passenger")
   );
 }
 
@@ -302,6 +314,11 @@ export default function SideSwapApp() {
   const lastPoseRef = useRef<{ x: number; z: number } | null>(null);
   const [gig, setGig] = useState<Gig | null>(null);
   const gigSeedRef = useRef(1);
+  // The kinds served so far this drive, newest last, capped to the streak
+  // window. Threaded into nextGigFor so no drive opens on a long run of one
+  // kind — NYC's trafficSeed otherwise hashes to eight deliveries before the
+  // first fare. Reset when a drive starts.
+  const gigKindHistoryRef = useRef<GigKind[]>([]);
   const paidGigRef = useRef<string | null>(null);
   const [fineToast, setFineToast] = useState<{
     amount: number;
@@ -657,7 +674,19 @@ export default function SideSwapApp() {
     setProgress(settled);
     saveProgress(settled);
     gigSeedRef.current += 1;
-    setGig(nextGigFor(runtimeMap, driveCountry, gigSeedRef.current));
+    const nextGig = nextGigFor(
+      runtimeMap,
+      driveCountry,
+      gigSeedRef.current,
+      gigKindHistoryRef.current,
+    );
+    if (nextGig) {
+      gigKindHistoryRef.current = [
+        ...gigKindHistoryRef.current,
+        nextGig.kind,
+      ].slice(-MAX_SAME_KIND_STREAK);
+    }
+    setGig(nextGig);
   }, [gig, progress, driveCountry, runtimeMap]);
 
   const chooseDestination = (id: DestinationId) => {
@@ -704,14 +733,18 @@ export default function SideSwapApp() {
     lastPoseRef.current = null;
     const nextFreeDrive = getFreeDrive(scenarioId);
     gigSeedRef.current = nextFreeDrive.trafficSeed;
+    gigKindHistoryRef.current = [];
     paidGigRef.current = null;
-    setGig(
-      nextGigFor(
-        getMapPack(nextFreeDrive.mapId),
-        getCountryProfile(nextCountryId),
-        gigSeedRef.current,
-      ),
+    const firstGig = nextGigFor(
+      getMapPack(nextFreeDrive.mapId),
+      getCountryProfile(nextCountryId),
+      gigSeedRef.current,
+      gigKindHistoryRef.current,
     );
+    if (firstGig) {
+      gigKindHistoryRef.current = [firstGig.kind];
+    }
+    setGig(firstGig);
     setHud(null);
     setPaused(false);
     carConditionRef.current = FULL_CONDITION_PCT;
