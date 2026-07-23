@@ -167,8 +167,8 @@ const FRONTAGE_PROBE_M = [12, 15, 18, 22] as const;
 /**
  * Clearance from each end of a lane. Lanes meet at intersections, and a drop-off
  * in the middle of a junction is both unreachable and unreadable. Deliberately
- * far larger than the authored `connectorRanges`, which are only 0.5 m tapers
- * and would let an address sit right on the crossing.
+ * far larger than the authored `connectorRanges`, which are only ~2 m node
+ * spans and would let an address sit right on the crossing.
  */
 export const JUNCTION_CLEARANCE_M = 32;
 
