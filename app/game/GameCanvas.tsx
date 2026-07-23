@@ -3020,6 +3020,16 @@ class BabylonGameSession {
     string,
     { x: number; z: number; facing: number }
   >();
+  /**
+   * The on-road stop point for each gig stop: the lane anchor a car actually
+   * drives to (the arrival radius is centred here), as opposed to the kerb spot
+   * 4.5 m off it where the rider waits. A rider-pickup beacon uses this so the
+   * post marks the road and not the customer standing on the kerb.
+   */
+  private readonly gigVenueRoadStop = new Map<
+    string,
+    { x: number; z: number }
+  >();
   private riderVisual: ActorVisual | null = null;
   private riderNode: TransformNode | null = null;
   private riderVenuePlaced: string | null = null;
@@ -3039,6 +3049,7 @@ class BabylonGameSession {
   private gigMarkerNode: TransformNode | null = null;
   private gigMarkerPlaced: string | null = null;
   private gigMarkerCarrying = false;
+  private gigMarkerRidePickup = false;
   /** Venues/stations shown on their procedural box because the glb had not
    * preloaded yet; upgraded to models once preload finishes. */
   private readonly deferredProps: {
@@ -3948,14 +3959,11 @@ class BabylonGameSession {
         break;
       }
       case "exit": {
-        const spot = request.venueId
-          ? this.gigVenueCurbside.get(request.venueId)
-          : undefined;
-        script = buildExitScript(
-          car,
-          this.options.trafficSide,
-          spot ? { x: spot.x, z: spot.z } : null,
-        );
+        // The passenger always walks straight off the car's own kerb side, so
+        // the scene needs nothing but the car pose. Routing to a fixed venue
+        // spot instead sent them around the car on an off-square park (#128-era
+        // "walks away then comes back"); a car-relative walk-off can't.
+        script = buildExitScript(car, this.options.trafficSide);
         passengerSeed = request.actorSeedId ?? request.venueId ?? null;
         break;
       }
@@ -4252,16 +4260,33 @@ class BabylonGameSession {
   private syncGigMarker() {
     const target = this.options.gigStopId ?? null;
     const carrying = this.options.gigStopCarrying ?? false;
-    if (target === this.gigMarkerPlaced && carrying === this.gigMarkerCarrying) {
+    // A rider pickup is the one stop with a person standing on the kerb spot
+    // (riderVenueId is set only then, and only at the pickup). Planting the post
+    // there sits it on the customer and the player parks on them, so the marker
+    // moves onto the road stop instead. Every other stop — deliveries, and the
+    // drop-off — has nobody waiting, so the kerb post reads fine.
+    const ridePickup = target !== null && this.options.riderVenueId === target;
+    if (
+      target === this.gigMarkerPlaced &&
+      carrying === this.gigMarkerCarrying &&
+      ridePickup === this.gigMarkerRidePickup
+    ) {
       return;
     }
     this.gigMarkerNode?.dispose(false, true);
     this.gigMarkerNode = null;
     this.gigMarkerPlaced = target;
     this.gigMarkerCarrying = carrying;
+    this.gigMarkerRidePickup = ridePickup;
     if (!target) return;
-    const spot = this.gigVenueCurbside.get(target);
-    if (!spot) return;
+    const curb = this.gigVenueCurbside.get(target);
+    if (!curb) return;
+    const roadStop = ridePickup ? this.gigVenueRoadStop.get(target) : undefined;
+    // The head keeps the kerb-facing orientation either way; only the post's
+    // ground position moves out to the lane for a rider pickup.
+    const spot = roadStop
+      ? { x: roadStop.x, z: roadStop.z, facing: curb.facing }
+      : curb;
 
     const tint = carrying
       ? new Color3(0.95, 0.78, 0.35)
@@ -6511,6 +6536,8 @@ class BabylonGameSession {
         z: pose.z - Math.sin(pose.heading) * 4.5,
         facing: Math.atan2(-Math.cos(pose.heading), Math.sin(pose.heading)),
       });
+      // ...and the car pulls up on the lane anchor itself, 4.5 m off the rider.
+      this.gigVenueRoadStop.set(venue.id, { x: pose.x, z: pose.z });
       // The delivery errand's "front door": the measured model's road-facing
       // face centre (same holder-frame convention as the venue collider:
       // right carries model X, forward carries model Z), or the near edge of
@@ -6575,6 +6602,9 @@ class BabylonGameSession {
         z: address.kerbZ,
         facing: address.facing,
       });
+      // The lane point the address was derived from — the car's pull-up spot,
+      // off the kerb where a picked-up rider stands.
+      this.gigVenueRoadStop.set(address.id, { x: address.x, z: address.z });
       // The address's "front door" is its building line: the kerb spot pushed
       // across the pavement, away from the road (facing looks back across the
       // carriageway).

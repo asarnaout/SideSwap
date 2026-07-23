@@ -3,11 +3,14 @@ import {
   advanceGig,
   generateGig,
   generateGigFromPools,
+  MAX_SAME_KIND_STREAK,
   MIN_GIG_DISTANCE_M,
   gigTarget,
   pickGigKind,
+  pickGigKindAvoidingStreak,
   selectGigPools,
 } from "../app/game/gigs";
+import type { GigKind } from "../app/game/gigs";
 
 const venues = [
   { id: "a", name: "Alpha", kind: "shop", x: 0, z: 0 },
@@ -150,5 +153,129 @@ describe("gig pickup / drop-off pools", () => {
     expect(generateGigFromPools(only, only, fare, "GBP", 1)).toBeNull();
     expect(generateGigFromPools([], addresses, fare, "GBP", 1)).toBeNull();
     expect(generateGigFromPools(venues, [], fare, "GBP", 1)).toBeNull();
+  });
+});
+
+/**
+ * The gig kind is a pure hash of the seed, and a drive draws consecutive seeds,
+ * so where a city's trafficSeed lands decides its opening run: NYC's first eight
+ * seeds all hash to deliveries, hiding the rideshare mechanic for the first
+ * handful of gigs. These pin down the streak cap that fixes that.
+ */
+describe("gig kind anti-streak", () => {
+  // Replays a drive's kind sequence the way the app does: consecutive seeds
+  // from a base, each kind chosen against the tail of kinds already served.
+  const serveKinds = (baseSeed: number, count: number): GigKind[] => {
+    const served: GigKind[] = [];
+    for (let index = 0; index < count; index += 1) {
+      served.push(
+        pickGigKindAvoidingStreak(
+          baseSeed + index,
+          served.slice(-MAX_SAME_KIND_STREAK),
+        ),
+      );
+    }
+    return served;
+  };
+
+  const longestRun = (kinds: readonly GigKind[]): number => {
+    let longest = 0;
+    let run = 0;
+    let previous: GigKind | null = null;
+    for (const kind of kinds) {
+      run = kind === previous ? run + 1 : 1;
+      previous = kind;
+      if (run > longest) longest = run;
+    }
+    return longest;
+  };
+
+  const firstSeedWith = (kind: GigKind): number => {
+    for (let seed = 1; seed <= 500; seed += 1) {
+      if (pickGigKind(seed) === kind) return seed;
+    }
+    throw new Error(`no seed produced ${kind}`);
+  };
+
+  it("defers to the raw hash until the streak cap is reached", () => {
+    for (let seed = 1; seed <= 40; seed += 1) {
+      expect(pickGigKindAvoidingStreak(seed, [])).toBe(pickGigKind(seed));
+      expect(
+        pickGigKindAvoidingStreak(
+          seed,
+          Array<GigKind>(MAX_SAME_KIND_STREAK - 1).fill("delivery"),
+        ),
+        `seed ${seed}`,
+      ).toBe(pickGigKind(seed));
+    }
+  });
+
+  it("forces the opposite kind after a full streak of that kind", () => {
+    const deliverySeed = firstSeedWith("delivery");
+    const passengerSeed = firstSeedWith("passenger");
+    expect(
+      pickGigKindAvoidingStreak(
+        deliverySeed,
+        Array<GigKind>(MAX_SAME_KIND_STREAK).fill("delivery"),
+      ),
+    ).toBe("passenger");
+    expect(
+      pickGigKindAvoidingStreak(
+        passengerSeed,
+        Array<GigKind>(MAX_SAME_KIND_STREAK).fill("passenger"),
+      ),
+    ).toBe("delivery");
+    // A streak of the *other* kind is no reason to flip.
+    expect(
+      pickGigKindAvoidingStreak(
+        deliverySeed,
+        Array<GigKind>(MAX_SAME_KIND_STREAK).fill("passenger"),
+      ),
+    ).toBe("delivery");
+  });
+
+  it("never serves a run longer than the cap", () => {
+    for (const base of [1, 500, 2101, 2201, 2301, 2401, 9999]) {
+      expect(
+        longestRun(serveKinds(base, 4000)),
+        `base ${base}`,
+      ).toBeLessThanOrEqual(MAX_SAME_KIND_STREAK);
+    }
+  });
+
+  it("offers a passenger fare within the opening few gigs from any seed", () => {
+    // NYC (trafficSeed 2101) used to serve eight deliveries before the first
+    // fare; every base now yields a ride by gig #(MAX_SAME_KIND_STREAK + 1).
+    expect(serveKinds(2101, MAX_SAME_KIND_STREAK + 1)).toContain("passenger");
+    for (const cityBase of [2101, 2201, 2301, 2401]) {
+      const firstRide = serveKinds(
+        cityBase,
+        MAX_SAME_KIND_STREAK + 1,
+      ).indexOf("passenger");
+      expect(firstRide, `city seed ${cityBase}`).toBeGreaterThanOrEqual(0);
+      expect(firstRide, `city seed ${cityBase}`).toBeLessThanOrEqual(
+        MAX_SAME_KIND_STREAK,
+      );
+    }
+    for (let base = 1; base <= 500; base += 1) {
+      expect(
+        serveKinds(base, MAX_SAME_KIND_STREAK + 1),
+        `base ${base}`,
+      ).toContain("passenger");
+    }
+  });
+
+  it("is deterministic — a drive replays identically from its seed", () => {
+    expect(serveKinds(2101, 60)).toEqual(serveKinds(2101, 60));
+  });
+
+  it("keeps both kinds well represented over a long drive", () => {
+    const served = serveKinds(2101, 20000);
+    const passengerShare =
+      served.filter((kind) => kind === "passenger").length / served.length;
+    // The raw hash is ~40% passenger; capping the majority (delivery) streaks
+    // pulls it up toward — but not to — an even split (~47%).
+    expect(passengerShare).toBeGreaterThan(0.42);
+    expect(passengerShare).toBeLessThan(0.52);
   });
 });

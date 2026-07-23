@@ -167,26 +167,28 @@ describe("buildBoardScript", () => {
 });
 
 describe("buildExitScript", () => {
-  it("steps out kerb-side, dips the car, and walks to the kerb spot", () => {
+  it("steps out the rear kerb-side door and dips the car", () => {
     const car = CAR_POSES[1];
-    const kerbSpot = { x: car.x + 1, z: car.z - 6 };
-    const script = buildExitScript(car, "right", kerbSpot);
+    const script = buildExitScript(car, "right");
     expect(script[0]).toMatchObject({ action: "show", carDip: true });
     expect(script[0].path?.[0]).toEqual(rearKerbDoorPoint(car, "right"));
-    const walk = script[1];
-    expect(walk.path?.[walk.path!.length - 1]).toEqual(kerbSpot);
-    expectClearOfCarBody(car, script);
+    expect(script[script.length - 1]).toMatchObject({ action: "hide" });
   });
 
-  it("wanders a few metres kerbward when the stop has no kerb spot", () => {
-    for (const trafficSide of ["left", "right"] as const) {
-      const car = CAR_POSES[0];
-      const script = buildExitScript(car, trafficSide, null);
-      const walk = script[1];
-      const end = local(car, walk.path![walk.path!.length - 1]);
-      const kerbSign = trafficSide === "right" ? 1 : -1;
-      expect(Math.sign(end.lat)).toBe(kerbSign);
-      expect(Math.abs(end.lat)).toBeGreaterThan(4);
+  // The regression guard for the "walks away, then comes back" bug: the walk-off
+  // is car-relative, so for any park (any heading) it heads straight off the
+  // kerb side and never routes back across the body toward a fixed venue point.
+  it("walks off the kerb side clear of the car, for every pose and side", () => {
+    for (const car of CAR_POSES) {
+      for (const trafficSide of ["left", "right"] as const) {
+        const script = buildExitScript(car, trafficSide);
+        expectClearOfCarBody(car, script);
+        const walk = script[1];
+        const end = local(car, walk.path![walk.path!.length - 1]);
+        const kerbSign = trafficSide === "right" ? 1 : -1;
+        expect(Math.sign(end.lat)).toBe(kerbSign);
+        expect(Math.abs(end.lat)).toBeGreaterThan(4);
+      }
     }
   });
 });
