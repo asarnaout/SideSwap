@@ -141,8 +141,8 @@ provided its licence text travels with the fonts (included alongside them):
   horn, and collision impacts are **synthesised at runtime in Web Audio**
   (`app/game/audio/`). No sample, recording, or third-party audio asset is used
   or shipped, so there is nothing here to license.
-- **`public/audio/music/*.mp3`** (12 background tracks) — generated with
-  [Suno](https://suno.com) on 2026-07-19 and 2026-07-21 by the project owner while subscribed
+- **`public/audio/music/*.mp3`** (13 background tracks) — generated with
+  [Suno](https://suno.com) on 2026-07-19, 2026-07-21 and 2026-07-23 by the project owner while subscribed
   to a paid (Pro/Premier) plan. Suno assigns the subscriber all of its right,
   title and interest in output generated during the subscription term, including
   commercial use, and that grant survives the subscription ending. See Suno's
@@ -163,6 +163,7 @@ provided its licence text travels with the fonts (included alongside them):
   | `nyc-midnight-bridge-loop-2.mp3` | Midnight Bridge Loop (II) | NYC | Midnight Bridge Loop-2 |
   | `nyc-gridline-glow.mp3` | Gridline Glow | NYC | Gridline Glow |
   | `nyc-wet-bridge-run.mp3` | Wet Bridge Run | NYC | Wet Bridge Run |
+  | `nyc-east-river-glide.mp3` | East River Glide | NYC | East River Glide |
   | `london-exhibition-road-glide-1.mp3` | Exhibition Road Glide | London | track2 |
   | `london-exhibition-road-glide-2.mp3` | Exhibition Road Glide | London | track3 |
   | `calais-coast-run-1.mp3` | Calais Coast Run | Calais | track4 |
