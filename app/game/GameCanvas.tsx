@@ -122,7 +122,10 @@ import {
   type BuildingSetId,
   type StreetPropConfig,
 } from "./buildingSets";
-import { orientMergedFacesOutward } from "./buildingWinding";
+import {
+  orientMergedFacesOutward,
+  recentreMergedMasterXZ,
+} from "./buildingWinding";
 import {
   pickStorefrontVariant,
   STOREFRONT_MODEL_ID,
@@ -5218,6 +5221,8 @@ class BabylonGameSession {
         // some models inside-out (street-facing walls back-face culled → hollow).
         // Reverse the winding of just those; see buildingWinding.ts.
         orientMergedFacesOutward(master);
+        // Placement slots assume the body is centred on the pivot (#143).
+        recentreMergedMasterXZ(master);
         master.isVisible = false;
         master.isPickable = false;
       }

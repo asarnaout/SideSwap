@@ -14,7 +14,10 @@ import {
   Vector3,
   VertexBuffer,
 } from "@babylonjs/core";
-import { orientMergedFacesOutward } from "./buildingWinding";
+import {
+  orientMergedFacesOutward,
+  recentreMergedMasterXZ,
+} from "./buildingWinding";
 import {
   extractStorefrontSignRects,
   type StorefrontSignRect,
@@ -133,6 +136,9 @@ export function assembleStorefrontVariantMaster(
     return null;
   }
   orientMergedFacesOutward(master);
+  // Placement slots assume the body is centred on the pivot (#143); signs and
+  // awning are merged in by now, so the whole storefront shifts as one.
+  recentreMergedMasterXZ(master);
 
   if (variant.awningColor && master.material instanceof MultiMaterial) {
     // The merge orders submaterials by material uniqueId, not input order —

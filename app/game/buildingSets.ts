@@ -115,6 +115,13 @@ export function missingBuildingConfigs(): string[] {
   return [...missing];
 }
 
+/** Placement config for a catalogue model id (for tests / tooling). */
+export function buildingPlacementConfig(
+  id: string,
+): BuildingPlacementConfig | undefined {
+  return PLACEMENTS[id];
+}
+
 /** A street-life prop (vendor cart) placed on the sidewalk, instanced like a
  * building. Scale/groundY derived from each glb's measured native bounds. */
 export interface StreetPropConfig {
