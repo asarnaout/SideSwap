@@ -1601,10 +1601,15 @@ interface ActiveCutscene {
   pumpEmitted: boolean;
 }
 
-/** The player avatar every cutscene stages: one consistent driver. */
-const DRIVER_ACTOR_VARIANT = 2;
+/** The player avatar every cutscene stages: one consistent driver. Index 1 is
+ * person-b — a casual short-sleeve tee, not a suit — in both the cyclist
+ * roster (CYCLIST_RIDER_MODELS) and the actor roster (CHARACTER_MODELS), which
+ * agree at index 1; keep them aligned if either list is reordered. A courier
+ * kept out of formalwear: orange tee up top, denim below. */
+const DRIVER_ACTOR_VARIANT = 1;
 const DRIVER_ACTOR_COLORS: CharacterColors = {
-  clothing: new Color3(0.86, 0.47, 0.15),
+  clothing: new Color3(0.86, 0.47, 0.15), // courier-orange tee
+  pants: new Color3(0.2, 0.24, 0.37), // denim jeans
   complexion: new Color3(0.72, 0.53, 0.4),
   hair: new Color3(0.16, 0.12, 0.09),
 };
