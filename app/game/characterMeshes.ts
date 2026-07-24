@@ -128,6 +128,10 @@ export function characterModelUrls(): string[] {
  * else (eyes, shoes, bike paint) keeps the colour its rig authored. */
 export interface CharacterColors {
   readonly clothing: Color3;
+  /** Optional distinct colour for the "Pants" material, so a rider can wear a
+   * contrasting top and bottom (e.g. a tee + jeans) instead of a one-colour
+   * jumpsuit. Omitted by the ambient crowd, which stays single-tone. */
+  readonly pants?: Color3;
   readonly complexion: Color3;
   readonly hair: Color3;
 }
@@ -139,7 +143,10 @@ function materialOverrides(
 ): Map<string, Color3> {
   const overrides = new Map<string, Color3>();
   for (const material of config.clothingMaterialNames) {
-    overrides.set(material, colors.clothing);
+    overrides.set(
+      material,
+      material === "Pants" && colors.pants ? colors.pants : colors.clothing,
+    );
   }
   for (const material of config.complexionMaterialNames) {
     overrides.set(material, colors.complexion);
