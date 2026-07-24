@@ -35,12 +35,13 @@ vi.mock("next/dynamic", () => ({
         readonly model: string | null;
         readonly visualKind?: string;
       } | null;
+      cutscene?: { readonly nonce: number; readonly kind: string } | null;
       vehiclePhysics?: { readonly maxForwardSpeedMps?: number } | null;
       onHudUpdate?: (snapshot: Record<string, unknown>) => void;
       onEvent?: (event: Record<string, unknown>) => void;
       onExit?: () => void;
     }) {
-      const snapshot = (simElapsedMs: number) => ({
+      const snapshot = (simElapsedMs: number, playerX = 0) => ({
         speed: 0,
         speedUnit: "mph",
         gear: "D",
@@ -57,7 +58,7 @@ vi.mock("next/dynamic", () => ({
         objective: "",
         checkpoint: "",
         trafficSide: "left",
-        playerX: 0,
+        playerX,
         playerZ: 0,
         heading: 0,
         simElapsedMs,
@@ -69,6 +70,7 @@ vi.mock("next/dynamic", () => ({
           data-player-model={props.playerVehicle?.model ?? "default"}
           data-visual-kind={props.playerVehicle?.visualKind ?? "none"}
           data-max-speed={props.vehiclePhysics?.maxForwardSpeedMps ?? "default"}
+          data-cutscene-kind={props.cutscene?.kind ?? "none"}
         >
           <button
             type="button"
@@ -104,6 +106,53 @@ vi.mock("next/dynamic", () => ({
             onClick={() => props.onExit?.()}
           >
             exit
+          </button>
+          <button
+            type="button"
+            data-testid="mock-drain"
+            onClick={() => {
+              // ~47 L of driving in one click: 600 HUD ticks, 39 m apart.
+              for (let index = 1; index <= 600; index += 1) {
+                props.onHudUpdate?.(snapshot(1_000, index * 39));
+              }
+            }}
+          >
+            drain
+          </button>
+          <button
+            type="button"
+            data-testid="mock-scene-pump"
+            onClick={() =>
+              props.onEvent?.({
+                type: "cutscene",
+                message: "pump",
+                timestamp: 2,
+                evidence: {
+                  nonce: props.cutscene?.nonce ?? -1,
+                  phase: "pump",
+                  durationMs: 4_000,
+                },
+              })
+            }
+          >
+            pump
+          </button>
+          <button
+            type="button"
+            data-testid="mock-scene-done"
+            onClick={() =>
+              props.onEvent?.({
+                type: "cutscene",
+                message: "done",
+                timestamp: 3,
+                evidence: {
+                  nonce: props.cutscene?.nonce ?? -1,
+                  phase: "done",
+                },
+              })
+            }
+          >
+            done
           </button>
         </section>
       );
@@ -421,5 +470,35 @@ describe("career mode flow", () => {
     fireEvent.click(screen.getByTestId("career-restart"));
     expect(await screen.findByTestId("career-new-panel")).toBeVisible();
     expect(storedCareer()).toBeNull();
+  });
+
+  it("summons roadside service on an empty tank and charges the premium into the red", async () => {
+    await enterCareerMode();
+    fireEvent.click(screen.getByTestId("career-start"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+    fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+    const scene = await screen.findByLabelText("Mock driving scene");
+
+    // 20 - 12 rent = 8 before the tank runs dry.
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("£8.00");
+    fireEvent.click(screen.getByTestId("mock-drain"));
+
+    // The rescue stages itself the moment the tank hits zero.
+    expect(scene).toHaveAttribute("data-cutscene-kind", "roadside_refuel");
+    expect(screen.getByText(/roadside service/i)).toBeVisible();
+
+    // The pump event bills the full 40 L at 1.5x plus the call-out fee:
+    // round(40 x 0.45 x 1.5) + 10 = 37 -> 8 - 37 = -29.
+    fireEvent.click(screen.getByTestId("mock-scene-pump"));
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("-£29.00");
+
+    fireEvent.click(screen.getByTestId("mock-scene-done"));
+    expect(scene).toHaveAttribute("data-cutscene-kind", "none");
+    // The wallet never saw any of it.
+    const raw = JSON.parse(
+      window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}",
+    ) as { walletByCountry: Record<string, number> };
+    expect(raw.walletByCountry.uk).toBe(20);
   });
 });

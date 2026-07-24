@@ -18,7 +18,8 @@ export type CutsceneKind =
   | "board"
   | "exit"
   | "food_pickup"
-  | "food_dropoff";
+  | "food_dropoff"
+  | "roadside_refuel";
 
 export interface CutsceneCarPose {
   readonly x: number;
@@ -446,6 +447,49 @@ export function buildBikeErrandScript(
     { action: "show", path: [buildingDoor], seconds: 0.15 },
     { action: "run", path: back, seconds: legSeconds(back, RUN_SPEED_MPS) },
     { action: "hide", seconds: 0.35 },
+  ];
+}
+
+/**
+ * Roadside rescue for a tank run dry mid-drive (career only): the driver
+ * steps out, walks to the filler on their own side of the rear flank — never
+ * crossing the body — waits out the fill, and gets back in. The scene's input
+ * lock is the immobilization; the premium pricing lands on its pump event.
+ */
+export function buildRoadsideRefuelScript(
+  car: CutsceneCarPose,
+  steeringSide: SteeringSide,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
+): CutsceneStep[] {
+  const door = driverDoorPoint(car, steeringSide, body);
+  const fillerLat =
+    steeringSide === "left" ? -(body.doorLateralM + 0.25) : body.doorLateralM + 0.25;
+  const filler = toWorld(car, body.rearDoorForwardM - 0.4, fillerLat);
+  const out = routeAroundCar(car, door, filler, body);
+  const back = routeAroundCar(car, filler, door, body);
+  return [
+    {
+      action: "show",
+      path: [door],
+      seconds: 0.35,
+      face: headingTo(car, door),
+      sound: "door",
+    },
+    { action: "walk", path: out, seconds: legSeconds(out, WALK_SPEED_MPS) },
+    {
+      action: "idle",
+      seconds: PUMP_BASE_SECONDS + PUMP_EXTRA_SECONDS,
+      face: headingTo(filler, car),
+      sound: "pump_start",
+      fuelWindow: true,
+    },
+    {
+      action: "walk",
+      path: back,
+      seconds: legSeconds(back, WALK_SPEED_MPS),
+      sound: "pump_stop",
+    },
+    { action: "hide", seconds: 0.45, sound: "door_close", carDip: true },
   ];
 }
 

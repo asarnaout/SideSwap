@@ -48,11 +48,15 @@ import {
   careerDayTrafficSeed,
   careerFare,
   careerGigSeedBase,
+  careerTip,
   createCareerSlice,
   DAY_LENGTH_MS,
   emptyDayLog,
   getCareerVehicle,
+  gigParMs,
   PLATFORM_FEE_BY_COUNTRY,
+  ROADSIDE_CALLOUT_FEE_BY_COUNTRY,
+  ROADSIDE_PRICE_FACTOR,
   settleDay,
   vehicleRent,
 } from "./game/career";
@@ -423,6 +427,10 @@ export default function SideSwapApp() {
     readonly result: SettlementResult;
     readonly slice: CareerSliceV1;
   } | null>(null);
+  // Day-clock timestamp when the current career gig entered "carrying"; the
+  // tip window (Crazy Taxi-style par time on the carrying leg) counts from it.
+  const [carryingSinceMs, setCarryingSinceMs] = useState<number | null>(null);
+  const carryingSinceRef = useRef<number | null>(null);
   const [garageVehicleId, setGarageVehicleId] =
     useState<CareerVehicleId>("compact-hatch");
   const [gameMode, setGameMode] = useState<"free" | "career">("free");
@@ -664,12 +672,18 @@ export default function SideSwapApp() {
           if (run) {
             // Career fuel is integer, priced per vehicle, and never gated on
             // being able to afford it — the charge may push the day negative.
+            // A roadside rescue fills the whole tank at a premium plus the
+            // call-out fee: the price of not planning around the gauge.
+            const roadside = active.kind === "roadside_refuel";
             const litres = Math.max(0, run.vehicle.tankL - driveFuel);
-            const cost = Math.round(
-              litres *
-                FUEL_PRICE_PER_LITRE_BY_COUNTRY[run.slice.countryId] *
-                run.vehicle.fuelPriceFactor,
-            );
+            const cost =
+              Math.round(
+                litres *
+                  FUEL_PRICE_PER_LITRE_BY_COUNTRY[run.slice.countryId] *
+                  run.vehicle.fuelPriceFactor *
+                  (roadside ? ROADSIDE_PRICE_FACTOR : 1),
+              ) +
+              (roadside ? ROADSIDE_CALLOUT_FEE_BY_COUNTRY[run.slice.countryId] : 0);
             chargeCareer(cost, (log) => ({
               ...log,
               fuelSpendTotal: log.fuelSpendTotal + cost,
@@ -706,6 +720,12 @@ export default function SideSwapApp() {
                 ? { ...current, state: "carrying" }
                 : current,
             );
+            if (careerRunRef.current) {
+              const elapsed =
+                dayElapsedBaseRef.current + lastSimElapsedRef.current;
+              carryingSinceRef.current = elapsed;
+              setCarryingSinceMs(elapsed);
+            }
           } else if (active.kind === "exit" || active.kind === "food_dropoff") {
             const run = careerRunRef.current;
             const current = gigRef.current;
@@ -724,13 +744,31 @@ export default function SideSwapApp() {
                 current.kind,
                 run.vehicle,
               );
-              dayCashRef.current += net;
+              // On-time within the par window earns the commission-free tip;
+              // late still pays the base net — no hard fail.
+              const parMs = gigParMs(
+                Math.hypot(
+                  current.dropoff.x - current.pickup.x,
+                  current.dropoff.z - current.pickup.z,
+                ),
+                run.vehicle.paceFactor,
+              );
+              const elapsedNow =
+                dayElapsedBaseRef.current + lastSimElapsedRef.current;
+              const since = carryingSinceRef.current;
+              const onTime = since !== null && elapsedNow - since <= parMs;
+              const tip = careerTip(gross, onTime);
+              carryingSinceRef.current = null;
+              setCarryingSinceMs(null);
+              dayCashRef.current += net + tip;
               setDayCash(dayCashRef.current);
               dayLogRef.current = {
                 ...dayLogRef.current,
                 grossFares: dayLogRef.current.grossFares + gross,
                 netFares: dayLogRef.current.netFares + net,
+                tips: dayLogRef.current.tips + tip,
                 gigsCompleted: dayLogRef.current.gigsCompleted + 1,
+                gigsOnTime: dayLogRef.current.gigsOnTime + (onTime ? 1 : 0),
               };
               const careerCountry = getCountryProfile(run.slice.countryId);
               const careerMap = getMapPack(
@@ -832,6 +870,16 @@ export default function SideSwapApp() {
     const timer = window.setTimeout(() => setFineToast(null), 3400);
     return () => window.clearTimeout(timer);
   }, [fineToast]);
+
+  // Career only: a tank run dry summons roadside service instead of leaving a
+  // dead throttle — the scene immobilizes the car and its pump event charges
+  // the premium (which may push the day into the red). Free drive keeps the
+  // classic coast-to-a-stop + wallet-gated station refuel.
+  useEffect(() => {
+    if (!careerRun || careerRun.vehicle.tankL <= 0) return;
+    if (view !== "driving" || driveFuel > 0 || cutscene || towing) return;
+    beginCutscene("roadside_refuel", undefined, undefined, 1);
+  }, [careerRun, view, driveFuel, cutscene, towing, beginCutscene]);
   const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
   const activeFreeDrive = getFreeDrive(activeScenarioId);
   const runtimeMap = getMapPack(activeFreeDrive.mapId);
@@ -1100,6 +1148,8 @@ export default function SideSwapApp() {
     }
     gigRef.current = firstGig;
     setGig(firstGig);
+    carryingSinceRef.current = null;
+    setCarryingSinceMs(null);
     setHud(null);
     setPaused(false);
     carConditionRef.current = FULL_CONDITION_PCT;
@@ -1243,6 +1293,23 @@ export default function SideSwapApp() {
         })
       : [];
   const gigTargetVenue = gig ? gigTarget(gig) : null;
+  // The tip window for the active career gig: previewed before pickup, counted
+  // down while carrying. Derived from the same 10 Hz day-clock state that
+  // drives the countdown chip, so it re-renders in step.
+  const gigParForCardMs =
+    careerRun && gig
+      ? gigParMs(
+          Math.hypot(
+            gig.dropoff.x - gig.pickup.x,
+            gig.dropoff.z - gig.pickup.z,
+          ),
+          careerRun.vehicle.paceFactor,
+        )
+      : null;
+  const tipRemainingMs =
+    gigParForCardMs !== null && carryingSinceMs !== null
+      ? gigParForCardMs - (DAY_LENGTH_MS - dayRemainingMs - carryingSinceMs)
+      : null;
   const minimapPins = gigTargetVenue
     ? [
         ...gasPins,
@@ -1273,7 +1340,9 @@ export default function SideSwapApp() {
   const cutsceneCaption = cutscene
     ? cutscene.kind === "refuel"
       ? "Refueling…"
-      : cutscene.kind === "board"
+      : cutscene.kind === "roadside_refuel"
+        ? "Out of fuel — roadside service…"
+        : cutscene.kind === "board"
         ? "Your rider is getting in…"
         : cutscene.kind === "exit"
           ? "Dropping off your rider…"
@@ -1407,6 +1476,37 @@ export default function SideSwapApp() {
               </span>
               <strong>{formatMoney(gig.reward, driveCountry)}</strong>
             </div>
+            {gigParForCardMs !== null && gig.state === "enroute_pickup" && (
+              <div
+                style={{
+                  marginTop: "0.4rem",
+                  fontSize: "0.78rem",
+                  opacity: 0.82,
+                }}
+              >
+                Tip window {formatClock(gigParForCardMs)} once picked up
+              </div>
+            )}
+            {gig.state === "carrying" && tipRemainingMs !== null && (
+              <div
+                data-testid="tip-clock"
+                style={{
+                  marginTop: "0.4rem",
+                  fontSize: "0.78rem",
+                  fontWeight: 700,
+                  color:
+                    tipRemainingMs <= 0
+                      ? "rgba(244,246,248,0.5)"
+                      : tipRemainingMs < (gigParForCardMs ?? 0) * 0.2
+                        ? "#f2c658"
+                        : "#5bbf6a",
+                }}
+              >
+                {tipRemainingMs > 0
+                  ? `Tip ${formatClock(tipRemainingMs)}`
+                  : "Tip missed — base fare only"}
+              </div>
+            )}
             {nearGigStop && !cutscene && hud && hud.speed > 1 && (
               <div
                 style={{
