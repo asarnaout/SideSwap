@@ -8,6 +8,8 @@
  * handful of parameters that actually moved.
  */
 import {
+  DEFAULT_ENGINE_PROFILE,
+  type ResolvedEngineProfile,
   createAudioParams,
   createAudioState,
   updateAudioModel,
@@ -42,8 +44,9 @@ export class DriveAudio {
   private readonly horn: HornVoice;
   private readonly impacts: ImpactVoice;
   private readonly foleyVoice: FoleyVoice;
-  private readonly state: DriveAudioState = createAudioState();
-  private readonly params: DriveAudioParams = createAudioParams();
+  private readonly state: DriveAudioState;
+  private readonly params: DriveAudioParams;
+  private readonly profile: ResolvedEngineProfile;
   private disposed = false;
 
   private constructor(
@@ -51,7 +54,11 @@ export class DriveAudio {
     volumes: MasterBusVolumes,
     lowPower: boolean,
     engineless: boolean,
+    profile: ResolvedEngineProfile,
   ) {
+    this.profile = profile;
+    this.state = createAudioState(undefined, profile);
+    this.params = createAudioParams(profile);
     this.bus = new MasterBus(context, volumes);
     this.jitterSource = createJitterSource(context);
     this.jitterSource.start();
@@ -65,7 +72,7 @@ export class DriveAudio {
     };
     // A bicycle has no engine: the whole synthesized gearbox stays silent
     // while wind, tyres, horn, impacts and foley behave exactly as ever.
-    this.engine = engineless ? null : new EngineVoice(voice);
+    this.engine = engineless ? null : new EngineVoice(voice, profile);
     this.ambience = new AmbienceVoice(voice);
     this.tyres = new TyreVoice(voice);
     this.horn = new HornVoice(voice);
@@ -81,11 +88,12 @@ export class DriveAudio {
     volumes: MasterBusVolumes,
     lowPower = false,
     engineless = false,
+    profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
   ): DriveAudio | null {
     try {
       const context = primeAudioContext();
       if (!context) return null;
-      return new DriveAudio(context, volumes, lowPower, engineless);
+      return new DriveAudio(context, volumes, lowPower, engineless, profile);
     } catch {
       return null;
     }
@@ -93,7 +101,7 @@ export class DriveAudio {
 
   update(telemetry: DriveAudioTelemetry): void {
     if (this.disposed) return;
-    updateAudioModel(this.state, telemetry, this.params);
+    updateAudioModel(this.state, telemetry, this.params, this.profile);
     this.engine?.update(this.params);
     this.ambience.update(this.params);
     this.tyres.update(this.params);

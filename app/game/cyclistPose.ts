@@ -544,6 +544,212 @@ export function setupCyclistPose(
   return rig;
 }
 
+/** Anchor set for a static seated pose on an arbitrary two-wheeler glb, in
+ * that glb's local units. `grips`/`pegs` are unordered pairs — each limb is
+ * matched to the anchor on its own side of the frame at solve time. */
+export interface SeatedPoseAnchors {
+  readonly seatSit: { readonly x: number; readonly y: number; readonly z: number };
+  readonly grips: readonly [
+    { readonly x: number; readonly y: number; readonly z: number },
+    { readonly x: number; readonly y: number; readonly z: number },
+  ];
+  readonly pegs: readonly [
+    { readonly x: number; readonly y: number; readonly z: number },
+    { readonly x: number; readonly y: number; readonly z: number },
+  ];
+  /** Vehicle-local unit direction the vehicle faces (bicycle: +X; the
+   * cartoony motorbike: −Z, toward its headlamp). */
+  readonly forwardLocal: { readonly x: number; readonly y: number; readonly z: number };
+}
+
+/** How a motorbike rider carries themself: more upright than the cycling
+ * lean, feet planted on fixed pegs. Same semantics as CYCLIST_POSTURE. */
+export const SEATED_POSTURE = {
+  hips: 0.1,
+  abdomen: 0.28,
+  torso: 0.45,
+  neck: -0.06,
+  head: 0.02,
+  hipAboveSeatM: 0.02,
+  palmAboveGripM: 0.015,
+  footAbovePegM: 0.02,
+} as const;
+
+/**
+ * Seats a rigged rider on an arbitrary two-wheeler in a single static pose:
+ * hips on the seat, hands on the grips, feet on the pegs. The factored-out
+ * one-sample cousin of setupCyclistPose — same joint requirements, same
+ * mirror-safe rest-delta mechanism, same analytic IK — minus everything
+ * crank-specific (no orbit, no phase sampling, no per-frame function; the
+ * solved rotations simply persist on the nodes). Must be called at build,
+ * while the root's ancestors are stationary. Returns false (with a console
+ * warning, rider left unposed) on a missing joint rather than crashing.
+ */
+export function setupSeatedRiderPose(
+  rootNode: TransformNode,
+  vehicleRoot: TransformNode,
+  riderWrap: TransformNode,
+  riderRoot: TransformNode,
+  anchors: SeatedPoseAnchors,
+  posture: typeof SEATED_POSTURE = SEATED_POSTURE,
+): boolean {
+  const joints = collectByName(riderRoot);
+  const required = [
+    "Body", "Hips", "Abdomen", "Torso", "Neck", "Head",
+    "UpperLeg.L", "LowerLeg.L", "LowerLeg.L_end", "Foot.L",
+    "UpperLeg.R", "LowerLeg.R", "LowerLeg.R_end", "Foot.R",
+    "UpperArm.L", "LowerArm.L", "Palm.L",
+    "UpperArm.R", "LowerArm.R", "Palm.R",
+  ];
+  for (const name of required) {
+    if (!joints.get(name)) {
+      console.warn(`[seated] rider rig is missing "${name}"; leaving the rider unposed`);
+      return false;
+    }
+  }
+
+  const vehicleWorld = vehicleRoot.computeWorldMatrix(true).clone();
+  const toAnchor = (a: { x: number; y: number; z: number }): Vector3 => {
+    const out = new Vector3(a.x, a.y, a.z);
+    Vector3.TransformCoordinatesToRef(out, vehicleWorld, out);
+    return out;
+  };
+  const seat = toAnchor(anchors.seatSit);
+  const grips = [toAnchor(anchors.grips[0]), toAnchor(anchors.grips[1])];
+  const pegs = [toAnchor(anchors.pegs[0]), toAnchor(anchors.pegs[1])];
+  const vehicleRotOnly = tmpM[0];
+  vehicleWorld.getRotationMatrixToRef(vehicleRotOnly);
+  const forward = Vector3.TransformNormal(
+    new Vector3(anchors.forwardLocal.x, anchors.forwardLocal.y, anchors.forwardLocal.z),
+    vehicleRotOnly,
+  ).normalize();
+  const up = Vector3.TransformNormal(new Vector3(0, 1, 0), vehicleRotOnly).normalize();
+  // forward × up matches the cyclist's lateral convention (bike +X forward,
+  // +Z lateral): the spine's −pitch deltas lean the rider TOWARD the bars.
+  // The reverse cross product leans them off the back of the seat.
+  const lateral = Vector3.Cross(forward, up).normalize();
+
+  // Seat the rider: mid-hip onto the sit point (same mechanism as the cyclist).
+  const hipL = joints.get("UpperLeg.L")!;
+  const hipR = joints.get("UpperLeg.R")!;
+  hipL.computeWorldMatrix(true);
+  hipR.computeWorldMatrix(true);
+  const midHip = tmpV[0]
+    .copyFrom(hipL.getAbsolutePosition())
+    .addInPlace(hipR.getAbsolutePosition())
+    .scaleInPlace(0.5);
+  const hipTarget = tmpV[1]
+    .copyFrom(seat)
+    .addInPlace(tmpV[2].copyFrom(up).scaleInPlace(posture.hipAboveSeatM));
+  const correction = hipTarget.subtractInPlace(midHip);
+  rootNode.computeWorldMatrix(true).getRotationMatrixToRef(tmpM[1]);
+  tmpM[1].invertToRef(tmpM[2]);
+  Vector3.TransformNormalToRef(correction, tmpM[2], correction);
+  riderWrap.position.addInPlace(correction);
+  riderWrap.computeWorldMatrix(true);
+
+  const sideOf = (node: TransformNode): number => {
+    node.computeWorldMatrix(true);
+    tmpV[3].copyFrom(node.getAbsolutePosition()).subtractInPlace(seat);
+    return Vector3.Dot(tmpV[3], lateral) >= 0 ? 1 : -1;
+  };
+  const anchorSide = (point: Vector3): number =>
+    Vector3.Dot(tmpV[4].copyFrom(point).subtractInPlace(seat), lateral) >= 0 ? 1 : -1;
+
+  // Measure chains and pair anchors BEFORE any deltas are applied (rest
+  // capture), exactly as the cyclist does.
+  interface SeatedLimb {
+    readonly leg: TwoBoneChain;
+    readonly arm: TwoBoneChain;
+    readonly foot: TransformNode;
+    readonly footRestRot: Matrix;
+    readonly ankleHeightM: number;
+    readonly peg: Vector3;
+    readonly grip: Vector3;
+  }
+  const limbs: SeatedLimb[] = [];
+  for (const side of ["L", "R"] as const) {
+    const foot = joints.get(`Foot.${side}`)!;
+    const palm = joints.get(`Palm.${side}`)!;
+    const frameSide = sideOf(foot);
+    const legPole = new Vector3()
+      .copyFrom(forward)
+      .addInPlace(tmpV[3].copyFrom(lateral).scaleInPlace(0.1 * frameSide))
+      .normalize();
+    const armPole = new Vector3()
+      .copyFrom(up)
+      .scaleInPlace(-1)
+      .addInPlace(tmpV[3].copyFrom(lateral).scaleInPlace(0.55 * frameSide))
+      .addInPlace(tmpV[4].copyFrom(forward).scaleInPlace(0.18))
+      .normalize();
+    const leg = buildChain(joints, `UpperLeg.${side}`, `LowerLeg.${side}`, `LowerLeg.${side}_end`, legPole);
+    const arm = buildChain(joints, `UpperArm.${side}`, `LowerArm.${side}`, `Palm.${side}`, armPole);
+    if (!leg || !arm) {
+      console.warn(`[seated] degenerate ${side} limb chain; leaving the rider unposed`);
+      return false;
+    }
+    // Ankle joint height above the sole, so the sole (not the ankle) lands on
+    // the peg — same measurement the cyclist uses.
+    foot.computeWorldMatrix(true);
+    tmpV[3].copyFrom(foot.getAbsolutePosition()).subtractInPlace(riderWrap.getAbsolutePosition());
+    const ankleHeightM = Math.max(0.01, Vector3.Dot(tmpV[3], up));
+    const peg = pegs.find((p) => anchorSide(p) === frameSide);
+    const grip = grips.find((g) => anchorSide(g) === sideOf(palm));
+    if (!peg || !grip) {
+      console.warn(`[seated] could not pair the ${side} limbs with vehicle anchors`);
+      return false;
+    }
+    limbs.push({
+      leg,
+      arm,
+      foot,
+      footRestRot: worldRotation(foot, new Matrix()).clone(),
+      ankleHeightM,
+      peg,
+      grip,
+    });
+  }
+  const spine = (
+    [
+      ["Hips", posture.hips],
+      ["Abdomen", posture.abdomen],
+      ["Torso", posture.torso],
+      ["Neck", posture.neck],
+      ["Head", posture.head],
+    ] as const
+  ).map(([name, pitch]) => {
+    const node = joints.get(name)!;
+    return { node, restRot: worldRotation(node, new Matrix()).clone(), pitch };
+  });
+
+  // Solve order matches the cyclist's per-sample order: spine lean first (it
+  // moves the shoulders and hip pivots), then legs onto the pegs, then arms
+  // onto the grips.
+  for (const joint of spine) {
+    Quaternion.RotationAxisToRef(lateral, -joint.pitch, tmpQ[0]);
+    applyWorldDelta(joint.node, joint.restRot, tmpQ[0]);
+  }
+  for (const limb of limbs) {
+    const footTarget = tmpV[6]
+      .copyFrom(limb.peg)
+      .addInPlace(
+        tmpV[5].copyFrom(up).scaleInPlace(posture.footAbovePegM + limb.ankleHeightM),
+      );
+    solveTwoBone(limb.leg, footTarget);
+    const parent = limb.foot.parent as TransformNode;
+    parent.computeWorldMatrix(true).invertToRef(tmpM[3]);
+    Vector3.TransformCoordinatesToRef(footTarget, tmpM[3], limb.foot.position);
+    applyWorldDelta(limb.foot, limb.footRestRot, tmpQ[0].copyFromFloats(0, 0, 0, 1));
+  }
+  for (const limb of limbs) {
+    const gripTarget = tmpV[6]
+      .copyFrom(limb.grip)
+      .addInPlace(tmpV[5].copyFrom(up).scaleInPlace(posture.palmAboveGripM));
+    solveTwoBone(limb.arm, gripTarget);
+  }
+  return true;
+}
+
 /**
  * Applies the pose for a crank phase (radians, advanced by ground distance ×
  * PEDAL_CRANK_RATE) and wheel roll angle (distance × WHEEL_ROLL_RATE): orbits

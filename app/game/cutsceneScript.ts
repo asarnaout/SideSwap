@@ -419,6 +419,17 @@ export const BIKE_CUTSCENE_BODY: CutsceneBodyProfile = {
   rearDoorForwardM: -0.3,
 };
 
+/** The motorbike's walk envelope: bicycle-shaped but a real 2 m long. */
+export const MOTORBIKE_CUTSCENE_BODY: CutsceneBodyProfile = {
+  bodyHalfLongM: 1.05,
+  bodyHalfLatM: 0.42,
+  clearLongM: 1.55,
+  clearLatM: 1.0,
+  doorLateralM: 0.7,
+  frontDoorForwardM: 0.2,
+  rearDoorForwardM: -0.35,
+};
+
 /**
  * The courier's errand on a bicycle: dismount beside the parked bike, run to
  * the venue door, dwell inside, run back and remount. No door sounds and no

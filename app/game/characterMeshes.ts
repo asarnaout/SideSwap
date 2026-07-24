@@ -21,6 +21,8 @@ import {
   WHEEL_ROLL_RATE,
   poseCyclist,
   setupCyclistPose,
+  setupSeatedRiderPose,
+  type SeatedPoseAnchors,
 } from "./cyclistPose";
 import { instantiateModel, isModelReady } from "./modelLibrary";
 import {
@@ -86,8 +88,40 @@ export const CHARACTER_MODELS: readonly CharacterModelConfig[] = [
  * +Z, aligned with the rider (verified against a side-on render). */
 const BICYCLE_MODEL = { url: `${C}/bicycle.glb`, scale: BIKE_SCALE, yawOffset: Math.PI / 2 } as const;
 
+/** CC0 "Cartoony Purple Motorcycle" by AliceCassie (credited in CREDITS.md).
+ * Authored ~1.04 u long facing −Z (headlamp under the bars), origin on the
+ * ground plane; scale puts it at ~2.0 m with a ~0.70 m seat. yawOffset 0: the
+ * glTF loader's baked flip alone already lands the front on wrap +Z, aligned
+ * with the rider (probe-verified — a π offset here mounts the bike backward).
+ * One merged mesh — no separable wheels, so nothing spins. */
+const MOTORBIKE_MODEL = { url: `${C}/motorbike.glb`, scale: 1.9, yawOffset: 0 } as const;
+
+/** Courier livery for the LightPurple body panels; frame/tires (DarkPurple)
+ * and the yellow lamp keep their authored colours. */
+const MOTORBIKE_PAINT = new Color3(0.72, 0.21, 0.13);
+
+/** Measured motorbike.glb anchors (glb-local units, from the vertex-profile
+ * dissection): seat dip top, grip centroids under the bar ends, and mid-low
+ * outboard footpeg points. forwardLocal −Z = toward the headlamp. */
+const MOTORBIKE_GLB_ANCHORS: SeatedPoseAnchors = {
+  seatSit: { x: 0, y: 0.37, z: 0.05 },
+  grips: [
+    { x: 0.1, y: 0.42, z: -0.12 },
+    { x: -0.1, y: 0.42, z: -0.12 },
+  ],
+  pegs: [
+    { x: 0.09, y: 0.14, z: 0.02 },
+    { x: -0.09, y: 0.14, z: 0.02 },
+  ],
+  forwardLocal: { x: 0, y: 0, z: -1 },
+};
+
 export function characterModelUrls(): string[] {
-  return [...CHARACTER_MODELS.map((config) => config.url), BICYCLE_MODEL.url];
+  return [
+    ...CHARACTER_MODELS.map((config) => config.url),
+    BICYCLE_MODEL.url,
+    MOTORBIKE_MODEL.url,
+  ];
 }
 
 /** The three colours that make one person distinct from the next; everything
@@ -477,6 +511,114 @@ export function buildCyclistVisual(
       wheelAngle += distanceMeters * WHEEL_ROLL_RATE;
       poseCyclist(rig, phase, wheelAngle);
     },
+    setRiderVisible(visible) {
+      if (disposed) return;
+      riderWrap.setEnabled(visible);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      root.dispose(false, false);
+      for (const material of [...bikeMaterials, ...riderMaterials]) {
+        material.dispose(true, false);
+      }
+    },
+  };
+}
+
+/**
+ * The player's motorbike: the CC0 cartoon motorcycle recoloured to the courier
+ * livery with a rigged rider seated on it — the static-pose sibling of
+ * buildCyclistVisual (no pedals to animate; the merged-mesh wheels don't
+ * spin). Returns null until both glbs are preloaded.
+ */
+export function buildMotorbikeVisual(
+  scene: Scene,
+  parent: TransformNode,
+  name: string,
+  variant: number,
+  colors: CharacterColors,
+): CharacterVisual | null {
+  const riderConfig =
+    CYCLIST_RIDER_MODELS[Math.abs(variant) % CYCLIST_RIDER_MODELS.length];
+  if (
+    !isModelReady(scene, MOTORBIKE_MODEL.url) ||
+    !isModelReady(scene, riderConfig.url)
+  ) {
+    return null;
+  }
+  const bikeInstance = instantiateModel(scene, MOTORBIKE_MODEL.url);
+  const riderInstance = instantiateModel(scene, riderConfig.url);
+  const bikeRoot = bikeInstance?.rootNodes[0] as TransformNode | undefined;
+  const riderRoot = riderInstance?.rootNodes[0] as TransformNode | undefined;
+  if (!bikeInstance || !riderInstance || !bikeRoot || !riderRoot) {
+    bikeInstance?.rootNodes[0]?.dispose();
+    riderInstance?.rootNodes[0]?.dispose();
+    return null;
+  }
+
+  const root = new TransformNode(`${name}-motorbike`, scene);
+  root.parent = parent;
+
+  // Authored front is −Z; the π yaw puts it on wrap +Z, matching the rider.
+  const bikeWrap = new TransformNode(`${name}-bikewrap`, scene);
+  bikeWrap.parent = root;
+  bikeWrap.rotation.y = MOTORBIKE_MODEL.yawOffset;
+  bikeRoot.parent = bikeWrap;
+  bikeRoot.scaling.setAll(MOTORBIKE_MODEL.scale);
+  const bikeMaterials = convertMaterials(
+    scene,
+    `${name}-bike`,
+    bikeWrap,
+    new Map([["LightPurple", MOTORBIKE_PAINT]]),
+  );
+
+  // Centre the bike on the pivot via its own AABB midpoint (no wheel nodes to
+  // measure): the glb's footprint is offset toward the rear.
+  {
+    bikeWrap.computeWorldMatrix(true);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const mesh of bikeWrap.getChildMeshes(false)) {
+      mesh.computeWorldMatrix(true);
+      const bounds = mesh.getBoundingInfo().boundingBox;
+      minX = Math.min(minX, bounds.minimumWorld.x);
+      maxX = Math.max(maxX, bounds.maximumWorld.x);
+      minZ = Math.min(minZ, bounds.minimumWorld.z);
+      maxZ = Math.max(maxZ, bounds.maximumWorld.z);
+    }
+    if (Number.isFinite(minX)) {
+      const mid = new Vector3((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
+      root.computeWorldMatrix(true);
+      const rootInv = root.getWorldMatrix().clone().invert();
+      Vector3.TransformCoordinatesToRef(mid, rootInv, mid);
+      bikeWrap.position.x -= mid.x;
+      bikeWrap.position.z -= mid.z;
+      bikeWrap.computeWorldMatrix(true);
+    }
+  }
+
+  const riderWrap = new TransformNode(`${name}-riderwrap`, scene);
+  riderWrap.parent = root;
+  riderWrap.rotation.y = riderConfig.yawOffset;
+  riderRoot.parent = riderWrap;
+  riderRoot.scaling.setAll(riderConfig.scale);
+  const riderMaterials = convertMaterials(
+    scene,
+    `${name}-rider`,
+    riderRoot,
+    materialOverrides(riderConfig, colors),
+  );
+  for (const group of riderInstance.animationGroups) group.dispose();
+  setupSeatedRiderPose(root, bikeRoot, riderWrap, riderRoot, MOTORBIKE_GLB_ANCHORS);
+
+  addContactShadow(scene, name, root, 0.8, 2.0);
+
+  let disposed = false;
+  return {
+    root,
     setRiderVisible(visible) {
       if (disposed) return;
       riderWrap.setEnabled(visible);

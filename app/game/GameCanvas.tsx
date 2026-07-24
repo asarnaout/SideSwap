@@ -63,6 +63,7 @@ import {
 } from "./servicePoints";
 import { PROP_MODEL_FOOTPRINTS_M } from "./propFootprints";
 import {
+  BIKE_CUTSCENE_BODY,
   buildBikeErrandScript,
   buildBoardScript,
   buildErrandScript,
@@ -71,12 +72,14 @@ import {
   buildRoadsideRefuelScript,
   cutsceneBodyProfile,
   DEFAULT_CUTSCENE_BODY,
+  MOTORBIKE_CUTSCENE_BODY,
   scriptFocusPoint,
   type CutsceneBodyProfile,
   type CutsceneKind,
   type CutsceneStep,
 } from "./cutsceneScript";
 import { DriveAudio } from "./audio/DriveAudio";
+import { MOTORBIKE_ENGINE_PROFILE } from "./audio/audioMath";
 import {
   authoredSignalAspectAt,
   type AuthoredSignalAspect,
@@ -170,6 +173,7 @@ const LANE_PAINT_STYLES = new Set([
 import {
   buildActorVisual,
   buildCyclistVisual,
+  buildMotorbikeVisual,
   buildPedestrianVisual,
   characterModelUrls,
   CHARACTER_MODELS,
@@ -1410,7 +1414,7 @@ export interface GameCanvasMapPack {
 
 export interface PlayerVehicleOption {
   readonly model: VehicleModel | null;
-  readonly visualKind: "car" | "bicycle";
+  readonly visualKind: "car" | "bicycle" | "motorbike";
   readonly paintHex?: string;
 }
 
@@ -3391,10 +3395,10 @@ class BabylonGameSession {
     this.canvas = canvas;
     this.options = options;
     this.callbacks = callbacks;
-    // A bicycle has no cockpit to sit in — the first-person camera would be
-    // a car-interior lie, so bike days are third-person only.
+    // Two-wheelers have no cockpit to sit in — the first-person camera would
+    // be a car-interior lie, so bike and motorbike days are third-person only.
     this.cameraMode =
-      options.playerVehicle?.visualKind === "bicycle"
+      options.playerVehicle && options.playerVehicle.visualKind !== "car"
         ? "third"
         : options.cameraMode;
     this.inputRouter = new AdaptiveInputRouter(
@@ -3558,6 +3562,9 @@ class BabylonGameSession {
       { master: this.options.masterVolume, effects: this.options.effectsVolume },
       this.options.inputCapabilities.touchFirst,
       this.options.playerVehicle?.visualKind === "bicycle",
+      this.options.playerVehicle?.visualKind === "motorbike"
+        ? MOTORBIKE_ENGINE_PROFILE
+        : undefined,
     );
     this.updatePlayerVisuals(1);
     this.callbacks.onInputPresentationChange?.(this.inputRouter.getPresentation());
@@ -3691,8 +3698,9 @@ class BabylonGameSession {
   toggleCamera() {
     // The staged shot owns the camera while an interaction scene plays.
     if (this.activeCutscene) return;
-    // No cockpit on a bicycle; the toggle is a no-op rather than a lie.
-    if (this.options.playerVehicle?.visualKind === "bicycle") return;
+    // No cockpit on a two-wheeler; the toggle is a no-op rather than a lie.
+    const kind = this.options.playerVehicle?.visualKind;
+    if (kind && kind !== "car") return;
     this.setCameraMode(this.cameraMode === "first" ? "third" : "first");
   }
 
@@ -3873,6 +3881,18 @@ class BabylonGameSession {
         this.scene,
         this.playerExterior,
         "player-cyclist",
+        DRIVER_ACTOR_VARIANT,
+        DRIVER_ACTOR_COLORS,
+      );
+    } else if (this.options.playerVehicle?.visualKind === "motorbike") {
+      // Same composed-rider treatment on the motorbike, in a single static
+      // seated pose (no pedals; the merged-mesh wheels don't spin). Shares
+      // the cyclist visual slot — every rider hide/advance call is optional.
+      this.playerCyclistVisual?.dispose();
+      this.playerCyclistVisual = buildMotorbikeVisual(
+        this.scene,
+        this.playerExterior,
+        "player-motorbike",
         DRIVER_ACTOR_VARIANT,
         DRIVER_ACTOR_COLORS,
       );
@@ -4171,6 +4191,9 @@ class BabylonGameSession {
    * registered dimensions) reproduces the long-standing default exactly.
    */
   private cutsceneBody(): CutsceneBodyProfile {
+    const kind = this.options.playerVehicle?.visualKind;
+    if (kind === "bicycle") return BIKE_CUTSCENE_BODY;
+    if (kind === "motorbike") return MOTORBIKE_CUTSCENE_BODY;
     const model = this.options.playerVehicle?.model;
     const dimensions = model ? VEHICLE_DIMENSIONS[model] : undefined;
     if (!dimensions) return DEFAULT_CUTSCENE_BODY;
@@ -4235,19 +4258,27 @@ class BabylonGameSession {
             this.gigVenueCurbside.get(request.venueId))
           : undefined;
         if (door) {
-          // On a bicycle the courier dismounts beside the bike — no doors, no
-          // suspension dip — and the rider on the bike hides for the scene so
-          // the walking actor reads as the same person.
+          // On a two-wheeler the courier dismounts beside it — no doors, no
+          // suspension dip — and the rider on the vehicle hides for the scene
+          // so the walking actor reads as the same person.
+          const twoWheelerKind = this.options.playerVehicle?.visualKind;
           script =
-            this.options.playerVehicle?.visualKind === "bicycle"
+            twoWheelerKind === "bicycle"
               ? buildBikeErrandScript(car, { x: door.x, z: door.z })
-              : buildErrandScript(
-                  car,
-                  this.options.steeringSide,
-                  { x: door.x, z: door.z },
-                  undefined,
-                  body,
-                );
+              : twoWheelerKind === "motorbike"
+                ? buildBikeErrandScript(
+                    car,
+                    { x: door.x, z: door.z },
+                    undefined,
+                    MOTORBIKE_CUTSCENE_BODY,
+                  )
+                : buildErrandScript(
+                    car,
+                    this.options.steeringSide,
+                    { x: door.x, z: door.z },
+                    undefined,
+                    body,
+                  );
         }
         break;
       }
@@ -4303,7 +4334,9 @@ class BabylonGameSession {
     const riderWasHidden = request.kind === "board" && this.riderNode !== null;
     if (riderWasHidden) this.riderNode?.setEnabled(false);
     const playerRiderHidden =
-      this.options.playerVehicle?.visualKind === "bicycle" &&
+      this.options.playerVehicle !== null &&
+      this.options.playerVehicle !== undefined &&
+      this.options.playerVehicle.visualKind !== "car" &&
       this.playerCyclistVisual !== null;
     if (playerRiderHidden) this.playerCyclistVisual?.setRiderVisible?.(false);
 
@@ -9709,10 +9742,10 @@ class BabylonGameSession {
 
   private buildPlayerCar() {
     const scene = this.scene;
-    // A bicycle day builds no car body at all: the cyclist rig arrives with
-    // the model upgrade pass (the glbs must be preloaded first), and until
-    // then the player node is simply empty behind the loading gate.
-    if (this.options.playerVehicle?.visualKind !== "bicycle") {
+    // A two-wheeler day builds no car body at all: the composed rider rig
+    // arrives with the model upgrade pass (the glbs must be preloaded first),
+    // and until then the player node is simply empty behind the loading gate.
+    if ((this.options.playerVehicle?.visualKind ?? "car") === "car") {
       this.playerVehicleVisual = createVehicleMesh(
         scene,
         this.playerExterior,

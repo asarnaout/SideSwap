@@ -18,6 +18,11 @@ stations) live under `public/models/props/`.
 - **props/shop.glb** ("Building") — by **Kay Lousberg** via Poly Pizza
   (<https://poly.pizza/m/EL3ePInr1N>), released **CC0 1.0**. Low-poly corner
   shop, used for shop gig venues.
+- **characters/motorbike.glb** ("Cartoony Purple Motorcycle") — by
+  **AliceCassie** via Poly Pizza (<https://poly.pizza/m/j20srJUjpB>), released
+  **CC0 1.0**. Career Mode's motorbike tier; the LightPurple body panels are
+  recoloured to the courier livery at load, and a rigged rider is seated on it
+  at runtime (`setupSeatedRiderPose`).
 
 ### NYC Nightfall environment kit (CC0)
 
