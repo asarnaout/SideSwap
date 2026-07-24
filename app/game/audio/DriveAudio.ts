@@ -36,7 +36,7 @@ export type { MasterBusVolumes as DriveAudioVolumes } from "./masterBus";
 export class DriveAudio {
   private readonly bus: MasterBus;
   private readonly jitterSource: AudioBufferSourceNode;
-  private readonly engine: EngineVoice;
+  private readonly engine: EngineVoice | null;
   private readonly ambience: AmbienceVoice;
   private readonly tyres: TyreVoice;
   private readonly horn: HornVoice;
@@ -46,7 +46,12 @@ export class DriveAudio {
   private readonly params: DriveAudioParams = createAudioParams();
   private disposed = false;
 
-  private constructor(context: AudioContext, volumes: MasterBusVolumes, lowPower: boolean) {
+  private constructor(
+    context: AudioContext,
+    volumes: MasterBusVolumes,
+    lowPower: boolean,
+    engineless: boolean,
+  ) {
     this.bus = new MasterBus(context, volumes);
     this.jitterSource = createJitterSource(context);
     this.jitterSource.start();
@@ -58,7 +63,9 @@ export class DriveAudio {
       jitter: this.jitterSource,
       lowPower,
     };
-    this.engine = new EngineVoice(voice);
+    // A bicycle has no engine: the whole synthesized gearbox stays silent
+    // while wind, tyres, horn, impacts and foley behave exactly as ever.
+    this.engine = engineless ? null : new EngineVoice(voice);
     this.ambience = new AmbienceVoice(voice);
     this.tyres = new TyreVoice(voice);
     this.horn = new HornVoice(voice);
@@ -70,11 +77,15 @@ export class DriveAudio {
    * Returns null when Web Audio is unavailable or refuses to start, so callers
    * can stay `this.audio?.x()` and the game remains fully playable in silence.
    */
-  static create(volumes: MasterBusVolumes, lowPower = false): DriveAudio | null {
+  static create(
+    volumes: MasterBusVolumes,
+    lowPower = false,
+    engineless = false,
+  ): DriveAudio | null {
     try {
       const context = primeAudioContext();
       if (!context) return null;
-      return new DriveAudio(context, volumes, lowPower);
+      return new DriveAudio(context, volumes, lowPower, engineless);
     } catch {
       return null;
     }
@@ -83,7 +94,7 @@ export class DriveAudio {
   update(telemetry: DriveAudioTelemetry): void {
     if (this.disposed) return;
     updateAudioModel(this.state, telemetry, this.params);
-    this.engine.update(this.params);
+    this.engine?.update(this.params);
     this.ambience.update(this.params);
     this.tyres.update(this.params);
   }
@@ -153,7 +164,7 @@ export class DriveAudio {
     const settleSeconds = this.bus.beginDispose();
     window.setTimeout(
       () => {
-        this.engine.stop();
+        this.engine?.stop();
         this.ambience.stop();
         this.tyres.stop();
         this.horn.stop();

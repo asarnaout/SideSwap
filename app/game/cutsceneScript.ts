@@ -404,6 +404,51 @@ export function buildErrandScript(
   ];
 }
 
+/**
+ * The bicycle's walk envelope: tiny, door-less. The "door" lateral is where
+ * the rider dismounts to, just clear of the frame.
+ */
+export const BIKE_CUTSCENE_BODY: CutsceneBodyProfile = {
+  bodyHalfLongM: 1.0,
+  bodyHalfLatM: 0.35,
+  clearLongM: 1.5,
+  clearLatM: 0.9,
+  doorLateralM: 0.6,
+  frontDoorForwardM: 0.2,
+  rearDoorForwardM: -0.3,
+};
+
+/**
+ * The courier's errand on a bicycle: dismount beside the parked bike, run to
+ * the venue door, dwell inside, run back and remount. No door sounds and no
+ * suspension dip — a bike has neither; the session hides the rider on the
+ * bike for the scene's duration so the walking actor reads as the same
+ * person.
+ */
+export function buildBikeErrandScript(
+  bike: CutsceneCarPose,
+  buildingDoor: WorldPoint,
+  dwellSeconds: number = STORE_DWELL_SECONDS,
+  body: CutsceneBodyProfile = BIKE_CUTSCENE_BODY,
+): CutsceneStep[] {
+  const mount = toWorld(bike, 0, body.doorLateralM);
+  const out = routeAroundCar(bike, mount, buildingDoor, body);
+  const back = routeAroundCar(bike, buildingDoor, mount, body);
+  return [
+    {
+      action: "show",
+      path: [mount],
+      seconds: 0.4,
+      face: headingTo(bike, mount),
+    },
+    { action: "run", path: out, seconds: legSeconds(out, RUN_SPEED_MPS) },
+    { action: "hide", seconds: dwellSeconds },
+    { action: "show", path: [buildingDoor], seconds: 0.15 },
+    { action: "run", path: back, seconds: legSeconds(back, RUN_SPEED_MPS) },
+    { action: "hide", seconds: 0.35 },
+  ];
+}
+
 /** Total running time of a script, for captions and safety timeouts. */
 export function scriptSeconds(script: readonly CutsceneStep[]): number {
   let total = 0;
