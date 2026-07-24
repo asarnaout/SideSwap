@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 // Career Mode's interstitial screens: the garage (morning vehicle choice), the
 // end-of-day ledger, and the career-over report. Props-pure — everything they
 // show arrives as data, so tests render them directly without the app shell.
@@ -310,14 +312,20 @@ export function LedgerView({
   result,
   slice,
   country,
+  reducedMotion,
   onContinue,
 }: {
   result: SettlementResult;
   /** The slice AFTER settlement (already advanced to the next day). */
   slice: CareerSliceV1;
   country: CountryProfile;
+  reducedMotion: boolean;
   onContinue: () => void;
 }) {
+  // Papers-Please pacing: lines land one by one. Clicking the ledger (or
+  // preferring reduced motion) shows everything at once.
+  const [revealAll, setRevealAll] = useState(reducedMotion);
+  const staged = !revealAll;
   return (
     <section className="subpage" aria-label="End of day ledger">
       <div className="subpage-heading">
@@ -326,7 +334,13 @@ export function LedgerView({
           <h1>The day&apos;s reckoning.</h1>
         </div>
       </div>
-      <div style={{ ...cardStyle, maxWidth: "30rem" }}>
+      {staged && (
+        <style>{"@keyframes ledger-line-in { from { opacity: 0; transform: translateY(0.35rem); } to { opacity: 1; transform: none; } }"}</style>
+      )}
+      <div
+        style={{ ...cardStyle, maxWidth: "30rem", cursor: staged ? "pointer" : "auto" }}
+        onClick={() => setRevealAll(true)}
+      >
         <ol
           data-testid="ledger-lines"
           style={{
@@ -343,6 +357,9 @@ export function LedgerView({
               key={`${line.kind}-${index}`}
               data-testid={`ledger-${line.kind}`}
               style={{
+                animation: staged
+                  ? `ledger-line-in 0.3s ease-out both ${index * 0.28}s`
+                  : "none",
                 display: "flex",
                 justifyContent: "space-between",
                 gap: "1rem",

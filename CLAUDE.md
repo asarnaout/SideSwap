@@ -91,6 +91,15 @@ One xorshift32 PRNG seeded from `lesson.trafficSeed`, consumed in exactly two pl
 
 There is no float discipline — plain doubles. Determinism holds only because the same operations happen in the same order. `tests/trafficSafetyAcceptance.test.ts` replays 8 minutes twice and compares a trace hash; anything that perturbs NPC iteration order, id naming, or lane ordering fails it. Note that geometry edits which *look* purely visual can move the hash, because supplemental oncoming gates are derived from road-surface lane membership.
 
+### Career Mode
+
+A second mode beside free drive: prepaid vehicle rental, a ~6-minute sim-clock day, 25% commission + a flat platform fee, shortfall→3-day loan at +15%, one FINAL NOTICE, buyout victory at 15× rent. It lives **entirely in the outer ring** — the sim core still knows nothing about money.
+
+- **`app/game/career.ts` is the pure brain** (gigs.ts-style): vehicle catalog (physics/fuel/fares/allowed gig kinds), `settleDay` (order: recap → platform fee → ceil-per-remaining-day installment → shortfall→loan → bankruptcy gate; the notice clears only on a fully clean settlement), seeds, checksum codec. Tune numbers there, nowhere else; `tests/careerBalance.test.ts` trips if rent+fee exceeds 4 median gig nets anywhere.
+- **The slice persists inside `PlayerProgressV2.career`** (`writeCareer`/`clearCareer` are the ONLY sanctioned write paths — `saveProgress` re-verifies the FNV-1a checksum via `migrateProgress`, so any other mutation path comes back `{state:"corrupt"}` on the next load; that corrupt marker is itself persisted state). Career money is day-local (`dayCash`/`dayLog` refs in `SideSwapApp`), integer-only, may go negative, and **never touches** `walletByCountry`/`fuelByCountry`/`lifetimeEarnings`. Saves happen at day boundaries only — a mid-day quit redoes the day (per-day seeds from `careerDayTrafficSeed`).
+- **A day = a GameCanvas remount**: `buildCareerDayLesson` gives each day its own lesson id + traffic seed, and the React key carries `-d${day}-${vehicleId}`. The day clock rides `GameHudSnapshot.simElapsedMs` (sim time — pauses with the sim; the app folds it across tow resets). Whistle mid-cutscene defers settlement until the scene's `done` lands — which is also why career gig payouts are **synchronous in the cutscene handler**, not the free-drive payout effect.
+- **Per-vehicle physics are `SimulationCoreConfig` fields whose defaults equal the old literals exactly** — the acceptance replay pins that identity, so never change a default without meaning to change free drive. NPC-to-NPC spacings are deliberately pinned literals (they must not re-space around the player's vehicle). Cutscenes take a `CutsceneBodyProfile` scaled from `VEHICLE_DIMENSIONS` (flagship reproduces the defaults exactly); the bicycle uses `buildBikeErrandScript` + a rider hide/show instead of car doors.
+
 ### Conventions that bite
 
 **Three angle conventions coexist.**

@@ -1423,6 +1423,48 @@ export default function SideSwapApp() {
           onCameraChange={(mode) => setCamera(fromCanvasCamera(mode))}
           onExit={exitDrive}
         />
+        {careerRun && DAY_LENGTH_MS - dayRemainingMs < 2600 && hud && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "grid",
+              placeItems: "center",
+              pointerEvents: "none",
+              zIndex: 7,
+            }}
+          >
+            <div
+              style={{
+                textAlign: "center",
+                color: "#f4f6f8",
+                textShadow: "0 4px 24px rgba(0,0,0,0.55)",
+                opacity: progress.accessibility.reducedMotion
+                  ? 1
+                  : Math.min(1, (2600 - (DAY_LENGTH_MS - dayRemainingMs)) / 600),
+              }}
+            >
+              <div
+                style={{
+                  font: "800 3.2rem/1 system-ui, sans-serif",
+                  letterSpacing: "0.12em",
+                }}
+              >
+                DAY {careerRun.slice.day}
+              </div>
+              <div
+                style={{
+                  font: "600 1rem/1.6 system-ui, sans-serif",
+                  opacity: 0.8,
+                }}
+              >
+                {driveDestination.destinationName}
+                {hud.scenarioClock ? ` · ${hud.scenarioClock}` : ""}
+              </div>
+            </div>
+          </div>
+        )}
         {gig && gig.state !== "delivered" && (
           <div
             style={{
@@ -1730,7 +1772,9 @@ export default function SideSwapApp() {
                 marginBottom: "0.25rem",
               }}
             >
-              <span>Car</span>
+              <span>
+                {careerVehicle?.visualKind === "bicycle" ? "Bike" : "Car"}
+              </span>
               <span>
                 {carCondition <= 0
                   ? "WRECKED"
@@ -2010,6 +2054,7 @@ export default function SideSwapApp() {
           result={lastSettlement.result}
           slice={lastSettlement.slice}
           country={careerCountry}
+          reducedMotion={progress.accessibility.reducedMotion}
           onContinue={() => setView("career-garage")}
         />
       )}
