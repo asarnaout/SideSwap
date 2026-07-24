@@ -44,6 +44,7 @@ import {
   writeCareer,
 } from "./game/progress";
 import {
+  applyBuyout,
   applySettlement,
   careerDayTrafficSeed,
   careerFare,
@@ -1200,6 +1201,18 @@ export default function SideSwapApp() {
     endCareerDayRef.current = endCareerDay;
   });
 
+  // The victory: buying the selected rental outright while debt-free. A
+  // garage-boundary save, like settlement — applyBuyout stamps the slice with
+  // state "won" and the victory day; the owned vehicle rents free thereafter.
+  const buyVehicle = (vehicleId: CareerVehicleId) => {
+    if (!careerSlice) return;
+    const vehicle = getCareerVehicle(vehicleId);
+    const bought = applyBuyout(careerSlice, vehicle);
+    const saved = writeCareer(progress, bought);
+    setProgress(saved);
+    saveProgress(saved);
+  };
+
   // Career interstitials need their backing state; a stale view (an abandoned
   // or missing career) falls back to something renderable instead of a blank
   // shell. Derived, not redirected — the underlying `view` self-corrects on
@@ -1980,6 +1993,7 @@ export default function SideSwapApp() {
             lockedVehicles={lockedCareerVehicles}
             onSelect={setGarageVehicleId}
             onStartDay={beginCareerDay}
+            onBuyout={buyVehicle}
             onAbandon={() => {
               if (
                 window.confirm(

@@ -472,6 +472,47 @@ describe("career mode flow", () => {
     expect(storedCareer()).toBeNull();
   });
 
+  it("buys the hatch outright while debt-free: victory recorded, rent gone", async () => {
+    seedProgressWithCareer(
+      stampCareerChecksum({
+        ...createCareerSlice({
+          countryId: "uk",
+          destinationId: "uk-london",
+          careerSeed: 21,
+        }),
+        cash: 200,
+        day: 5,
+      }),
+    );
+    await enterCareerMode();
+    fireEvent.click(screen.getByTestId("career-continue"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+
+    // The finish line is visible from the garage: 200 toward the 180 buyout.
+    expect(screen.getByTestId("buyout-fund")).toHaveTextContent("£180.00");
+
+    fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
+    const buy = screen.getByTestId("garage-buyout");
+    expect(buy).toHaveTextContent("£180.00");
+    fireEvent.click(buy);
+
+    expect(await screen.findByTestId("victory-banner")).toHaveTextContent(
+      /day 5/i,
+    );
+    const won = storedCareer() as CareerSliceV1;
+    expect(won.state).toBe("won");
+    expect(won.victoryDay).toBe(5);
+    expect(won.ownedVehicleId).toBe("compact-hatch");
+    expect(won.cash).toBe(20);
+    // The owned hatch now rents free — the whole 20 survives the morning.
+    expect(screen.getByTestId("garage-vehicle-compact-hatch")).toHaveTextContent(
+      /Owned — no rent/,
+    );
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+    await screen.findByLabelText("Mock driving scene");
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("£20.00");
+  });
+
   it("summons roadside service on an empty tank and charges the premium into the red", async () => {
     await enterCareerMode();
     fireEvent.click(screen.getByTestId("career-start"));
