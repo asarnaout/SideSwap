@@ -31,6 +31,8 @@ vi.mock("next/dynamic", () => ({
   default: () =>
     function MockGameCanvas(props: {
       lesson?: { readonly id: string };
+      playerVehicle?: { readonly model: string | null } | null;
+      vehiclePhysics?: { readonly maxForwardSpeedMps?: number } | null;
       onHudUpdate?: (snapshot: Record<string, unknown>) => void;
       onEvent?: (event: Record<string, unknown>) => void;
       onExit?: () => void;
@@ -61,6 +63,8 @@ vi.mock("next/dynamic", () => ({
         <section
           aria-label="Mock driving scene"
           data-scenario={props.lesson?.id}
+          data-player-model={props.playerVehicle?.model ?? "default"}
+          data-max-speed={props.vehiclePhysics?.maxForwardSpeedMps ?? "default"}
         >
           <button
             type="button"
@@ -321,6 +325,35 @@ describe("career mode flow", () => {
       window.localStorage.getItem(PROGRESS_STORAGE_KEY) ?? "{}",
     ) as { walletByCountry: Record<string, number> };
     expect(stored.walletByCountry.uk).toBe(20);
+  });
+
+  it("takes the van out with its own model and physics", async () => {
+    seedProgressWithCareer(
+      stampCareerChecksum({
+        ...createCareerSlice({
+          countryId: "uk",
+          destinationId: "uk-london",
+          careerSeed: 55,
+        }),
+        cash: 100,
+      }),
+    );
+    await enterCareerMode();
+    fireEvent.click(screen.getByTestId("career-continue"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+
+    const vanCard = screen.getByTestId("garage-vehicle-delivery-van");
+    expect(vanCard).toBeEnabled();
+    expect(vanCard).toHaveTextContent(/Deliveries only/i);
+    fireEvent.click(vanCard);
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+
+    const scene = await screen.findByLabelText("Mock driving scene");
+    expect(scene).toHaveAttribute("data-player-model", "delivery-van");
+    expect(scene).toHaveAttribute("data-max-speed", "19");
+
+    fireEvent.click(screen.getByTestId("mock-exit"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
   });
 
   it("rents on credit when broke, and a shortfall under FINAL NOTICE ends the career", async () => {

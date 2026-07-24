@@ -27,13 +27,16 @@ const MAX_FRAME_SECONDS = 0.25;
 const PLAYER_RADIUS_METRES = 1.05;
 const NPC_RADIUS_METRES = 1.0;
 const NPC_MIN_BUMPER_CLEARANCE_M = 3;
-const NPC_FOLLOW_STANDSTILL_GAP_M =
-  PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 4;
+// Historically PLAYER_RADIUS + NPC_RADIUS + 4 — pinned to that value: this
+// gap spaces NPCs behind OTHER NPCS, so it must not stretch or shrink with
+// whatever the player happens to be driving.
+const NPC_FOLLOW_STANDSTILL_GAP_M = 6.05;
 const NPC_LANE_CHANGE_DISTANCE_M = 12;
 const NPC_LANE_CHANGE_SIGNAL_SECONDS = 1.2;
 const NPC_LANE_CHANGE_END_MARGIN_M = 2;
-const PLAYER_TRAFFIC_CLEARANCE_M =
-  PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 1.25;
+// NPC-to-NPC clearance at a lane entry, pinned for the same reason as the
+// follow gap above (was PLAYER_RADIUS + NPC_RADIUS + 3).
+const NPC_LANE_ENTRY_CLEARANCE_M = 5.05;
 const NPC_CROSSING_YIELD_CLEARANCE_M = NPC_RADIUS_METRES * 2 + 3;
 // A rendered vehicle is ~3.75 m long, but the physics model treats every car as
 // a ~1 m-radius disc. Holding at least a body length of centre-to-centre spacing
@@ -402,6 +405,26 @@ export interface SimulationCoreConfig {
   readonly maxForwardSpeedMps?: number;
   readonly maxReverseSpeedMps?: number;
   /**
+   * Player vehicle physics. Every field is optional and defaults to the
+   * long-standing literals, so omitting them (free drive, every existing
+   * test) is behaviourally identical to before they existed — that identity
+   * is what keeps the deterministic acceptance replay green. Career Mode
+   * passes a full set per rented vehicle.
+   */
+  readonly forwardAccelMps2?: number;
+  readonly reverseAccelMps2?: number;
+  readonly brakeBaseMps2?: number;
+  readonly brakeStrengthMps2?: number;
+  readonly dragBaseMps2?: number;
+  readonly dragPerMps?: number;
+  readonly steerBaseRate?: number;
+  readonly steerAuthorityRate?: number;
+  readonly steerAuthoritySpeedMps?: number;
+  readonly instabilityLateralMps2?: number;
+  readonly playerRadiusM?: number;
+  readonly playerCapsuleHalfLengthM?: number;
+  readonly playerCapsuleRadiusM?: number;
+  /**
    * How serious player rule violations are handled. "reset" (the default) snaps
    * the car back to the last checkpoint and freezes the sim on a critical
    * violation — the driving-coach behaviour. "coach" keeps the drive running
@@ -711,6 +734,19 @@ interface InternalConfig {
   minRuntimeSpawnDistanceM: number;
   maxForwardSpeedMps: number;
   maxReverseSpeedMps: number;
+  forwardAccelMps2: number;
+  reverseAccelMps2: number;
+  brakeBaseMps2: number;
+  brakeStrengthMps2: number;
+  dragBaseMps2: number;
+  dragPerMps: number;
+  steerBaseRate: number;
+  steerAuthorityRate: number;
+  steerAuthoritySpeedMps: number;
+  instabilityLateralMps2: number;
+  playerRadiusM: number;
+  playerCapsuleHalfLengthM: number;
+  playerCapsuleRadiusM: number;
   enforcement: "coach" | "reset";
 }
 
@@ -1348,6 +1384,42 @@ export class SimulationCore {
       ),
       maxForwardSpeedMps: clamp(configuration.maxForwardSpeedMps ?? 22, 5, 50),
       maxReverseSpeedMps: clamp(configuration.maxReverseSpeedMps ?? 7, 2, 15),
+      // Defaults are the exact literals movePlayer/the collision code carried
+      // before these knobs existed; the clamps bound how far a vehicle tier
+      // may push each one.
+      forwardAccelMps2: clamp(configuration.forwardAccelMps2 ?? 5.6, 1, 15),
+      reverseAccelMps2: clamp(configuration.reverseAccelMps2 ?? 4.1, 1, 10),
+      brakeBaseMps2: clamp(configuration.brakeBaseMps2 ?? 3, 1, 10),
+      brakeStrengthMps2: clamp(configuration.brakeStrengthMps2 ?? 8.5, 2, 20),
+      dragBaseMps2: clamp(configuration.dragBaseMps2 ?? 0.25, 0, 2),
+      dragPerMps: clamp(configuration.dragPerMps ?? 0.035, 0, 0.2),
+      steerBaseRate: clamp(configuration.steerBaseRate ?? 0.32, 0.05, 1),
+      steerAuthorityRate: clamp(configuration.steerAuthorityRate ?? 0.95, 0, 3),
+      steerAuthoritySpeedMps: clamp(
+        configuration.steerAuthoritySpeedMps ?? 5.5,
+        1,
+        20,
+      ),
+      instabilityLateralMps2: clamp(
+        configuration.instabilityLateralMps2 ?? 11,
+        3,
+        30,
+      ),
+      playerRadiusM: clamp(
+        configuration.playerRadiusM ?? PLAYER_RADIUS_METRES,
+        0.3,
+        2,
+      ),
+      playerCapsuleHalfLengthM: clamp(
+        configuration.playerCapsuleHalfLengthM ?? PLAYER_CAPSULE_HALF_LENGTH_M,
+        0.3,
+        3,
+      ),
+      playerCapsuleRadiusM: clamp(
+        configuration.playerCapsuleRadiusM ?? PLAYER_CAPSULE_RADIUS_M,
+        0.3,
+        2,
+      ),
     };
 
     const routeStepIds = new Set<string>();
@@ -1470,7 +1542,7 @@ export class SimulationCore {
     // Broad-phase bounds are tested against the player centre, so inflate by
     // the capsule's full reach plus one step of travel headroom.
     const obstacleInflationM =
-      PLAYER_CAPSULE_HALF_LENGTH_M + PLAYER_CAPSULE_RADIUS_M + 1;
+      this.config.playerCapsuleHalfLengthM + this.config.playerCapsuleRadiusM + 1;
     this.staticObstacles = (configuration.staticObstacles ?? []).map(
       (obstacle) => normalizeStaticObstacle(obstacle, obstacleInflationM),
     );
@@ -2107,12 +2179,18 @@ export class SimulationCore {
       this.signedSpeedMps = moveTowards(
         this.signedSpeedMps,
         0,
-        (3 + brake * 8.5) * deltaSeconds,
+        (this.config.brakeBaseMps2 + brake * this.config.brakeStrengthMps2) *
+          deltaSeconds,
       );
     } else {
-      const acceleration = drive >= 0 ? 5.6 : 4.1;
+      const acceleration =
+        drive >= 0
+          ? this.config.forwardAccelMps2
+          : this.config.reverseAccelMps2;
       this.signedSpeedMps += drive * acceleration * deltaSeconds;
-      const drag = 0.25 + Math.abs(this.signedSpeedMps) * 0.035;
+      const drag =
+        this.config.dragBaseMps2 +
+        Math.abs(this.signedSpeedMps) * this.config.dragPerMps;
       this.signedSpeedMps = moveTowards(
         this.signedSpeedMps,
         0,
@@ -2136,13 +2214,17 @@ export class SimulationCore {
 
     const absoluteSpeed = Math.abs(this.signedSpeedMps);
     if (absoluteSpeed > 0.04) {
-      const steeringAuthority = Math.min(1, absoluteSpeed / 5.5);
+      const steeringAuthority = Math.min(
+        1,
+        absoluteSpeed / this.config.steerAuthoritySpeedMps,
+      );
       const reverseSteering = this.signedSpeedMps < 0 ? -1 : 1;
       this.player.heading = wrapAngle(
         this.player.heading +
           this.continuousInput.steer *
             reverseSteering *
-            (0.32 + steeringAuthority * 0.95) *
+            (this.config.steerBaseRate +
+              steeringAuthority * this.config.steerAuthorityRate) *
             deltaSeconds,
       );
     }
@@ -2154,7 +2236,7 @@ export class SimulationCore {
 
     const lateralAcceleration =
       (Math.abs(this.continuousInput.steer) * absoluteSpeed * absoluteSpeed) / 3.1;
-    if (lateralAcceleration > 11) {
+    if (lateralAcceleration > this.config.instabilityLateralMps2) {
       this.unstableControlSeconds += deltaSeconds;
       this.signedSpeedMps *= 1 - 0.12 * deltaSeconds;
     } else {
@@ -2222,8 +2304,8 @@ export class SimulationCore {
           continue;
         }
         for (let end = -1; end <= 1; end += 2) {
-          const cx = px + forwardX * PLAYER_CAPSULE_HALF_LENGTH_M * end;
-          const cz = pz + forwardZ * PLAYER_CAPSULE_HALF_LENGTH_M * end;
+          const cx = px + forwardX * this.config.playerCapsuleHalfLengthM * end;
+          const cz = pz + forwardZ * this.config.playerCapsuleHalfLengthM * end;
           const dx = cx - obstacle.x;
           const dz = cz - obstacle.z;
           let penetration: number;
@@ -2232,7 +2314,7 @@ export class SimulationCore {
           if (obstacle.radius > 0) {
             const distance = Math.hypot(dx, dz);
             penetration =
-              obstacle.radius + PLAYER_CAPSULE_RADIUS_M - distance;
+              obstacle.radius + this.config.playerCapsuleRadiusM - distance;
             if (penetration <= deepest) continue;
             if (distance > 1e-6) {
               nx = dx / distance;
@@ -2253,12 +2335,12 @@ export class SimulationCore {
                 const sign = du >= 0 ? 1 : -1;
                 nx = obstacle.ux * sign;
                 nz = obstacle.uz * sign;
-                penetration = insideU + PLAYER_CAPSULE_RADIUS_M;
+                penetration = insideU + this.config.playerCapsuleRadiusM;
               } else {
                 const sign = dv >= 0 ? 1 : -1;
                 nx = obstacle.uz * sign;
                 nz = -obstacle.ux * sign;
-                penetration = insideV + PLAYER_CAPSULE_RADIUS_M;
+                penetration = insideV + this.config.playerCapsuleRadiusM;
               }
             } else {
               const qu = Math.max(-obstacle.halfU, Math.min(obstacle.halfU, du));
@@ -2266,7 +2348,7 @@ export class SimulationCore {
               const gapX = dx - (obstacle.ux * qu + obstacle.uz * qv);
               const gapZ = dz - (obstacle.uz * qu - obstacle.ux * qv);
               const distance = Math.hypot(gapX, gapZ);
-              penetration = PLAYER_CAPSULE_RADIUS_M - distance;
+              penetration = this.config.playerCapsuleRadiusM - distance;
               if (penetration <= deepest) continue;
               if (distance > 1e-6) {
                 nx = gapX / distance;
@@ -2509,7 +2591,8 @@ export class SimulationCore {
       lane,
       Math.min(lane.length, gate.distance + desiredSpeedMps * SPAWN_PREDICTION_SECONDS),
     );
-    const predictedClearance = PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 1.5;
+    const predictedClearance =
+      this.config.playerRadiusM + NPC_RADIUS_METRES + 1.5;
     if (
       distanceToSegmentSquared(
         this.player.x,
@@ -3371,11 +3454,17 @@ export class SimulationCore {
     return true;
   }
 
+  /** Player-to-NPC clearance for traffic decisions (was a module constant
+   * derived from the fixed player disc; now tracks the configured radius). */
+  private playerTrafficClearanceM(): number {
+    return this.config.playerRadiusM + NPC_RADIUS_METRES + 1.25;
+  }
+
   private isNpcTravelClearOfPlayer(
     npc: NpcInternal,
     travel: number,
   ): boolean {
-    const playerCheckRadius = PLAYER_TRAFFIC_CLEARANCE_M + travel + 5;
+    const playerCheckRadius = this.playerTrafficClearanceM() + travel + 5;
     if (
       distanceSquared(npc, this.player) >
       playerCheckRadius * playerCheckRadius
@@ -3389,7 +3478,7 @@ export class SimulationCore {
           npc,
           candidate,
           this.player,
-          PLAYER_TRAFFIC_CLEARANCE_M,
+          this.playerTrafficClearanceM(),
         ),
     );
   }
@@ -3498,14 +3587,14 @@ export class SimulationCore {
       }
       if (
         distanceSquared(other, targetStart) <
-        (PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 3) ** 2
+        NPC_LANE_ENTRY_CLEARANCE_M ** 2
       ) {
         return false;
       }
     }
     return (
       distanceSquared(this.player, targetStart) >=
-      (PLAYER_RADIUS_METRES + NPC_RADIUS_METRES + 4) ** 2
+      (this.config.playerRadiusM + NPC_RADIUS_METRES + 4) ** 2
     );
   }
 
@@ -3887,7 +3976,7 @@ export class SimulationCore {
   }
 
   private checkCollisions(oldPlayer: SimulationPoint): void {
-    const collisionRadius = PLAYER_RADIUS_METRES + NPC_RADIUS_METRES;
+    const collisionRadius = this.config.playerRadiusM + NPC_RADIUS_METRES;
     for (const npc of this.npcs) {
       if (!npc.active) continue;
       const relativeOldX = oldPlayer.x - npc.previousX;
@@ -4443,7 +4532,7 @@ export class SimulationCore {
       );
       const futureDifference =
         centreDifference + (npc.speedMps - playerSpeed) * horizon;
-      const physicalLength = PLAYER_RADIUS_METRES + NPC_RADIUS_METRES;
+      const physicalLength = this.config.playerRadiusM + NPC_RADIUS_METRES;
       if (centreDifference >= 0) {
         const gap = Math.max(0, centreDifference - physicalLength);
         const required = standstillGapM + playerSpeed * headwaySeconds;
@@ -4504,7 +4593,7 @@ export class SimulationCore {
     return (
       playerDistance -
       lead.distance -
-      (PLAYER_RADIUS_METRES + NPC_RADIUS_METRES)
+      (this.config.playerRadiusM + NPC_RADIUS_METRES)
     );
   }
 
@@ -4638,7 +4727,7 @@ export class SimulationCore {
   private routeLaneContainmentTolerance(lane: NormalizedLane): number {
     return Math.max(
       0.1,
-      lane.width / 2 - PLAYER_RADIUS_METRES - ROUTE_LANE_EDGE_CLEARANCE_M,
+      lane.width / 2 - this.config.playerRadiusM - ROUTE_LANE_EDGE_CLEARANCE_M,
     );
   }
 
@@ -5403,7 +5492,7 @@ export class SimulationCore {
       Number.isFinite(checkpoint.width);
     const fullVehicleLaneTolerance = Math.max(
       0.1,
-      (checkpoint.width ?? 0) / 2 - PLAYER_RADIUS_METRES - 0.3,
+      (checkpoint.width ?? 0) / 2 - this.config.playerRadiusM - 0.3,
     );
     const crossedLaneAnchor =
       hasLaneAnchor &&

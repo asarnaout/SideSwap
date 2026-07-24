@@ -1015,12 +1015,10 @@ export default function SideSwapApp() {
   const careerCountry = careerSlice
     ? getCountryProfile(careerSlice.countryId)
     : null;
-  // Bicycle ships in a later phase: the card is visible but locked, so the
-  // hatch is the interim starter.
+  // The bicycle ships in a later phase (needs the player-cyclist rig): the
+  // card is visible but locked, so the hatch is the interim starter.
   const lockedCareerVehicles: Partial<Record<CareerVehicleId, string>> = {
     bicycle: "Arriving soon — start with the hatchback",
-    "delivery-van": "Unlocks in a later update",
-    "sport-sedan": "Unlocks in a later update",
   };
   // When nothing is affordable the cheapest unlocked vehicle may start with
   // its rent carried into the day as negative cash — without this, a solvent
@@ -1339,6 +1337,15 @@ export default function SideSwapApp() {
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
           outOfFuel={tankCapacityL > 0 && driveFuel <= 0}
+          playerVehicle={
+            careerVehicle
+              ? {
+                  model: careerVehicle.model,
+                  visualKind: careerVehicle.visualKind,
+                }
+              : null
+          }
+          vehiclePhysics={careerVehicle ? careerVehicle.physics : null}
           carConditionPct={carCondition}
           resetNonce={towResetNonce}
           riderVenueId={riderVenueId}
