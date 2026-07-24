@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BIKE_CUTSCENE_BODY,
   buildBikeErrandScript,
+  buildRoadsideRefuelScript,
   cutsceneBodyProfile,
   DEFAULT_CUTSCENE_BODY,
   MAX_LEG_SECONDS,
@@ -390,6 +391,36 @@ describe("buildBikeErrandScript", () => {
             expect(inside, "sample crosses the bike frame").toBe(false);
           }
         }
+      }
+    }
+  });
+});
+
+describe("buildRoadsideRefuelScript", () => {
+  it("fills at the driver-side rear filler without crossing the body, both sides", () => {
+    for (const car of CAR_POSES) {
+      for (const steeringSide of ["left", "right"] as const) {
+        const script = buildRoadsideRefuelScript(car, steeringSide);
+        expectClearOfCarBody(car, script);
+        // Exactly one fill window, book-ended by the pump foley.
+        const fills = script.filter((step) => step.fuelWindow);
+        expect(fills).toHaveLength(1);
+        expect(script.some((step) => step.sound === "pump_start")).toBe(true);
+        expect(script.some((step) => step.sound === "pump_stop")).toBe(true);
+        // Steps out the driver door, ends back inside with the dip.
+        expect(script[0].path?.[0]).toEqual(driverDoorPoint(car, steeringSide));
+        expect(script[script.length - 1]).toMatchObject({
+          action: "hide",
+          carDip: true,
+        });
+        // The filler stand point sits on the driver's own side, clear of the
+        // flank — the walk never needs to cross the body.
+        const walkOut = script[1];
+        const filler = walkOut.path?.[walkOut.path.length - 1];
+        const fillerLocal = local(car, filler!);
+        const driverSign = steeringSide === "left" ? -1 : 1;
+        expect(Math.sign(fillerLocal.lat)).toBe(driverSign);
+        expect(Math.abs(fillerLocal.lat)).toBeGreaterThan(1.1);
       }
     }
   });

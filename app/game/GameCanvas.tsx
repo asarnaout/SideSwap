@@ -68,6 +68,7 @@ import {
   buildErrandScript,
   buildExitScript,
   buildRefuelScript,
+  buildRoadsideRefuelScript,
   cutsceneBodyProfile,
   DEFAULT_CUTSCENE_BODY,
   scriptFocusPoint,
@@ -4200,6 +4201,11 @@ class BabylonGameSession {
         }
         break;
       }
+      case "roadside_refuel": {
+        // No pump needed: the rescue plays wherever the tank ran dry.
+        script = buildRoadsideRefuelScript(car, this.options.steeringSide, body);
+        break;
+      }
       case "board": {
         const spot = request.venueId
           ? this.gigVenueCurbside.get(request.venueId)
@@ -4479,7 +4485,7 @@ class BabylonGameSession {
 
   private emitCutsceneDone(nonce: number, kind: CutsceneKind) {
     const message =
-      kind === "refuel"
+      kind === "refuel" || kind === "roadside_refuel"
         ? "Tank filled; back behind the wheel."
         : kind === "board"
           ? "Rider aboard."
