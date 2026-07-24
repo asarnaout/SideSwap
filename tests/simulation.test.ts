@@ -17,6 +17,77 @@ describe("deterministic simulation", () => {
     expect(left.getSnapshot()).toEqual(right.getSnapshot());
   });
 
+  // The per-vehicle physics knobs default to the exact literals the sim always
+  // carried; this pins that omitting them and spelling out those defaults are
+  // the same simulation — the guarantee the acceptance replay leans on.
+  it("drives identically with no physics config and with the defaults spelled out", () => {
+    const implicit = new SimulationCore({ seed: 7, npcCount: 6 });
+    const explicit = new SimulationCore({
+      seed: 7,
+      npcCount: 6,
+      maxForwardSpeedMps: 22,
+      maxReverseSpeedMps: 7,
+      forwardAccelMps2: 5.6,
+      reverseAccelMps2: 4.1,
+      brakeBaseMps2: 3,
+      brakeStrengthMps2: 8.5,
+      dragBaseMps2: 0.25,
+      dragPerMps: 0.035,
+      steerBaseRate: 0.32,
+      steerAuthorityRate: 0.95,
+      steerAuthoritySpeedMps: 5.5,
+      instabilityLateralMps2: 11,
+      playerRadiusM: 1.05,
+      playerCapsuleHalfLengthM: 1.15,
+      playerCapsuleRadiusM: 1.0,
+    });
+    for (let index = 0; index < 600; index += 1) {
+      const input = {
+        throttle: index < 400 ? 0.8 : 0,
+        brake: index >= 400 ? 0.6 : 0,
+        steer: index > 120 && index < 240 ? 0.35 : 0,
+      };
+      implicit.step(1 / 60, input);
+      explicit.step(1 / 60, input);
+    }
+    expect(implicit.getSnapshot()).toEqual(explicit.getSnapshot());
+  });
+
+  it("responds to each physics knob in the right direction", () => {
+    const runFor = (
+      config: ConstructorParameters<typeof SimulationCore>[0],
+      ticks: number,
+      input: { throttle?: number; steer?: number },
+    ) => {
+      const simulation = new SimulationCore({ npcCount: 0, ...config });
+      for (let index = 0; index < ticks; index += 1) {
+        simulation.step(1 / 60, input);
+      }
+      return simulation.getSnapshot().player;
+    };
+    // Stronger acceleration reaches a higher speed in the same time.
+    const brisk = runFor({ forwardAccelMps2: 9 }, 90, { throttle: 1 });
+    const sluggish = runFor({ forwardAccelMps2: 2 }, 90, { throttle: 1 });
+    expect(brisk.signedSpeedMps).toBeGreaterThan(sluggish.signedSpeedMps + 1);
+    // A lower top speed clamps the same pedal input.
+    const bikeCap = runFor({ maxForwardSpeedMps: 7.5 }, 600, { throttle: 1 });
+    expect(bikeCap.signedSpeedMps).toBeLessThanOrEqual(7.5 + 1e-9);
+    // A lower instability threshold scrubs speed under a sustained fast turn
+    // where a planted setup keeps its grip. Coach enforcement so the circling
+    // car is not teleport-reset for leaving the yard mid-comparison.
+    const twitchy = runFor(
+      { instabilityLateralMps2: 3, enforcement: "coach" },
+      150,
+      { throttle: 1, steer: 0.2 },
+    );
+    const planted = runFor(
+      { instabilityLateralMps2: 30, enforcement: "coach" },
+      150,
+      { throttle: 1, steer: 0.2 },
+    );
+    expect(twitchy.signedSpeedMps).toBeLessThan(planted.signedSpeedMps - 0.5);
+  });
+
   // Tick counts here are kept short on purpose: reverse far enough and the run
   // ends in an incident and respawns the car, which would read as "speed 0" and
   // quietly stop testing what these say they test. Hence the status assertions.

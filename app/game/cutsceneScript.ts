@@ -57,17 +57,58 @@ export const PUMP_BASE_SECONDS = 3;
 export const PUMP_EXTRA_SECONDS = 2;
 export const STORE_DWELL_SECONDS = 1.5;
 
-/** Door positions in the car's local frame (long forward, lat driver-right). */
-const DOOR_LATERAL_M = 1.25;
-const FRONT_DOOR_FORWARD_M = 0.35;
-const REAR_DOOR_FORWARD_M = -0.55;
+/**
+ * The vehicle envelope every walk path respects: the body rectangle to stay
+ * out of, the waypoint ring used to skirt it, and the door positions in the
+ * car's local frame (long forward, lat driver-right). The default is the
+ * hand-tuned car envelope these scripts always used; Career Mode derives one
+ * per rented vehicle so a van's longer bumpers are actually walked around.
+ */
+export interface CutsceneBodyProfile {
+  readonly bodyHalfLongM: number;
+  readonly bodyHalfLatM: number;
+  readonly clearLongM: number;
+  readonly clearLatM: number;
+  readonly doorLateralM: number;
+  readonly frontDoorForwardM: number;
+  readonly rearDoorForwardM: number;
+}
 
-/** The body rectangle walk paths must stay out of, and the waypoint ring used
- * to skirt it. Doors sit at |lat| 1.25 — just outside the body half-width. */
-const BODY_HALF_LONG_M = 2.45;
-const BODY_HALF_LAT_M = 1.1;
-const CLEAR_LONG_M = 3.1;
-const CLEAR_LAT_M = 1.7;
+export const DEFAULT_CUTSCENE_BODY: CutsceneBodyProfile = {
+  bodyHalfLongM: 2.45,
+  bodyHalfLatM: 1.1,
+  clearLongM: 3.1,
+  clearLatM: 1.7,
+  doorLateralM: 1.25,
+  frontDoorForwardM: 0.35,
+  rearDoorForwardM: -0.55,
+};
+
+/** Reference dimensions of the flagship the default envelope was tuned on. */
+const REFERENCE_LENGTH_M = 4.55;
+const REFERENCE_WIDTH_M = 1.9;
+
+/**
+ * Scales the hand-tuned default envelope to a vehicle's footprint. The
+ * reference car reproduces DEFAULT_CUTSCENE_BODY exactly, so passing a
+ * derived profile for the flagship changes nothing.
+ */
+export function cutsceneBodyProfile(
+  lengthM: number,
+  widthM: number,
+): CutsceneBodyProfile {
+  const long = lengthM / REFERENCE_LENGTH_M;
+  const lat = widthM / REFERENCE_WIDTH_M;
+  return {
+    bodyHalfLongM: DEFAULT_CUTSCENE_BODY.bodyHalfLongM * long,
+    bodyHalfLatM: DEFAULT_CUTSCENE_BODY.bodyHalfLatM * lat,
+    clearLongM: DEFAULT_CUTSCENE_BODY.clearLongM * long,
+    clearLatM: DEFAULT_CUTSCENE_BODY.clearLatM * lat,
+    doorLateralM: DEFAULT_CUTSCENE_BODY.doorLateralM * lat,
+    frontDoorForwardM: DEFAULT_CUTSCENE_BODY.frontDoorForwardM * long,
+    rearDoorForwardM: DEFAULT_CUTSCENE_BODY.rearDoorForwardM * long,
+  };
+}
 
 /** How far from the pump the driver stands while filling. */
 const PUMP_STAND_OFF_M = 1.1;
@@ -100,16 +141,20 @@ function toWorld(car: CutsceneCarPose, long: number, lat: number): WorldPoint {
 }
 
 /** Liang–Barsky segment-vs-rect test in the car's local frame. */
-function segmentCrossesBody(a: LocalPoint, b: LocalPoint): boolean {
+function segmentCrossesBody(
+  a: LocalPoint,
+  b: LocalPoint,
+  body: CutsceneBodyProfile,
+): boolean {
   const dLong = b.long - a.long;
   const dLat = b.lat - a.lat;
   let t0 = 0;
   let t1 = 1;
   const clips: readonly (readonly [number, number])[] = [
-    [-dLong, a.long + BODY_HALF_LONG_M],
-    [dLong, BODY_HALF_LONG_M - a.long],
-    [-dLat, a.lat + BODY_HALF_LAT_M],
-    [dLat, BODY_HALF_LAT_M - a.lat],
+    [-dLong, a.long + body.bodyHalfLongM],
+    [dLong, body.bodyHalfLongM - a.long],
+    [-dLat, a.lat + body.bodyHalfLatM],
+    [dLat, body.bodyHalfLatM - a.lat],
   ];
   for (const [p, q] of clips) {
     if (p === 0) {
@@ -138,13 +183,14 @@ export function routeAroundCar(
   car: CutsceneCarPose,
   from: WorldPoint,
   to: WorldPoint,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): WorldPoint[] {
   const a = toLocal(car, from);
   const b = toLocal(car, to);
-  if (!segmentCrossesBody(a, b)) return [from, to];
-  const endLong = a.long + b.long >= 0 ? CLEAR_LONG_M : -CLEAR_LONG_M;
-  const sideA = a.lat >= 0 ? CLEAR_LAT_M : -CLEAR_LAT_M;
-  const sideB = b.lat >= 0 ? CLEAR_LAT_M : -CLEAR_LAT_M;
+  if (!segmentCrossesBody(a, b, body)) return [from, to];
+  const endLong = a.long + b.long >= 0 ? body.clearLongM : -body.clearLongM;
+  const sideA = a.lat >= 0 ? body.clearLatM : -body.clearLatM;
+  const sideB = b.lat >= 0 ? body.clearLatM : -body.clearLatM;
   const path = [from, toWorld(car, endLong, sideA)];
   if (sideA !== sideB) path.push(toWorld(car, endLong, sideB));
   path.push(to);
@@ -170,26 +216,34 @@ function legSeconds(path: readonly WorldPoint[], speedMps: number): number {
   );
 }
 
-const driverLat = (steeringSide: SteeringSide): number =>
-  steeringSide === "left" ? -DOOR_LATERAL_M : DOOR_LATERAL_M;
+const driverLat = (
+  steeringSide: SteeringSide,
+  body: CutsceneBodyProfile,
+): number =>
+  steeringSide === "left" ? -body.doorLateralM : body.doorLateralM;
 
 /** The kerb is opposite the traffic side: right-hand traffic parks with its
  * right flank to the kerb. */
-const kerbLat = (trafficSide: TrafficSide): number =>
-  trafficSide === "right" ? DOOR_LATERAL_M : -DOOR_LATERAL_M;
+const kerbLat = (
+  trafficSide: TrafficSide,
+  body: CutsceneBodyProfile,
+): number =>
+  trafficSide === "right" ? body.doorLateralM : -body.doorLateralM;
 
 export function driverDoorPoint(
   car: CutsceneCarPose,
   steeringSide: SteeringSide,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): WorldPoint {
-  return toWorld(car, FRONT_DOOR_FORWARD_M, driverLat(steeringSide));
+  return toWorld(car, body.frontDoorForwardM, driverLat(steeringSide, body));
 }
 
 export function rearKerbDoorPoint(
   car: CutsceneCarPose,
   trafficSide: TrafficSide,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): WorldPoint {
-  return toWorld(car, REAR_DOOR_FORWARD_M, kerbLat(trafficSide));
+  return toWorld(car, body.rearDoorForwardM, kerbLat(trafficSide, body));
 }
 
 /**
@@ -201,8 +255,9 @@ export function buildRefuelScript(
   steeringSide: SteeringSide,
   pump: WorldPoint,
   missingFuelFraction: number,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): CutsceneStep[] {
-  const door = driverDoorPoint(car, steeringSide);
+  const door = driverDoorPoint(car, steeringSide, body);
   const toCar = Math.hypot(car.x - pump.x, car.z - pump.z);
   const stand =
     toCar > 0.001
@@ -211,8 +266,8 @@ export function buildRefuelScript(
           z: pump.z + ((car.z - pump.z) / toCar) * PUMP_STAND_OFF_M,
         }
       : pump;
-  const out = routeAroundCar(car, door, stand);
-  const back = routeAroundCar(car, stand, door);
+  const out = routeAroundCar(car, door, stand, body);
+  const back = routeAroundCar(car, stand, door, body);
   const pumpSeconds =
     PUMP_BASE_SECONDS +
     PUMP_EXTRA_SECONDS * Math.min(1, Math.max(0, missingFuelFraction));
@@ -250,9 +305,10 @@ export function buildBoardScript(
   car: CutsceneCarPose,
   trafficSide: TrafficSide,
   riderSpot: WorldPoint,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): CutsceneStep[] {
-  const doorPoint = rearKerbDoorPoint(car, trafficSide);
-  const approach = routeAroundCar(car, riderSpot, doorPoint);
+  const doorPoint = rearKerbDoorPoint(car, trafficSide, body);
+  const approach = routeAroundCar(car, riderSpot, doorPoint, body);
   return [
     {
       action: "walk",
@@ -283,12 +339,13 @@ export function buildBoardScript(
 export function buildExitScript(
   car: CutsceneCarPose,
   trafficSide: TrafficSide,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): CutsceneStep[] {
-  const doorPoint = rearKerbDoorPoint(car, trafficSide);
-  const lat = kerbLat(trafficSide);
+  const doorPoint = rearKerbDoorPoint(car, trafficSide, body);
+  const lat = kerbLat(trafficSide, body);
   const away = toWorld(
     car,
-    REAR_DOOR_FORWARD_M,
+    body.rearDoorForwardM,
     lat + (lat >= 0 ? EXIT_WANDER_M : -EXIT_WANDER_M),
   );
   const walk = [doorPoint, away];
@@ -321,10 +378,11 @@ export function buildErrandScript(
   steeringSide: SteeringSide,
   buildingDoor: WorldPoint,
   dwellSeconds: number = STORE_DWELL_SECONDS,
+  body: CutsceneBodyProfile = DEFAULT_CUTSCENE_BODY,
 ): CutsceneStep[] {
-  const door = driverDoorPoint(car, steeringSide);
-  const out = routeAroundCar(car, door, buildingDoor);
-  const back = routeAroundCar(car, buildingDoor, door);
+  const door = driverDoorPoint(car, steeringSide, body);
+  const out = routeAroundCar(car, door, buildingDoor, body);
+  const back = routeAroundCar(car, buildingDoor, door, body);
   return [
     {
       action: "show",

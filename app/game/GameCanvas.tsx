@@ -44,6 +44,7 @@ import {
   isPointInPolygon,
   SimulationCore,
   type NpcVehicleVariant,
+  type SimulationCoreConfig,
   type SimulationInput,
   type SimulationRuleEvent,
   type SimulationScoreSnapshot,
@@ -66,7 +67,10 @@ import {
   buildErrandScript,
   buildExitScript,
   buildRefuelScript,
+  cutsceneBodyProfile,
+  DEFAULT_CUTSCENE_BODY,
   scriptFocusPoint,
+  type CutsceneBodyProfile,
   type CutsceneKind,
   type CutsceneStep,
 } from "./cutsceneScript";
@@ -100,7 +104,9 @@ import {
   policeBeaconLamps,
   resolvePlayerVehicleAppearance,
   resolveTrafficVehicleAppearance,
+  VEHICLE_DIMENSIONS,
   type VehicleAppearance,
+  type VehicleModel,
 } from "./vehicleVisuals";
 import {
   disposeModels,
@@ -1400,6 +1406,52 @@ export interface GameCanvasMapPack {
 }
 
 
+export interface PlayerVehicleOption {
+  readonly model: VehicleModel | null;
+  readonly visualKind: "car" | "bicycle";
+  readonly paintHex?: string;
+}
+
+export type PlayerVehiclePhysics = Pick<
+  SimulationCoreConfig,
+  | "maxForwardSpeedMps"
+  | "maxReverseSpeedMps"
+  | "forwardAccelMps2"
+  | "reverseAccelMps2"
+  | "brakeBaseMps2"
+  | "brakeStrengthMps2"
+  | "dragBaseMps2"
+  | "dragPerMps"
+  | "steerBaseRate"
+  | "steerAuthorityRate"
+  | "steerAuthoritySpeedMps"
+  | "instabilityLateralMps2"
+  | "playerRadiusM"
+  | "playerCapsuleHalfLengthM"
+  | "playerCapsuleRadiusM"
+>;
+
+/** Third-person follow framing per player vehicle; the default is the values
+ * the chase camera has always used for the car. */
+interface ChaseTuning {
+  readonly backM: number;
+  readonly upM: number;
+  readonly targetAheadM: number;
+}
+
+const DEFAULT_CHASE_TUNING: ChaseTuning = {
+  backM: 10.5,
+  upM: 5.5,
+  targetAheadM: 3.5,
+};
+
+const CHASE_TUNING_BY_MODEL: Partial<Record<VehicleModel, ChaseTuning>> = {
+  // The van's tall box fills the default frame; pull back and up a touch.
+  "delivery-van": { backM: 11.6, upM: 6.2, targetAheadM: 3.5 },
+  // The sports car sits low; tighten the frame slightly.
+  "sport-sedan": { backM: 9.8, upM: 5, targetAheadM: 3.8 },
+};
+
 export interface GameCanvasProps {
   trafficSide: TrafficSide;
   steeringSide: SteeringSide;
@@ -1432,6 +1484,15 @@ export interface GameCanvasProps {
   gigStopCarrying?: boolean;
   /** Interaction cutscene to play; controls lock until its `done` event. */
   cutscene?: CutsceneRequest | null;
+  /**
+   * The vehicle the player takes out (career). Constructor-only: changing it
+   * requires a remount (the career key includes the vehicle id). Omitted =
+   * the free-drive flagship. A null model means the composed bicycle rig
+   * (playable in a later phase).
+   */
+  playerVehicle?: PlayerVehicleOption | null;
+  /** Per-vehicle physics spread over the adapter's sim config. Constructor-only. */
+  vehiclePhysics?: PlayerVehiclePhysics | null;
   className?: string;
   style?: CSSProperties;
   showBuiltInHud?: boolean;
@@ -1485,6 +1546,8 @@ interface SessionOptions {
   gigStopId: string | null;
   gigStopCarrying: boolean;
   cutscene: CutsceneRequest | null;
+  playerVehicle: PlayerVehicleOption | null;
+  vehiclePhysics: PlayerVehiclePhysics | null;
   lesson?: GameCanvasLesson;
   mapPack?: GameCanvasMapPack;
 }
@@ -3338,15 +3401,19 @@ class BabylonGameSession {
         this.routePoints[index + 1].z - this.routePoints[index].z,
       );
     }
-    this.simulation = new SimulationCore(
-      buildSimulationCoreConfig({
+    // Per-vehicle physics land after the adapter's config so a career
+    // vehicle's caps override the scenario baseline; free drive passes null
+    // and keeps the adapter's numbers untouched.
+    this.simulation = new SimulationCore({
+      ...buildSimulationCoreConfig({
         lesson: options.lesson,
         mapPack: options.mapPack,
         trafficSide: this.activeTrafficSide,
         speedUnit: options.speedUnit,
         touchFirst: options.inputCapabilities.touchFirst,
       }),
-    );
+      ...(options.vehiclePhysics ?? {}),
+    });
     if (options.paused) this.simulation.setPaused(true);
     this.simulationSnapshot = this.simulation.getSnapshot();
     const start = this.simulationSnapshot.player;
@@ -3787,7 +3854,10 @@ class BabylonGameSession {
         this.scene,
         this.playerExterior,
         "player",
-        resolvePlayerVehicleAppearance(this.options.mapPack?.id ?? "orientation-yard"),
+        resolvePlayerVehicleAppearance(
+          this.options.mapPack?.id ?? "orientation-yard",
+          this.options.playerVehicle,
+        ),
       );
     }
     const trafficSeed = this.options.lesson?.trafficSeed ?? 0;
@@ -4066,6 +4136,19 @@ class BabylonGameSession {
    * staged shot. Anything unstageable resolves as an instant `done` so the
    * app-side effects (fuel, gig state) are never lost.
    */
+  /**
+   * The walk-path envelope for interaction scenes, sized to whatever the
+   * player is actually driving so a van's longer bumpers are skirted and its
+   * doors sit on its real flanks. The flagship (and any vehicle without
+   * registered dimensions) reproduces the long-standing default exactly.
+   */
+  private cutsceneBody(): CutsceneBodyProfile {
+    const model = this.options.playerVehicle?.model;
+    const dimensions = model ? VEHICLE_DIMENSIONS[model] : undefined;
+    if (!dimensions) return DEFAULT_CUTSCENE_BODY;
+    return cutsceneBodyProfile(dimensions.length, dimensions.width);
+  }
+
   private startCutscene(request: CutsceneRequest) {
     this.cancelCutscene();
     const car = {
@@ -4073,6 +4156,7 @@ class BabylonGameSession {
       z: this.playerState.z,
       heading: this.playerState.heading,
     };
+    const body = this.cutsceneBody();
     let script: readonly CutsceneStep[] | null = null;
     let passengerSeed: string | null = null;
     switch (request.kind) {
@@ -4084,6 +4168,7 @@ class BabylonGameSession {
             this.options.steeringSide,
             pump,
             request.missingFuelFraction ?? 1,
+            body,
           );
         }
         break;
@@ -4096,7 +4181,7 @@ class BabylonGameSession {
           const from = this.riderNode
             ? { x: this.riderNode.position.x, z: this.riderNode.position.z }
             : { x: spot.x, z: spot.z };
-          script = buildBoardScript(car, this.options.trafficSide, from);
+          script = buildBoardScript(car, this.options.trafficSide, from, body);
           passengerSeed = request.actorSeedId ?? request.venueId ?? null;
         }
         break;
@@ -4106,7 +4191,7 @@ class BabylonGameSession {
         // the scene needs nothing but the car pose. Routing to a fixed venue
         // spot instead sent them around the car on an off-square park (#128-era
         // "walks away then comes back"); a car-relative walk-off can't.
-        script = buildExitScript(car, this.options.trafficSide);
+        script = buildExitScript(car, this.options.trafficSide, body);
         passengerSeed = request.actorSeedId ?? request.venueId ?? null;
         break;
       }
@@ -4117,10 +4202,13 @@ class BabylonGameSession {
             this.gigVenueCurbside.get(request.venueId))
           : undefined;
         if (door) {
-          script = buildErrandScript(car, this.options.steeringSide, {
-            x: door.x,
-            z: door.z,
-          });
+          script = buildErrandScript(
+            car,
+            this.options.steeringSide,
+            { x: door.x, z: door.z },
+            undefined,
+            body,
+          );
         }
         break;
       }
@@ -6328,16 +6416,22 @@ class BabylonGameSession {
         0,
       );
     } else {
-      const target = base.add(forward.scale(3.5)).add(new Vector3(0, 1.05, 0));
+      const chase =
+        (this.options.playerVehicle?.model &&
+          CHASE_TUNING_BY_MODEL[this.options.playerVehicle.model]) ||
+        DEFAULT_CHASE_TUNING;
+      const target = base
+        .add(forward.scale(chase.targetAheadM))
+        .add(new Vector3(0, 1.05, 0));
       const cameraShake =
         this.options.cameraShake && !this.options.reducedMotion
           ? Math.sin(this.cameraMotionSeconds * 2.7) *
             Math.min(0.08, this.playerState.speedMps * 0.004)
           : 0;
       const desiredPosition = base
-        .subtract(forward.scale(10.5))
+        .subtract(forward.scale(chase.backM))
         .add(right.scale(cameraShake))
-        .add(new Vector3(0, 5.5 + Math.abs(cameraShake) * 0.35, 0));
+        .add(new Vector3(0, chase.upM + Math.abs(cameraShake) * 0.35, 0));
       if (this.options.reducedMotion) {
         this.thirdCamera.position.copyFrom(desiredPosition);
       } else {
@@ -9562,7 +9656,10 @@ class BabylonGameSession {
       scene,
       this.playerExterior,
       "player",
-      resolvePlayerVehicleAppearance(this.options.mapPack?.id ?? "orientation-yard"),
+      resolvePlayerVehicleAppearance(
+        this.options.mapPack?.id ?? "orientation-yard",
+        this.options.playerVehicle,
+      ),
     );
     const bodyDark = makeMaterial(scene, "player-blue-dark", new Color3(0.04, 0.23, 0.3));
     const steeringRubber = makeMaterial(
@@ -10445,6 +10542,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       gigStopId = null,
       gigStopCarrying = false,
       cutscene = null,
+      playerVehicle = null,
+      vehiclePhysics = null,
       className,
       style,
       showBuiltInHud = true,
@@ -10590,6 +10689,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
             gigStopId,
             gigStopCarrying,
             cutscene,
+            playerVehicle: playerVehicle ?? null,
+            vehiclePhysics: vehiclePhysics ?? null,
           },
           {
             onHudUpdate: (snapshot) => callbackRef.current.onHudUpdate?.(snapshot),

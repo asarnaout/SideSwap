@@ -288,7 +288,7 @@ export function policeBeaconLamps(seconds: number): {
   };
 }
 
-const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
+export const VEHICLE_DIMENSIONS: Readonly<Record<VehicleModel, VehicleDimensions>> = {
   "electric-fastback": {
     length: 4.55,
     width: 1.9,
@@ -529,12 +529,29 @@ export function resolveTrafficVehicleAppearance(
 }
 
 /** The player's recognizable, fixed modern flagship silhouette. Wears the
- * plates of whichever country's map is loaded. */
-export function resolvePlayerVehicleAppearance(mapId: string): VehicleAppearance {
+ * plates of whichever country's map is loaded. Career Mode passes an override
+ * to put the player in a rented model; a null/absent override (free drive and
+ * every existing caller) is byte-identical to the pre-override behaviour. */
+export function resolvePlayerVehicleAppearance(
+  mapId: string,
+  override?: {
+    readonly model: VehicleModel | null;
+    readonly paintHex?: string;
+  } | null,
+): VehicleAppearance {
   const plateRegion = plateRegionForMap(mapId);
-  return {
+  const base: VehicleAppearance = {
     ...PLAYER_APPEARANCE,
     plateRegion,
     plateNumber: plateNumberForVehicle(plateRegion, "player-flagship"),
+  };
+  if (!override?.model) {
+    return base;
+  }
+  return {
+    ...base,
+    model: override.model,
+    dimensions: VEHICLE_DIMENSIONS[override.model],
+    paintHex: override.paintHex ?? base.paintHex,
   };
 }

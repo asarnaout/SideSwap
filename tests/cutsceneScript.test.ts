@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  cutsceneBodyProfile,
+  DEFAULT_CUTSCENE_BODY,
   MAX_LEG_SECONDS,
   PUMP_BASE_SECONDS,
   PUMP_EXTRA_SECONDS,
@@ -14,6 +16,7 @@ import {
   routeAroundCar,
   scriptFocusPoint,
   scriptSeconds,
+  type CutsceneBodyProfile,
   type CutsceneCarPose,
   type CutsceneStep,
 } from "../app/game/cutsceneScript";
@@ -242,5 +245,102 @@ describe("script metadata", () => {
     const script = buildErrandScript(car, "left", buildingDoor);
     expect(scriptSeconds(script)).toBeGreaterThan(STORE_DWELL_SECONDS + 2);
     expect(scriptFocusPoint(car, script)).toEqual(buildingDoor);
+  });
+});
+
+describe("CutsceneBodyProfile", () => {
+  const VAN = cutsceneBodyProfile(5.18, 2.02);
+
+  /** Profile-aware clear-of-body check (margins mirror expectClearOfCarBody). */
+  function expectClearOfBody(
+    car: CutsceneCarPose,
+    script: readonly CutsceneStep[],
+    body: CutsceneBodyProfile,
+  ) {
+    for (const step of script) {
+      if (step.action !== "walk" && step.action !== "run") continue;
+      const path = step.path ?? [];
+      for (let index = 1; index < path.length; index += 1) {
+        const a = path[index - 1];
+        const b = path[index];
+        const length = Math.hypot(b.x - a.x, b.z - a.z);
+        const count = Math.max(1, Math.ceil(length / 0.05));
+        for (let sample = 0; sample <= count; sample += 1) {
+          const t = sample / count;
+          const p = local(car, {
+            x: a.x + (b.x - a.x) * t,
+            z: a.z + (b.z - a.z) * t,
+          });
+          const insideBody =
+            Math.abs(p.long) < body.bodyHalfLongM - 0.1 &&
+            Math.abs(p.lat) < body.bodyHalfLatM - 0.1;
+          expect(
+            insideBody,
+            `sample crosses the ${body.bodyHalfLongM.toFixed(2)}-half-long body`,
+          ).toBe(false);
+        }
+      }
+    }
+  }
+
+  it("reproduces the long-standing default envelope exactly for the flagship", () => {
+    expect(cutsceneBodyProfile(4.55, 1.9)).toEqual(DEFAULT_CUTSCENE_BODY);
+  });
+
+  it("keeps every builder byte-identical when the default profile is passed explicitly", () => {
+    for (const car of CAR_POSES) {
+      const pump = { x: car.x + 6, z: car.z + 5 };
+      const door = { x: car.x - 8, z: car.z + 3 };
+      expect(buildRefuelScript(car, "left", pump, 0.5)).toEqual(
+        buildRefuelScript(car, "left", pump, 0.5, DEFAULT_CUTSCENE_BODY),
+      );
+      expect(buildErrandScript(car, "right", door)).toEqual(
+        buildErrandScript(
+          car,
+          "right",
+          door,
+          undefined,
+          DEFAULT_CUTSCENE_BODY,
+        ),
+      );
+      expect(buildExitScript(car, "left")).toEqual(
+        buildExitScript(car, "left", DEFAULT_CUTSCENE_BODY),
+      );
+      expect(buildBoardScript(car, "right", door)).toEqual(
+        buildBoardScript(car, "right", door, DEFAULT_CUTSCENE_BODY),
+      );
+    }
+  });
+
+  it("scales the envelope up for the van: longer body, wider doors", () => {
+    expect(VAN.bodyHalfLongM).toBeGreaterThan(
+      DEFAULT_CUTSCENE_BODY.bodyHalfLongM,
+    );
+    expect(VAN.doorLateralM).toBeGreaterThan(DEFAULT_CUTSCENE_BODY.doorLateralM);
+    // Doors always sit outside their own body's flank.
+    expect(VAN.doorLateralM).toBeGreaterThan(VAN.bodyHalfLatM);
+  });
+
+  it("walks clear of the van's real bumpers on every heading and both sides", () => {
+    for (const car of CAR_POSES) {
+      for (const steeringSide of ["left", "right"] as const) {
+        const sin = Math.sin(car.heading);
+        const cos = Math.cos(car.heading);
+        // A venue door 6 m off the flank OPPOSITE the driver's door forces an
+        // around-the-body route for at least one steering side.
+        const lat = steeringSide === "left" ? 6 : -6;
+        const target = { x: car.x + lat * cos, z: car.z - lat * sin };
+        const errand = buildErrandScript(
+          car,
+          steeringSide,
+          target,
+          undefined,
+          VAN,
+        );
+        expectClearOfBody(car, errand, VAN);
+        const refuel = buildRefuelScript(car, steeringSide, target, 0.6, VAN);
+        expectClearOfBody(car, refuel, VAN);
+      }
+    }
   });
 });

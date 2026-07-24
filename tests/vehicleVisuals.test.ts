@@ -88,6 +88,29 @@ describe("modern fleet variety", () => {
     );
   });
 
+  it("puts the player in a career vehicle via the override, defaults untouched", () => {
+    const base = resolvePlayerVehicleAppearance("london-south-kensington");
+    // Absent / null / model-less overrides are byte-identical to no override.
+    expect(resolvePlayerVehicleAppearance("london-south-kensington", null)).toEqual(base);
+    expect(
+      resolvePlayerVehicleAppearance("london-south-kensington", { model: null }),
+    ).toEqual(base);
+    const van = resolvePlayerVehicleAppearance("london-south-kensington", {
+      model: "delivery-van",
+    });
+    expect(van.model).toBe("delivery-van");
+    expect(van.role).toBe("player");
+    expect(van.dimensions.length).toBeGreaterThan(base.dimensions.length);
+    // Plates still follow the map, whatever the model.
+    expect(van.plateRegion).toBe("uk");
+    const painted = resolvePlayerVehicleAppearance("nyc-upper-west-side", {
+      model: "sport-sedan",
+      paintHex: "#aa1111",
+    });
+    expect(painted.paintHex).toBe("#aa1111");
+    expect(painted.plateRegion).toBe("us");
+  });
+
   it("wears the plates of whichever country's map is loaded", () => {
     expect(resolvePlayerVehicleAppearance("london-south-kensington").plateRegion).toBe("uk");
     expect(resolvePlayerVehicleAppearance("milton-keynes-oldbrook").plateRegion).toBe("uk");
