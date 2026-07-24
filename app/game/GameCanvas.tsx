@@ -4460,6 +4460,13 @@ class BabylonGameSession {
     // re-enabling it here would flash the double for a frame.
     cutscene.actorVisual?.dispose();
     cutscene.actorNode.dispose(false, false);
+    // The player's own bike rider is the opposite case: the courier always
+    // remounts when the errand ends, on completion just as on abort. Missing
+    // this here (it only lived in cancelCutscene) shipped a ghost bike after
+    // every successful pickup.
+    if (cutscene.playerRiderHidden) {
+      this.playerCyclistVisual?.setRiderVisible?.(true);
+    }
     this.activeCutscene = null;
     this.applyCameraStack(this.cameraMode === "first");
     this.audio?.foley("chime");
