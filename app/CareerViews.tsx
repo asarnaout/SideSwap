@@ -8,6 +8,8 @@ import type { CountryProfile } from "./game/types";
 import { formatMoney } from "./game/content";
 import {
   BUYOUT_RENT_MULTIPLIER,
+  buyoutPrice,
+  canBuyout,
   CAREER_VEHICLES,
   nextInstallment,
   vehicleRent,
@@ -64,6 +66,7 @@ export function GarageView({
   lockedVehicles,
   onSelect,
   onStartDay,
+  onBuyout,
   onAbandon,
 }: {
   slice: CareerSliceV1;
@@ -73,6 +76,7 @@ export function GarageView({
   lockedVehicles: Readonly<Partial<Record<CareerVehicleId, string>>>;
   onSelect: (id: CareerVehicleId) => void;
   onStartDay: (id: CareerVehicleId) => void;
+  onBuyout: (id: CareerVehicleId) => void;
   onAbandon: () => void;
 }) {
   const selected = CAREER_VEHICLES.find(
@@ -98,6 +102,22 @@ export function GarageView({
           </p>
         </div>
       </div>
+      {slice.state === "won" && (
+        <div
+          data-testid="victory-banner"
+          style={{
+            ...cardStyle,
+            borderColor: "#5bbf6a",
+            background: "rgba(46, 110, 64, 0.28)",
+            marginBottom: "1rem",
+            fontWeight: 700,
+          }}
+        >
+          🏁 CAREER COMPLETE — you bought your own wheels on day{" "}
+          {slice.victoryDay}. The treadmill is beaten; keep driving for the
+          records.
+        </div>
+      )}
       {slice.finalNotice && (
         <div
           role="alert"
@@ -173,6 +193,7 @@ export function GarageView({
           );
         })}
       </div>
+      <BuyoutFund slice={slice} country={country} />
       <div style={{ ...cardStyle, marginTop: "1rem" }} data-testid="garage-forecast">
         <strong>Tonight&apos;s obligations</strong>
         <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem", opacity: 0.85 }}>
@@ -195,6 +216,18 @@ export function GarageView({
         <button type="button" className="danger-button" onClick={onAbandon}>
           Abandon career
         </button>
+        {selected && canBuyout(slice, selected) && (
+          <button
+            type="button"
+            className="secondary-button"
+            data-testid="garage-buyout"
+            onClick={() => onBuyout(selectedVehicleId)}
+            style={{ borderColor: "#f2c658", color: "#f2c658" }}
+          >
+            Buy the {selected.name.toLowerCase()} outright —{" "}
+            {formatMoney(buyoutPrice(selected, slice.countryId), country)}
+          </button>
+        )}
         <button
           type="button"
           className="primary-button"
@@ -206,6 +239,70 @@ export function GarageView({
         </button>
       </div>
     </section>
+  );
+}
+
+/**
+ * The run's finish line, kept visible from day 1 (research: all-loss ledgers
+ * burn players out — show the escape route). Progress toward the cheapest
+ * eligible buyout; hidden once won, while indebted, or under notice.
+ */
+export function BuyoutFund({
+  slice,
+  country,
+}: {
+  slice: CareerSliceV1;
+  country: CountryProfile;
+}) {
+  if (slice.state !== "active" || slice.loan || slice.finalNotice) return null;
+  const cheapest = CAREER_VEHICLES.filter(
+    (vehicle) => vehicle.buyoutEligible,
+  ).reduce((best, vehicle) =>
+    buyoutPrice(vehicle, slice.countryId) < buyoutPrice(best, slice.countryId)
+      ? vehicle
+      : best,
+  );
+  const price = buyoutPrice(cheapest, slice.countryId);
+  const fraction = Math.max(0, Math.min(1, slice.cash / price));
+  return (
+    <div
+      style={{ ...cardStyle, marginTop: "1rem" }}
+      data-testid="buyout-fund"
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: "1rem",
+          marginBottom: "0.4rem",
+        }}
+      >
+        <strong>Buy your freedom</strong>
+        <span>
+          {formatMoney(slice.cash, country)} / {formatMoney(price, country)}
+        </span>
+      </div>
+      <div
+        style={{
+          height: "0.5rem",
+          borderRadius: "999px",
+          background: "rgba(255,255,255,0.16)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${fraction * 100}%`,
+            background: "#f2c658",
+          }}
+        />
+      </div>
+      <small style={{ opacity: 0.7 }}>
+        Own the {cheapest.name.toLowerCase()} outright (
+        {BUYOUT_RENT_MULTIPLIER}× its rent) and the daily treadmill is beaten.
+      </small>
+    </div>
   );
 }
 
@@ -297,6 +394,9 @@ export function LedgerView({
           {formatMoney(nextInstallment(slice.loan), country)}.
         </p>
       )}
+      <div style={{ maxWidth: "30rem" }}>
+        <BuyoutFund slice={slice} country={country} />
+      </div>
       <div className="settings-actions" style={{ marginTop: "1.1rem" }}>
         <button
           type="button"
