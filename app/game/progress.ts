@@ -1,3 +1,5 @@
+import { parseCareerSlice, stampCareerChecksum } from "./career";
+import type { CareerPersisted } from "./career";
 import {
   STARTING_WALLET_BY_COUNTRY,
   TANK_CAPACITY_L,
@@ -141,7 +143,9 @@ const eachCountry = (value: number): Record<CountryId, number> => ({
 });
 
 // Reads a persisted per-country number map, clamping each entry to [0, max] and
-// falling back to `defaults` for any missing or invalid country.
+// falling back to `defaults` for any missing or invalid country. NOT for the
+// career slice: career cash may legitimately be negative (the "over" state),
+// so that field goes through career.ts's parseCareerSlice instead.
 const parseCountryNumberMap = (
   value: unknown,
   defaults: Readonly<Record<CountryId, number>>,
@@ -206,6 +210,7 @@ export function createDefaultProgress(now: string = nowIso()): PlayerProgressV2 
     lastDestinationId: "uk-london",
     preferredCamera: "third_person",
     accessibility: { ...DEFAULT_ACCESSIBILITY },
+    career: null,
     updatedAt,
   };
 }
@@ -254,6 +259,9 @@ export function migrateProgress(value: unknown, now: string = nowIso()): PlayerP
     lastDestinationId,
     preferredCamera: parseCamera(cameraCandidate),
     accessibility: parseAccessibility(accessibilityCandidate),
+    // Absent on pre-career saves -> null; checksum mismatches surface as the
+    // persisted corrupt marker rather than being silently rebuilt away.
+    career: parseCareerSlice(value.career),
     updatedAt,
   };
 }
@@ -284,6 +292,9 @@ export function isPlayerProgressV2(value: unknown): value is PlayerProgressV2 {
     return false;
   }
   if (value.preferredCamera !== "first_person" && value.preferredCamera !== "third_person") {
+    return false;
+  }
+  if (value.career !== null && !isRecord(value.career)) {
     return false;
   }
   return isRecord(value.accessibility) && typeof value.updatedAt === "string";
@@ -440,6 +451,28 @@ export function consumeFuel(
     ),
     updatedAt: nowIso(),
   };
+}
+
+/**
+ * Replaces the career slice, re-stamping its checksum. The ONLY sanctioned
+ * write path for the field: saveProgress re-verifies the checksum through
+ * migrateProgress, so a slice mutated any other way would come back as
+ * corrupt on the next load.
+ */
+export function writeCareer(
+  progress: PlayerProgressV2,
+  career: CareerPersisted,
+): PlayerProgressV2 {
+  const stamped =
+    career !== null && career.state !== "corrupt"
+      ? stampCareerChecksum(career)
+      : career;
+  return { ...progress, career: stamped, updatedAt: nowIso() };
+}
+
+/** Abandons the career (bankruptcy restart or manual reset). Immutable. */
+export function clearCareer(progress: PlayerProgressV2): PlayerProgressV2 {
+  return { ...progress, career: null, updatedAt: nowIso() };
 }
 
 /** Sets a country's fuel level, clamped to [0, tank capacity]. Immutable. */

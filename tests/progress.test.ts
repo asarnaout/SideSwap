@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearCareer,
   consumeFuel,
   createDefaultProgress,
   credit,
   debit,
   isPlayerProgressV2,
   loadProgress,
+  resetProgress,
   saveProgress,
   setFuel,
+  writeCareer,
 } from "../app/game/progress";
+import {
+  applySettlement,
+  createCareerSlice,
+  emptyDayLog,
+  settleDay,
+} from "../app/game/career";
 import {
   STARTING_WALLET_BY_COUNTRY,
   TANK_CAPACITY_L,
@@ -45,6 +54,7 @@ describe("player progress (V2 economy)", () => {
     expect(progress.completedGigCount).toBe(0);
     expect(progress.lastCountryId).toBe("uk");
     expect(progress.lastDestinationId).toBe("uk-london");
+    expect(progress.career).toBeNull();
     expect(isPlayerProgressV2(progress)).toBe(true);
   });
 
@@ -149,5 +159,97 @@ describe("player progress (V2 economy)", () => {
     const restored = loadProgress(storage);
     expect(restored.completedGigCount).toBe(3);
     expect(restored.walletByCountry).toEqual(STARTING_WALLET_BY_COUNTRY);
+  });
+});
+
+describe("career slice persistence", () => {
+  const freshSlice = () =>
+    createCareerSlice({
+      countryId: "us",
+      destinationId: "us-nyc",
+      careerSeed: 424242,
+    });
+
+  it("round-trips a career through save and load byte-identically", () => {
+    const storage = memoryStorage();
+    const slice = freshSlice();
+    expect(saveProgress(writeCareer(createDefaultProgress(), slice), storage)).toBe(
+      true,
+    );
+    const restored = loadProgress(storage);
+    expect(restored.career).toEqual(slice);
+    // Free-drive economy untouched by carrying a career.
+    expect(restored.walletByCountry).toEqual(STARTING_WALLET_BY_COUNTRY);
+  });
+
+  it("loads a pre-career v2 save (no career key) with a null career", () => {
+    const legacy = createDefaultProgress(
+      "2026-07-10T12:00:00.000Z",
+    ) as unknown as Record<string, unknown>;
+    const withoutCareer = { ...legacy };
+    delete withoutCareer.career;
+    const storage = memoryStorage({ "sideswap:v2": JSON.stringify(withoutCareer) });
+    const restored = loadProgress(storage);
+    expect(restored.career).toBeNull();
+    expect(restored.walletByCountry).toEqual(STARTING_WALLET_BY_COUNTRY);
+  });
+
+  it("surfaces a hand-tampered slice as corrupt, and the marker survives a save", () => {
+    const storage = memoryStorage();
+    saveProgress(writeCareer(createDefaultProgress(), freshSlice()), storage);
+
+    const raw = JSON.parse(storage.getItem("sideswap:v2") ?? "{}") as {
+      career: { cash: number };
+    };
+    raw.career.cash = 999999;
+    storage.setItem("sideswap:v2", JSON.stringify(raw));
+
+    const tampered = loadProgress(storage);
+    expect(tampered.career).toEqual({ state: "corrupt" });
+
+    // migrate-on-save must not quietly rebuild the career away before the UI
+    // has offered the reset.
+    expect(saveProgress(tampered, storage)).toBe(true);
+    expect(loadProgress(storage).career).toEqual({ state: "corrupt" });
+  });
+
+  it("persists a settled (mutated) slice only through writeCareer's re-stamp", () => {
+    const storage = memoryStorage();
+    const slice = freshSlice();
+    const settlement = settleDay({
+      cash: -20,
+      ledger: emptyDayLog(),
+      loan: null,
+      finalNotice: false,
+      platformFee: 3,
+      rule: slice.rule,
+    });
+    const advanced = applySettlement(slice, emptyDayLog(), settlement);
+    saveProgress(writeCareer(createDefaultProgress(), advanced), storage);
+    const restored = loadProgress(storage);
+    expect(restored.career).toEqual(advanced);
+    expect(
+      restored.career !== null &&
+        restored.career.state !== "corrupt" &&
+        restored.career.loan !== null,
+    ).toBe(true);
+  });
+
+  it("clearCareer empties the slice and resetProgress starts careerless", () => {
+    const withCareer = writeCareer(createDefaultProgress(), freshSlice());
+    expect(withCareer.career).not.toBeNull();
+    expect(clearCareer(withCareer).career).toBeNull();
+    expect(resetProgress(memoryStorage()).career).toBeNull();
+  });
+
+  it("keeps the lesson-era v1 migration careerless", () => {
+    const storage = memoryStorage({
+      "sideswap:v1": JSON.stringify({
+        version: 1,
+        lastCountryId: "jp",
+        updatedAt: "2026-07-10T12:00:00.000Z",
+      }),
+    });
+    expect(loadProgress(storage).career).toBeNull();
   });
 });

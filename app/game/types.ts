@@ -1,3 +1,7 @@
+// Type-only: career.ts imports back from this module at runtime, but a
+// type-level cycle is erased at compile time.
+import type { CareerPersisted } from "./career";
+
 export type TrafficSide = "left" | "right";
 export type SteeringSide = TrafficSide;
 export type SteeringPreference = "auto" | SteeringSide;
@@ -620,6 +624,13 @@ export interface PlayerProgressV2 {
   readonly lastDestinationId: DestinationId;
   readonly preferredCamera: CameraMode;
   readonly accessibility: AccessibilityPreferences;
+  /**
+   * Career Mode's whole persisted state (null until a career starts, or the
+   * corrupt marker when the stored slice fails its checksum). Career money is
+   * fully separate from the free-drive wallets above; only the
+   * writeCareer/clearCareer reducers may replace this field.
+   */
+  readonly career: CareerPersisted;
   readonly updatedAt: string;
 }
 
