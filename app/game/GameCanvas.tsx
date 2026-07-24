@@ -136,6 +136,12 @@ import {
 import { assembleStorefrontVariantMaster } from "./storefrontMaster";
 import { streetAddressesForMap } from "./streetAddresses";
 import {
+  regulatorySignPlacements,
+  regulatorySignYawRad,
+  type RegulatorySignKind,
+  type RegulatorySignPlacement,
+} from "./regulatorySigns";
+import {
   buildConnectedNpcPath,
   type NpcPathSegment as NpcPathSegmentData,
 } from "./npcPaths";
@@ -2147,6 +2153,9 @@ const DESTRUCTIBLE_PROP_CONFIGS: Readonly<Record<string, DestructiblePropConfig>
   streetlight: { radiusM: 0.32, speedScale: 0.74, damage: "medium", noun: "a streetlight", fall: "topple" },
   "utility-pole": { radiusM: 0.35, speedScale: 0.72, damage: "medium", noun: "a utility pole", fall: "topple" },
   sign: { radiusM: 0.28, speedScale: 0.93, damage: "light", noun: "a signpost", fall: "topple" },
+  "oneway-sign": { radiusM: 0.28, speedScale: 0.93, damage: "light", noun: "a ONE WAY sign", fall: "topple" },
+  "dne-sign": { radiusM: 0.28, speedScale: 0.93, damage: "light", noun: "a DO NOT ENTER sign", fall: "topple" },
+  "wrongway-sign": { radiusM: 0.28, speedScale: 0.93, damage: "light", noun: "a WRONG WAY sign", fall: "topple" },
   hydrant: { radiusM: 0.35, speedScale: 0.9, damage: "light", noun: "a fire hydrant", fall: "topple" },
   bollard: { radiusM: 0.25, speedScale: 0.92, damage: "light", noun: "a bollard", fall: "topple" },
   vending: { radiusM: 0.6, speedScale: 0.88, damage: "light", noun: "a vending machine", fall: "topple" },
@@ -7077,7 +7086,20 @@ class BabylonGameSession {
       }
     }
 
-    this.buildRoadsideProps(mapPack, palette, mapId, roadSurfaces);
+    // Regulatory signage is derived from the lane graph, so it can never
+    // disagree with the wrong-way rules the simulation enforces. NYC-only:
+    // the other maps carry no US-style signage (and resolveMapVisualKey
+    // falls back to "nyc" for unknown ids, so gate on the pack id).
+    const regulatorySigns =
+      mapPack.id === "nyc-upper-west-side"
+        ? regulatorySignPlacements({
+            lanes: mapPack.laneGraph.lanes,
+            roadSurfaces: mapPack.geometry.roadSurfaces,
+            defaultRoadWidthM: mapPack.geometry.roadWidth,
+          })
+        : [];
+    if (regulatorySigns.length) this.buildRegulatorySigns(regulatorySigns);
+    this.buildRoadsideProps(mapPack, palette, mapId, roadSurfaces, regulatorySigns);
 
     for (const checkpoint of this.authoredCheckpoints) {
       this.checkpointVisuals.push(
@@ -7284,6 +7306,7 @@ class BabylonGameSession {
       readonly centerline: readonly GameCanvasPoint[];
       readonly widthM: number;
     }[],
+    signPoints: readonly GameCanvasPoint[] = [],
   ) {
     const scene = this.scene;
     const key = resolveMapVisualKey(mapId);
@@ -7339,7 +7362,15 @@ class BabylonGameSession {
       shoulderWidthM: Math.max(0.9, mapPack.geometry.shoulderWidth ?? 1.2),
       seed: hashStringToSeed(`${mapId}-props`),
       kinds,
-      occupiedPoints: key === "london" ? LONDON_FURNITURE_POINTS : undefined,
+      // Hand-placed furniture and regulatory sign posts pre-seed the mutual
+      // spacing grid so the random scatter can never stand a prop on them.
+      occupiedPoints:
+        key === "london" || signPoints.length
+          ? [
+              ...(key === "london" ? LONDON_FURNITURE_POINTS : []),
+              ...signPoints,
+            ]
+          : undefined,
     });
     if (!placements.length) return;
 
@@ -7764,6 +7795,232 @@ class BabylonGameSession {
     ]) {
       propMaterial.freeze();
     }
+  }
+
+  /**
+   * Regulatory signage for one-way roads: ONE WAY blades at enterable mouths,
+   * DO NOT ENTER pairs at forbidden mouths, WRONG WAY repeaters down each
+   * block (placements derived in regulatorySigns.ts). Each placement becomes
+   * a post plus a textured blade. Faces are drawn on DynamicTextures — MUTCD
+   * sign designs are US-government public domain — with the message on the
+   * box's -Z face, the one Babylon renders upright (+Z comes out rotated
+   * 180deg; see computePlatePlacements), and every remaining face mapped to a
+   * flat aluminum patch of the same texture. A DO NOT ENTER / WRONG WAY face
+   * therefore only reads against the flow: legal traffic sees a gray back.
+   */
+  private buildRegulatorySigns(placements: readonly RegulatorySignPlacement[]) {
+    const scene = this.scene;
+    const aluminum = "#9aa0a3";
+    const white = "#f4f6f6";
+    const signRed = "#a6141c";
+    // Bottom half of every canvas stays solid gray; gray faces sample a small
+    // centred rect of it so mipmap bleed from the designs can never reach in.
+    const GRAY_UV = new Vector4(0.4, 0.1, 0.6, 0.3);
+    const faceTexture = (
+      name: string,
+      width: number,
+      height: number,
+      draw: (context: CanvasRenderingContext2D) => void,
+    ): DynamicTexture => {
+      const texture = new DynamicTexture(name, { width, height }, scene, true);
+      const context = textureContext(texture);
+      context.fillStyle = aluminum;
+      context.fillRect(0, 0, width, height);
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      draw(context);
+      texture.update();
+      return texture;
+    };
+    const faceMaterial = (name: string, texture: DynamicTexture): StandardMaterial => {
+      const material = new StandardMaterial(name, scene);
+      material.diffuseTexture = texture;
+      // Plate recipe: self-illuminated for night legibility, but held below
+      // the night bloom threshold so signs read without glowing.
+      material.emissiveTexture = texture;
+      material.emissiveColor = new Color3(0.3, 0.3, 0.3);
+      material.specularColor = new Color3(0.12, 0.12, 0.12);
+      material.specularPower = 48;
+      return material;
+    };
+    // R6-1 blade cell (512x256 at x0): black field, white border, white arrow
+    // through the middle with "ONE WAY" set into the shaft.
+    const drawOneWayCell = (
+      context: CanvasRenderingContext2D,
+      x0: number,
+      pointLeft: boolean,
+    ) => {
+      context.fillStyle = "#101214";
+      context.fillRect(x0, 0, 512, 256);
+      context.strokeStyle = white;
+      context.lineWidth = 8;
+      context.strokeRect(x0 + 12, 12, 488, 232);
+      context.fillStyle = white;
+      const middle = 128;
+      const headX = pointLeft ? x0 + 44 : x0 + 468;
+      const neckX = pointLeft ? x0 + 150 : x0 + 362;
+      const tailX = pointLeft ? x0 + 468 : x0 + 44;
+      context.beginPath();
+      context.moveTo(headX, middle);
+      context.lineTo(neckX, middle - 92);
+      context.lineTo(neckX, middle - 44);
+      context.lineTo(tailX, middle - 44);
+      context.lineTo(tailX, middle + 44);
+      context.lineTo(neckX, middle + 44);
+      context.lineTo(neckX, middle + 92);
+      context.closePath();
+      context.fill();
+      context.fillStyle = "#101214";
+      context.font = "bold 54px Arial, sans-serif";
+      context.fillText("ONE WAY", x0 + 256 + (pointLeft ? 34 : -34), middle + 2);
+    };
+    const oneWayTexture = faceTexture("regsign-oneway", 1024, 512, (context) => {
+      drawOneWayCell(context, 0, true);
+      drawOneWayCell(context, 512, false);
+    });
+    // R5-1: white square, red disc, white bar, DO NOT / ENTER around it.
+    const dneTexture = faceTexture("regsign-dne", 512, 1024, (context) => {
+      context.fillStyle = white;
+      context.fillRect(0, 0, 512, 512);
+      context.fillStyle = signRed;
+      context.beginPath();
+      context.arc(256, 256, 232, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = white;
+      context.fillRect(72, 232, 368, 48);
+      context.font = "bold 64px Arial, sans-serif";
+      context.fillText("DO NOT", 256, 152);
+      context.fillText("ENTER", 256, 366);
+    });
+    // R5-1a: red panel, white border, WRONG WAY.
+    const wrongWayTexture = faceTexture("regsign-wrongway", 512, 512, (context) => {
+      context.fillStyle = signRed;
+      context.fillRect(0, 0, 512, 256);
+      context.strokeStyle = white;
+      context.lineWidth = 8;
+      context.strokeRect(10, 10, 492, 236);
+      context.fillStyle = white;
+      context.font = "bold 68px Arial, sans-serif";
+      context.fillText("WRONG WAY", 256, 130);
+    });
+    const materials = {
+      post: makeMaterial(scene, "regsign-post", new Color3(0.45, 0.47, 0.48)),
+      one_way: faceMaterial("regsign-oneway", oneWayTexture),
+      do_not_enter: faceMaterial("regsign-dne", dneTexture),
+      wrong_way: faceMaterial("regsign-wrongway", wrongWayTexture),
+    };
+    const blade = (
+      name: string,
+      width: number,
+      height: number,
+      material: StandardMaterial,
+      minusZ: Vector4,
+      plusZ: Vector4,
+    ): Mesh => {
+      // Babylon box faces: 0 = +Z (renders a faceUV region rotated 180deg),
+      // 1 = -Z (renders it upright) — pass the +Z region pre-swapped.
+      const faceUV = [
+        plusZ,
+        minusZ,
+        GRAY_UV,
+        GRAY_UV,
+        GRAY_UV,
+        GRAY_UV,
+      ];
+      const mesh = MeshBuilder.CreateBox(
+        `prop-master-${name}`,
+        { width, height, depth: 0.045, faceUV },
+        scene,
+      );
+      setMeshMaterial(mesh, material);
+      mesh.isVisible = false;
+      return mesh;
+    };
+    const swapped = (region: Vector4): Vector4 =>
+      new Vector4(region.z, region.w, region.x, region.y);
+    const post = MeshBuilder.CreateCylinder(
+      "prop-master-regsign-post",
+      { height: 2.6, diameter: 0.09, tessellation: 8 },
+      scene,
+    );
+    setMeshMaterial(post, materials.post);
+    post.isVisible = false;
+    const blades: Record<RegulatorySignKind, Mesh> = {
+      // Double-faced: left-arrow cell reads on -Z, right-arrow cell on +Z, so
+      // cross traffic on either side sees the arrow pointing along the flow.
+      one_way: blade(
+        "regsign-oneway",
+        0.9,
+        0.3,
+        materials.one_way,
+        new Vector4(0, 0.5, 0.5, 1),
+        swapped(new Vector4(0.5, 0.5, 1, 1)),
+      ),
+      do_not_enter: blade(
+        "regsign-dne",
+        0.75,
+        0.75,
+        materials.do_not_enter,
+        new Vector4(0, 0.5, 1, 1),
+        GRAY_UV,
+      ),
+      wrong_way: blade(
+        "regsign-wrongway",
+        0.9,
+        0.6,
+        materials.wrong_way,
+        new Vector4(0, 0.5, 1, 1),
+        GRAY_UV,
+      ),
+    };
+    const bladeOffsets: Record<RegulatorySignKind, Vector3> = {
+      one_way: new Vector3(0, 2.75, 0),
+      do_not_enter: new Vector3(0, 2.2, -0.08),
+      wrong_way: new Vector3(0, 2.05, -0.08),
+    };
+    const kindKeys: Record<RegulatorySignKind, string> = {
+      one_way: "oneway-sign",
+      do_not_enter: "dne-sign",
+      wrong_way: "wrongway-sign",
+    };
+    const postOffset = new Vector3(0, 1.3, 0);
+    let instanceIndex = 0;
+    for (const placement of placements) {
+      const yaw = regulatorySignYawRad(placement.kind, placement.flowHeadingRad);
+      const sin = Math.sin(yaw);
+      const cos = Math.cos(yaw);
+      const destructibleParts: DestructiblePropPart[] = [];
+      for (const part of [
+        { master: post, offset: postOffset },
+        { master: blades[placement.kind], offset: bladeOffsets[placement.kind] },
+      ]) {
+        const instance = part.master.createInstance(
+          `prop-${kindKeys[placement.kind]}-${instanceIndex}`,
+        );
+        instanceIndex += 1;
+        instance.position.set(
+          placement.x + part.offset.x * cos + part.offset.z * sin,
+          part.offset.y,
+          placement.z - part.offset.x * sin + part.offset.z * cos,
+        );
+        instance.rotation.y = yaw;
+        instance.isPickable = false;
+        this.staticSceneryFreeze.push(instance);
+        this.registerShadowCaster(instance, placement.x, placement.z);
+        destructibleParts.push({ node: instance, isLightPool: false });
+      }
+      this.registerDestructibleProp(
+        kindKeys[placement.kind],
+        placement.x,
+        placement.z,
+        1,
+        destructibleParts,
+      );
+    }
+    materials.post.freeze();
+    materials.one_way.freeze();
+    materials.do_not_enter.freeze();
+    materials.wrong_way.freeze();
   }
 
   private buildLondonStreetFurniture() {
