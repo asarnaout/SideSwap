@@ -34,3 +34,26 @@ export function buildFreeDriveLesson(
     scenarioClock: freeDrive.scenarioClock,
   };
 }
+
+/**
+ * A career day is the same open-world scenario with a per-day identity and a
+ * per-day traffic seed: the id carries the day so the React remount key (and
+ * the session-rebuild dep on lesson.id) rolls the world over between days,
+ * and the seed comes from careerDayTrafficSeed so a retried day replays
+ * identically.
+ */
+export function buildCareerDayLesson(
+  freeDrive: FreeDriveDefinition,
+  trafficSide: TrafficSide,
+  day: number,
+  trafficSeed: number,
+): GameCanvasLesson {
+  const base = buildFreeDriveLesson(freeDrive, trafficSide);
+  const id = `career-${freeDrive.id}-d${day}`;
+  return {
+    ...base,
+    id,
+    trafficSeed,
+    objectives: [{ id: `${id}-earn`, label: "Serve gigs before the day ends" }],
+  };
+}
