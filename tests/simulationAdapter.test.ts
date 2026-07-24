@@ -9,31 +9,18 @@ import {
   buildSimulationCoreConfig,
   resolveSimulationStartPose,
 } from "../app/game/simulationAdapter";
+import { buildFreeDriveLesson } from "../app/game/freeDriveLesson";
 import type { GameCanvasLesson } from "../app/game/GameCanvas";
 import type { FreeDriveDefinition } from "../app/game/types";
 
 // Lessons were removed in the gig overhaul, so the adapter now only ever
-// receives free drives. This mirrors the runtime GameCanvasLesson SideSwapApp
-// assembles for an open-world session.
-const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson => {
-  const country = getCountryProfile(freeDrive.countryId);
-  return {
-    id: freeDrive.id,
-    title: freeDrive.title,
-    kind: "free_drive",
-    trafficSide: country.trafficSide,
-    startSpawnId: freeDrive.startSpawnId,
-    route: [],
-    objectives: [{ id: `${freeDrive.id}-explore`, label: "Explore the city" }],
-    trafficSeed: freeDrive.trafficSeed,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: [],
-    coachPrompts: [],
-    assessedRules: [],
-    scenarioClock: freeDrive.scenarioClock,
-  };
-};
+// receives free drives — the same contract SideSwapApp assembles for an
+// open-world session.
+const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson =>
+  buildFreeDriveLesson(
+    freeDrive,
+    getCountryProfile(freeDrive.countryId).trafficSide,
+  );
 
 const canvasSpeedUnit = (freeDrive: FreeDriveDefinition) =>
   getCountryProfile(freeDrive.countryId).speedUnit === "kmh" ? "km/h" : "mph";
