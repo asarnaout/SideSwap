@@ -33,6 +33,7 @@ import {
   resolveSteeringSide,
 } from "./game/content";
 import {
+  clearCareer,
   createDefaultProgress,
   credit,
   debit,
@@ -40,9 +41,41 @@ import {
   resetProgress,
   saveProgress,
   setFuel,
+  writeCareer,
 } from "./game/progress";
+import {
+  applySettlement,
+  CAREER_VEHICLES,
+  careerDayTrafficSeed,
+  careerFare,
+  careerGigSeedBase,
+  createCareerSlice,
+  DAY_LENGTH_MS,
+  emptyDayLog,
+  getCareerVehicle,
+  PLATFORM_FEE_BY_COUNTRY,
+  settleDay,
+  vehicleRent,
+} from "./game/career";
+import type {
+  CareerSliceV1,
+  CareerVehicleId,
+  CareerVehicleSpec,
+  DayLedgerInput,
+  SettlementResult,
+} from "./game/career";
+import {
+  CareerOverView,
+  CareerSetupPanel,
+  formatClock,
+  GarageView,
+  LedgerView,
+} from "./CareerViews";
 import { FULL_CONDITION_PCT, damageForCollision } from "./game/damage";
-import { buildFreeDriveLesson } from "./game/freeDriveLesson";
+import {
+  buildCareerDayLesson,
+  buildFreeDriveLesson,
+} from "./game/freeDriveLesson";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import {
   FUEL_PUMP_REACH_M,
@@ -70,7 +103,21 @@ import type {
   ScenarioId,
 } from "./game/types";
 
-type View = "launcher" | "driving" | "settings" | "credits";
+type View =
+  | "launcher"
+  | "driving"
+  | "settings"
+  | "credits"
+  | "career-garage"
+  | "career-ledger"
+  | "career-over";
+
+/** The in-flight career day: morning slice + the vehicle taken out. */
+interface CareerRun {
+  readonly slice: CareerSliceV1;
+  readonly vehicleId: CareerVehicleId;
+  readonly vehicle: CareerVehicleSpec;
+}
 
 const GameCanvas = dynamic(() => import("./game/GameCanvas"), {
   ssr: false,
@@ -248,6 +295,9 @@ function nextGigFor(
   country: CountryProfile,
   seed: number,
   recentKinds: readonly GigKind[],
+  // Career vehicles gate what may be OFFERED: a bicycle courier is never shown
+  // a rideshare request rather than being allowed to decline one.
+  allowedKinds: readonly GigKind[] = ["delivery", "passenger"],
 ): Gig | null {
   const venues = resolveGigVenues(map);
   const addresses = resolveGigAddresses(map);
@@ -266,10 +316,13 @@ function nextGigFor(
       kind,
     );
   };
-  const preferred = pickGigKindAvoidingStreak(seed, recentKinds);
+  const drawn = pickGigKindAvoidingStreak(seed, recentKinds);
+  const preferred = allowedKinds.includes(drawn) ? drawn : allowedKinds[0];
+  if (preferred === undefined) return null;
+  const fallback: GigKind = preferred === "passenger" ? "delivery" : "passenger";
   return (
     buildGig(preferred) ??
-    buildGig(preferred === "passenger" ? "delivery" : "passenger")
+    (allowedKinds.includes(fallback) ? buildGig(fallback) : null)
   );
 }
 
@@ -348,6 +401,45 @@ export default function SideSwapApp() {
   // While the pump runs, the fuel bar's CSS transition is stretched to the
   // fill window so the gauge glides while the driver holds the nozzle.
   const [fuelFillMs, setFuelFillMs] = useState(0);
+  // ---- Career Mode day state. Money is day-local (dayCash/dayLog) and only
+  // lands in the persisted slice at settlement — quitting mid-day redoes the
+  // day from the morning. Refs mirror state so multiple money events in one
+  // frame all subtract from the live value (same pattern as carConditionRef).
+  const [careerRun, setCareerRun] = useState<CareerRun | null>(null);
+  const careerRunRef = useRef<CareerRun | null>(null);
+  const [dayCash, setDayCash] = useState(0);
+  const dayCashRef = useRef(0);
+  const dayLogRef = useRef<DayLedgerInput>(emptyDayLog());
+  // The day clock accumulates sim time across session resets (a tow zeroes the
+  // sim's elapsedMs): on decrease, fold the last-seen value into the base.
+  const dayElapsedBaseRef = useRef(0);
+  const lastSimElapsedRef = useRef(0);
+  const [dayRemainingMs, setDayRemainingMs] = useState(DAY_LENGTH_MS);
+  // The whistle blew mid-cutscene/tow: settle as soon as the scene resolves.
+  const pendingSettleRef = useRef(false);
+  // Guards double settlement from the 10 Hz HUD stream.
+  const dayActiveRef = useRef(false);
+  const gigRef = useRef<Gig | null>(null);
+  const [lastSettlement, setLastSettlement] = useState<{
+    readonly result: SettlementResult;
+    readonly slice: CareerSliceV1;
+  } | null>(null);
+  const [garageVehicleId, setGarageVehicleId] =
+    useState<CareerVehicleId>("compact-hatch");
+  const [gameMode, setGameMode] = useState<"free" | "career">("free");
+
+  useEffect(() => {
+    gigRef.current = gig;
+  }, [gig]);
+
+  const chargeCareer = useCallback(
+    (amount: number, log?: (current: DayLedgerInput) => DayLedgerInput) => {
+      dayCashRef.current -= amount;
+      setDayCash(dayCashRef.current);
+      if (log) dayLogRef.current = log(dayLogRef.current);
+    },
+    [],
+  );
 
   const clearCutscene = useCallback(() => {
     cutsceneRef.current = null;
@@ -401,11 +493,18 @@ export default function SideSwapApp() {
     });
   }, []);
 
+  // Assigned each render so the 10 Hz HUD callback below always calls the
+  // freshest closure without itself needing to be rebuilt.
+  const endCareerDayRef = useRef<() => void>(() => {});
+
   // Drain fuel by the distance the car actually moved between HUD samples, then
   // mirror the pose for the next delta. Fuel lives in the drive session and is
-  // written back to the country's tank on refuel and on exit.
+  // written back to the country's tank on refuel and on exit (free drive) or
+  // discarded with the rental at day end (career). In career the same stream
+  // drives the day clock off the sim's deterministic elapsed time.
   const handleHud = useCallback((snapshot: GameHudSnapshot) => {
     setHud(snapshot);
+    const run = careerRunRef.current;
     const last = lastPoseRef.current;
     if (last) {
       const moved = Math.hypot(
@@ -413,12 +512,31 @@ export default function SideSwapApp() {
         snapshot.playerZ - last.z,
       );
       if (moved > 0 && moved < 40) {
-        setDriveFuel((fuel) =>
-          Math.max(0, fuel - moved * FUEL_CONSUMPTION_L_PER_M),
-        );
+        const rate = run ? run.vehicle.fuelLPerM : FUEL_CONSUMPTION_L_PER_M;
+        if (rate > 0) {
+          setDriveFuel((fuel) => Math.max(0, fuel - moved * rate));
+        }
       }
     }
     lastPoseRef.current = { x: snapshot.playerX, z: snapshot.playerZ };
+    if (run && dayActiveRef.current) {
+      if (snapshot.simElapsedMs < lastSimElapsedRef.current) {
+        dayElapsedBaseRef.current += lastSimElapsedRef.current;
+      }
+      lastSimElapsedRef.current = snapshot.simElapsedMs;
+      const elapsed = dayElapsedBaseRef.current + snapshot.simElapsedMs;
+      const remaining = Math.max(0, DAY_LENGTH_MS - elapsed);
+      setDayRemainingMs(remaining);
+      if (remaining <= 0) {
+        // Let an in-flight scene (or the tow overlay) resolve first — a
+        // drop-off completing at the whistle still pays.
+        if (cutsceneRef.current || towingRef.current) {
+          pendingSettleRef.current = true;
+        } else {
+          endCareerDayRef.current();
+        }
+      }
+    }
   }, []);
 
   // Arriving at a gig stop now means actually stopping there: inside the
@@ -500,9 +618,17 @@ export default function SideSwapApp() {
     // side too so nothing waits on a `done` that will never come.
     clearCutscene();
     const fee = REPAIR_FEE_BY_COUNTRY[driveCountry.id];
-    const paid = debit(progress, driveCountry.id, fee);
-    setProgress(paid);
-    saveProgress(paid);
+    if (careerRunRef.current) {
+      // Day-local money: the repair bill can push the day negative.
+      chargeCareer(fee, (log) => ({
+        ...log,
+        repairsTotal: log.repairsTotal + fee,
+      }));
+    } else {
+      const paid = debit(progress, driveCountry.id, fee);
+      setProgress(paid);
+      saveProgress(paid);
+    }
     const reduced = progress.accessibility.reducedMotion;
     window.setTimeout(() => {
       towResetNonceRef.current += 1;
@@ -513,8 +639,13 @@ export default function SideSwapApp() {
     window.setTimeout(() => {
       towingRef.current = false;
       setTowing(false);
+      // The whistle blew during the tow: settle now that the overlay is gone.
+      if (pendingSettleRef.current && careerRunRef.current) {
+        pendingSettleRef.current = false;
+        endCareerDayRef.current();
+      }
     }, reduced ? 500 : 2400);
-  }, [progress, driveCountry, clearCutscene]);
+  }, [progress, driveCountry, clearCutscene, chargeCareer]);
 
   // Collision events wear the car down (and striking a person is cited on the
   // spot); a fine event reaches us only when a patrol witnessed the violation.
@@ -530,6 +661,26 @@ export default function SideSwapApp() {
           // bar's transition across the fill window so the gauge pours while
           // the driver pumps. An aborted scene after this point was still a
           // completed purchase; before it, nothing happened.
+          const run = careerRunRef.current;
+          if (run) {
+            // Career fuel is integer, priced per vehicle, and never gated on
+            // being able to afford it — the charge may push the day negative.
+            const litres = Math.max(0, run.vehicle.tankL - driveFuel);
+            const cost = Math.round(
+              litres *
+                FUEL_PRICE_PER_LITRE_BY_COUNTRY[run.slice.countryId] *
+                run.vehicle.fuelPriceFactor,
+            );
+            chargeCareer(cost, (log) => ({
+              ...log,
+              fuelSpendTotal: log.fuelSpendTotal + cost,
+            }));
+            setFuelFillMs(
+              typeof evidence.durationMs === "number" ? evidence.durationMs : 0,
+            );
+            setDriveFuel(run.vehicle.tankL);
+            return;
+          }
           const litres = Math.max(0, TANK_CAPACITY_L - driveFuel);
           const cost =
             Math.round(
@@ -557,11 +708,66 @@ export default function SideSwapApp() {
                 : current,
             );
           } else if (active.kind === "exit" || active.kind === "food_dropoff") {
-            setGig((current) =>
-              current && current.state === "carrying"
-                ? { ...current, state: "delivered" }
-                : current,
-            );
+            const run = careerRunRef.current;
+            const current = gigRef.current;
+            if (
+              run &&
+              current &&
+              current.state === "carrying" &&
+              paidGigRef.current !== current.id
+            ) {
+              // Career pays synchronously in the scene's done event (not via
+              // the free-drive payout effect) so a drop-off finishing right at
+              // the whistle is credited before the settlement below runs.
+              paidGigRef.current = current.id;
+              const { gross, net } = careerFare(
+                current.reward,
+                current.kind,
+                run.vehicle,
+              );
+              dayCashRef.current += net;
+              setDayCash(dayCashRef.current);
+              dayLogRef.current = {
+                ...dayLogRef.current,
+                grossFares: dayLogRef.current.grossFares + gross,
+                netFares: dayLogRef.current.netFares + net,
+                gigsCompleted: dayLogRef.current.gigsCompleted + 1,
+              };
+              const careerCountry = getCountryProfile(run.slice.countryId);
+              const careerMap = getMapPack(
+                getFreeDrive(
+                  getDestinationProfile(run.slice.destinationId).freeDriveId,
+                ).mapId,
+              );
+              gigSeedRef.current += 1;
+              const nextGig = nextGigFor(
+                careerMap,
+                careerCountry,
+                gigSeedRef.current,
+                gigKindHistoryRef.current,
+                run.vehicle.allowedGigKinds,
+              );
+              if (nextGig) {
+                gigKindHistoryRef.current = [
+                  ...gigKindHistoryRef.current,
+                  nextGig.kind,
+                ].slice(-MAX_SAME_KIND_STREAK);
+              }
+              gigRef.current = nextGig;
+              setGig(nextGig);
+            } else if (!run) {
+              setGig((existing) =>
+                existing && existing.state === "carrying"
+                  ? { ...existing, state: "delivered" }
+                  : existing,
+              );
+            }
+          }
+          // The day ended while this scene played out: settle now that its
+          // durable effects (including the payout above) have landed.
+          if (pendingSettleRef.current && careerRunRef.current && !towingRef.current) {
+            pendingSettleRef.current = false;
+            endCareerDayRef.current();
           }
         }
         return;
@@ -581,9 +787,16 @@ export default function SideSwapApp() {
           if (now - lastPedFineAtRef.current < 4000) return;
           lastPedFineAtRef.current = now;
           const amount = FINE_BY_COUNTRY[driveCountry.id];
-          const fined = debit(progress, driveCountry.id, amount);
-          setProgress(fined);
-          saveProgress(fined);
+          if (careerRunRef.current) {
+            chargeCareer(amount, (log) => ({
+              ...log,
+              finesTotal: log.finesTotal + amount,
+            }));
+          } else {
+            const fined = debit(progress, driveCountry.id, amount);
+            setProgress(fined);
+            saveProgress(fined);
+          }
           setFineToast({
             amount,
             reason:
@@ -599,12 +812,19 @@ export default function SideSwapApp() {
       if (now - lastFineAtRef.current < 8000) return;
       lastFineAtRef.current = now;
       const amount = FINE_BY_COUNTRY[driveCountry.id];
-      const fined = debit(progress, driveCountry.id, amount);
-      setProgress(fined);
-      saveProgress(fined);
+      if (careerRunRef.current) {
+        chargeCareer(amount, (log) => ({
+          ...log,
+          finesTotal: log.finesTotal + amount,
+        }));
+      } else {
+        const fined = debit(progress, driveCountry.id, amount);
+        setProgress(fined);
+        saveProgress(fined);
+      }
       setFineToast({ amount, reason: fineReason(event.ruleCode) });
     },
-    [progress, driveCountry, driveFuel, beginTow, clearCutscene],
+    [progress, driveCountry, driveFuel, beginTow, clearCutscene, chargeCareer],
   );
 
   // Auto-dismiss the fine toast a few seconds after it appears.
@@ -616,10 +836,17 @@ export default function SideSwapApp() {
   const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
   const activeFreeDrive = getFreeDrive(activeScenarioId);
   const runtimeMap = getMapPack(activeFreeDrive.mapId);
-  const runtimeLesson: GameCanvasLesson = buildFreeDriveLesson(
-    activeFreeDrive,
-    driveCountry.trafficSide,
-  );
+  // A career day is the same open-world scenario under a per-day identity and
+  // seed, so the remount key rolls the world over between days and a retried
+  // day replays identically.
+  const runtimeLesson: GameCanvasLesson = careerRun
+    ? buildCareerDayLesson(
+        activeFreeDrive,
+        driveCountry.trafficSide,
+        careerRun.slice.day,
+        careerDayTrafficSeed(careerRun.slice.careerSeed, careerRun.slice.day),
+      )
+    : buildFreeDriveLesson(activeFreeDrive, driveCountry.trafficSide);
 
   const themeDestination = view === "driving" ? driveDestination : destination;
   const themeStyle = {
@@ -643,8 +870,11 @@ export default function SideSwapApp() {
   }, [destinationId, hydrated, progress.accessibility.reducedMotion]);
 
   // Pay out a completed delivery and immediately offer the next one. Guarded by
-  // paidGigRef so re-renders can't double-credit the same gig.
+  // paidGigRef so re-renders can't double-credit the same gig. Free drive only:
+  // career gigs are paid synchronously in the cutscene done handler so a
+  // drop-off at the whistle lands before settlement.
   useEffect(() => {
+    if (careerRunRef.current) return;
     if (!gig || gig.state !== "delivered" || paidGigRef.current === gig.id) {
       return;
     }
@@ -738,6 +968,29 @@ export default function SideSwapApp() {
   };
 
   const exitDrive = () => {
+    if (careerRunRef.current) {
+      // Boundary saves only: nothing was written since the morning, so quitting
+      // simply redoes the day (same seeds, same garage cash).
+      if (
+        !window.confirm(
+          "End the day early? Today's progress is discarded and the day restarts.",
+        )
+      ) {
+        return;
+      }
+      dayActiveRef.current = false;
+      pendingSettleRef.current = false;
+      careerRunRef.current = null;
+      setCareerRun(null);
+      setGig(null);
+      setPaused(false);
+      setActiveSession(null);
+      clearCutscene();
+      music.stop();
+      suspendAudioContext();
+      setView("career-garage");
+      return;
+    }
     // Persist the current tank level back to the country's saved fuel.
     const persisted = setFuel(progress, driveCountry.id, driveFuel);
     setProgress(persisted);
@@ -753,6 +1006,186 @@ export default function SideSwapApp() {
     setView("launcher");
   };
 
+  // ---- Career Mode flow --------------------------------------------------
+  // The playable slice, when one exists and decoded cleanly.
+  const careerSlice =
+    progress.career !== null && progress.career.state !== "corrupt"
+      ? progress.career
+      : null;
+  const careerCountry = careerSlice
+    ? getCountryProfile(careerSlice.countryId)
+    : null;
+  // Bicycle ships in a later phase: the card is visible but locked, so the
+  // hatch is the interim starter.
+  const lockedCareerVehicles: Partial<Record<CareerVehicleId, string>> = {
+    bicycle: "Arriving soon — start with the hatchback",
+    "delivery-van": "Unlocks in a later update",
+    "sport-sedan": "Unlocks in a later update",
+  };
+  // When nothing is affordable the cheapest unlocked vehicle may start with
+  // its rent carried into the day as negative cash — without this, a solvent
+  // settlement that lands under the cheapest rent would soft-lock the garage
+  // until the (free, owned) bicycle arrives in a later phase.
+  const unlockedVehicleSpecs = careerSlice
+    ? CAREER_VEHICLES.filter((vehicle) => !lockedCareerVehicles[vehicle.id])
+    : [];
+  const anyVehicleAffordable = careerSlice
+    ? unlockedVehicleSpecs.some(
+        (vehicle) => careerSlice.cash >= vehicleRent(vehicle, careerSlice),
+      )
+    : false;
+  const creditVehicleId: CareerVehicleId | null =
+    careerSlice && !anyVehicleAffordable && unlockedVehicleSpecs.length
+      ? unlockedVehicleSpecs.reduce((cheapest, vehicle) =>
+          vehicleRent(vehicle, careerSlice) < vehicleRent(cheapest, careerSlice)
+            ? vehicle
+            : cheapest,
+        ).id
+      : null;
+
+  const startCareer = () => {
+    // App-layer randomness is fine (the sim's no-RNG rule protects replays,
+    // which key off the seed we mint here, not off how we minted it).
+    const careerSeed =
+      (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+    const slice = createCareerSlice({
+      countryId: destination.countryId,
+      destinationId: destination.id,
+      careerSeed,
+    });
+    const saved = writeCareer(progress, slice);
+    setProgress(saved);
+    saveProgress(saved);
+    setGarageVehicleId("compact-hatch");
+    setView("career-garage");
+  };
+
+  const resetCareer = (nextView: View = "launcher") => {
+    const cleared = clearCareer(progress);
+    setProgress(cleared);
+    saveProgress(cleared);
+    setLastSettlement(null);
+    setView(nextView);
+  };
+
+  const beginCareerDay = (vehicleId: CareerVehicleId) => {
+    if (!careerSlice || careerSlice.state === "over") return;
+    const vehicle = getCareerVehicle(vehicleId);
+    const rent = vehicleRent(vehicle, careerSlice);
+    if (careerSlice.cash < rent && creditVehicleId !== vehicleId) return;
+    // Synchronously, inside the click: Safari only honours audio in the
+    // gesture's own task (same constraint as beginDrive).
+    primeAudioContext();
+    music.start(careerSlice.destinationId);
+    const destinationProfile = getDestinationProfile(careerSlice.destinationId);
+    const session: GameSessionConfig = {
+      countryId: careerSlice.countryId,
+      destinationId: careerSlice.destinationId,
+      scenarioId: destinationProfile.freeDriveId,
+      familiarTrafficSide: getCountryProfile(careerSlice.countryId).trafficSide,
+      steeringPreference: "auto",
+      camera,
+      assistance: assistanceFromProgress(progress),
+    };
+    resolveSessionConfig(session);
+    const run: CareerRun = { slice: careerSlice, vehicleId, vehicle };
+    careerRunRef.current = run;
+    setCareerRun(run);
+    // Rent is prepaid into the day-local cash; the slice itself is untouched
+    // until settlement (mid-day quits revert to the morning).
+    dayCashRef.current = careerSlice.cash - rent;
+    setDayCash(dayCashRef.current);
+    dayLogRef.current = { ...emptyDayLog(), rentPaid: rent };
+    dayElapsedBaseRef.current = 0;
+    lastSimElapsedRef.current = 0;
+    setDayRemainingMs(DAY_LENGTH_MS);
+    pendingSettleRef.current = false;
+    dayActiveRef.current = true;
+    setDestinationId(careerSlice.destinationId);
+    setActiveSession(session);
+    // Rentals come with a full tank, included in the rent; nothing persists.
+    setDriveFuel(vehicle.tankL);
+    lastPoseRef.current = null;
+    gigSeedRef.current = careerGigSeedBase(
+      careerSlice.careerSeed,
+      careerSlice.day,
+    );
+    gigKindHistoryRef.current = [];
+    paidGigRef.current = null;
+    const firstGig = nextGigFor(
+      getMapPack(getFreeDrive(destinationProfile.freeDriveId).mapId),
+      getCountryProfile(careerSlice.countryId),
+      gigSeedRef.current,
+      gigKindHistoryRef.current,
+      vehicle.allowedGigKinds,
+    );
+    if (firstGig) {
+      gigKindHistoryRef.current = [firstGig.kind];
+    }
+    gigRef.current = firstGig;
+    setGig(firstGig);
+    setHud(null);
+    setPaused(false);
+    carConditionRef.current = FULL_CONDITION_PCT;
+    setCarCondition(FULL_CONDITION_PCT);
+    towingRef.current = false;
+    setTowing(false);
+    clearCutscene();
+    setLastSettlement(null);
+    setView("driving");
+  };
+
+  const endCareerDay = () => {
+    const run = careerRunRef.current;
+    if (!run || !dayActiveRef.current) return;
+    dayActiveRef.current = false;
+    pendingSettleRef.current = false;
+    const ledger = dayLogRef.current;
+    const settlement = settleDay({
+      cash: dayCashRef.current,
+      ledger,
+      loan: run.slice.loan,
+      finalNotice: run.slice.finalNotice,
+      platformFee: PLATFORM_FEE_BY_COUNTRY[run.slice.countryId],
+      rule: run.slice.rule,
+    });
+    const nextSlice = applySettlement(run.slice, ledger, settlement);
+    // The one mid-career save point: day boundaries only.
+    const saved = writeCareer(progress, nextSlice);
+    setProgress(saved);
+    saveProgress(saved);
+    setLastSettlement({ result: settlement, slice: nextSlice });
+    careerRunRef.current = null;
+    setCareerRun(null);
+    setGig(null);
+    setPaused(false);
+    setActiveSession(null);
+    clearCutscene();
+    // Music keeps playing across the ledger and garage — they are part of the
+    // run, and the next day's start() will pick a fresh track.
+    setView(settlement.outcome === "game_over" ? "career-over" : "career-ledger");
+  };
+  useEffect(() => {
+    endCareerDayRef.current = endCareerDay;
+  });
+
+  // Career interstitials need their backing state; a stale view (an abandoned
+  // or missing career) falls back to something renderable instead of a blank
+  // shell. Derived, not redirected — the underlying `view` self-corrects on
+  // the next explicit navigation.
+  const effectiveView: View =
+    view === "career-garage" && (!careerSlice || careerSlice.state === "over")
+      ? careerSlice
+        ? "career-over"
+        : "launcher"
+      : view === "career-ledger" && !lastSettlement
+        ? careerSlice
+          ? "career-garage"
+          : "launcher"
+        : view === "career-over" && !careerSlice
+          ? "launcher"
+          : view;
+
   const saveSettings = (next: PlayerProgressV2) => {
     setProgress(next);
     setDestinationId(next.lastDestinationId);
@@ -761,9 +1194,13 @@ export default function SideSwapApp() {
   };
 
   // Economy state for the active drive: wallet, fuel gauge, and whether the car
-  // is stopped at a gas station (so the refuel prompt can appear).
+  // is stopped at a gas station (so the refuel prompt can appear). In career
+  // the tank belongs to the rented vehicle and refuelling is never gated on
+  // affording it — the charge just pushes the day-cash negative.
   const walletHere = progress.walletByCountry[driveCountry.id];
-  const fuelFraction = driveFuel / TANK_CAPACITY_L;
+  const careerVehicle = careerRun?.vehicle ?? null;
+  const tankCapacityL = careerVehicle ? careerVehicle.tankL : TANK_CAPACITY_L;
+  const fuelFraction = tankCapacityL > 0 ? driveFuel / tankCapacityL : 0;
   // Measured to the pumps, not to the lane anchor: the station model is set
   // back ~16-19m from its anchor, so an anchor-radius check offered fuel to a
   // car stopped on the carriageway while refusing it at the pumps themselves.
@@ -779,12 +1216,19 @@ export default function SideSwapApp() {
             ) <= FUEL_PUMP_REACH_M,
         ) ?? null
       : null;
-  const litresNeeded = Math.max(0, TANK_CAPACITY_L - driveFuel);
-  const refuelCost =
-    Math.round(
-      litresNeeded * FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] * 100,
-    ) / 100;
-  const canRefuel = litresNeeded > 0.5 && walletHere >= refuelCost;
+  const litresNeeded = Math.max(0, tankCapacityL - driveFuel);
+  const refuelCost = careerRun
+    ? Math.round(
+        litresNeeded *
+          FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] *
+          (careerVehicle?.fuelPriceFactor ?? 1),
+      )
+    : Math.round(
+        litresNeeded * FUEL_PRICE_PER_LITRE_BY_COUNTRY[driveCountry.id] * 100,
+      ) / 100;
+  const canRefuel = careerRun
+    ? litresNeeded > 0.5
+    : litresNeeded > 0.5 && walletHere >= refuelCost;
   // Pressing Refuel now stages the pump cutscene; the wallet debit and the
   // fill land when the scene reports the nozzle is in (its `pump` event).
   const refuel = () => {
@@ -793,7 +1237,7 @@ export default function SideSwapApp() {
       "refuel",
       undefined,
       undefined,
-      litresNeeded / TANK_CAPACITY_L,
+      tankCapacityL > 0 ? litresNeeded / tankCapacityL : 0,
     );
   };
 
@@ -801,7 +1245,7 @@ export default function SideSwapApp() {
   // carriageway ~19m short of the forecourt, and now that fuel is only offered
   // at the pumps a pin out on the road would send the player to a dead spot.
   const gasPins =
-    view === "driving"
+    view === "driving" && tankCapacityL > 0
       ? (runtimeMap.geometry.servicePoints ?? []).flatMap((service) => {
           const pumps = gasStationPumpPositions(
             runtimeMap.laneGraph.lanes,
@@ -874,7 +1318,9 @@ export default function SideSwapApp() {
     return (
       <main className="game-page" style={themeStyle}>
         <GameCanvas
-          key={`${driveDestination.id}-${runtimeLesson.id}-${activeSteeringSide}`}
+          key={`${driveDestination.id}-${runtimeLesson.id}-${activeSteeringSide}${
+            careerRun ? `-${careerRun.vehicleId}` : ""
+          }`}
           className="game-canvas"
           trafficSide={runtimeLesson.trafficSide}
           steeringSide={activeSteeringSide}
@@ -892,7 +1338,7 @@ export default function SideSwapApp() {
           cameraShake={progress.accessibility.cameraShake}
           headBob={progress.accessibility.headBob}
           visualHonkIndicator={progress.accessibility.visualHonkIndicator}
-          outOfFuel={driveFuel <= 0}
+          outOfFuel={tankCapacityL > 0 && driveFuel <= 0}
           carConditionPct={carCondition}
           resetNonce={towResetNonce}
           riderVenueId={riderVenueId}
@@ -1054,16 +1500,84 @@ export default function SideSwapApp() {
             zIndex: 5,
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: "1rem",
-            }}
-          >
-            <span style={{ opacity: 0.65 }}>Wallet</span>
-            <strong>{formatMoney(walletHere, driveCountry)}</strong>
-          </div>
+          {careerRun ? (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                }}
+              >
+                <span style={{ opacity: 0.65 }}>Day {careerRun.slice.day}</span>
+                <strong
+                  data-testid="day-clock"
+                  style={{
+                    color: dayRemainingMs < 60_000 ? "#f2c658" : undefined,
+                  }}
+                >
+                  {formatClock(dayRemainingMs)}
+                </strong>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                }}
+              >
+                <span style={{ opacity: 0.65 }}>Cash</span>
+                <strong
+                  data-testid="day-cash"
+                  style={{ color: dayCash < 0 ? "#e0533f" : undefined }}
+                >
+                  {formatMoney(dayCash, driveCountry)}
+                </strong>
+              </div>
+              {careerRun.slice.loan && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: "1rem",
+                    fontSize: "0.78rem",
+                  }}
+                >
+                  <span style={{ opacity: 0.65 }}>Debt</span>
+                  <strong>
+                    {formatMoney(
+                      careerRun.slice.loan.principalRemaining,
+                      driveCountry,
+                    )}{" "}
+                    · {careerRun.slice.loan.daysRemaining}d
+                  </strong>
+                </div>
+              )}
+              {careerRun.slice.finalNotice && (
+                <div
+                  style={{
+                    color: "#e0533f",
+                    fontWeight: 700,
+                    fontSize: "0.78rem",
+                  }}
+                >
+                  FINAL NOTICE
+                </div>
+              )}
+            </>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: "1rem",
+              }}
+            >
+              <span style={{ opacity: 0.65 }}>Wallet</span>
+              <strong>{formatMoney(walletHere, driveCountry)}</strong>
+            </div>
+          )}
+          {tankCapacityL > 0 && (
           <div>
             <div
               style={{
@@ -1102,6 +1616,7 @@ export default function SideSwapApp() {
               />
             </div>
           </div>
+          )}
           <div>
             <div
               style={{
@@ -1178,7 +1693,7 @@ export default function SideSwapApp() {
             </>
           )}
         </div>
-        {activeGasStation && !cutscene && !towing && (
+        {activeGasStation && !cutscene && !towing && tankCapacityL > 0 && (
           <div
             style={{
               position: "absolute",
@@ -1289,7 +1804,7 @@ export default function SideSwapApp() {
 
   return (
     <main
-      className={`app-shell ${view === "launcher" ? "launcher-shell" : ""}`}
+      className={`app-shell ${effectiveView === "launcher" ? "launcher-shell" : ""}`}
       style={themeStyle}
     >
       <header className="app-header">
@@ -1307,14 +1822,14 @@ export default function SideSwapApp() {
         </button>
         <nav className="header-actions" aria-label="Main navigation">
           <button
-            className={view === "settings" ? "active" : ""}
+            className={effectiveView === "settings" ? "active" : ""}
             type="button"
             onClick={() => setView("settings")}
           >
             Settings
           </button>
           <button
-            className={view === "credits" ? "active" : ""}
+            className={effectiveView === "credits" ? "active" : ""}
             type="button"
             onClick={() => setView("credits")}
           >
@@ -1340,7 +1855,7 @@ export default function SideSwapApp() {
         </div>
       </header>
 
-      {view === "settings" && (
+      {effectiveView === "settings" && (
         <SettingsView
           progress={progress}
           onSave={saveSettings}
@@ -1354,11 +1869,54 @@ export default function SideSwapApp() {
           onBack={() => setView("launcher")}
         />
       )}
-      {view === "credits" && (
+      {effectiveView === "credits" && (
         <CreditsView onBack={() => setView("launcher")} />
       )}
 
-      {view === "launcher" && (
+      {effectiveView === "career-garage" &&
+        careerSlice &&
+        careerSlice.state !== "over" &&
+        careerCountry && (
+          <GarageView
+            slice={careerSlice}
+            country={careerCountry}
+            selectedVehicleId={garageVehicleId}
+            lockedVehicles={lockedCareerVehicles}
+            creditVehicleId={creditVehicleId}
+            onSelect={setGarageVehicleId}
+            onStartDay={beginCareerDay}
+            onAbandon={() => {
+              if (
+                window.confirm(
+                  "Abandon this career? The save is deleted for good.",
+                )
+              ) {
+                resetCareer("launcher");
+              }
+            }}
+          />
+        )}
+      {effectiveView === "career-ledger" && lastSettlement && careerCountry && (
+        <LedgerView
+          result={lastSettlement.result}
+          slice={lastSettlement.slice}
+          country={careerCountry}
+          onContinue={() => setView("career-garage")}
+        />
+      )}
+      {effectiveView === "career-over" && careerSlice && careerCountry && (
+        <CareerOverView
+          slice={careerSlice}
+          country={careerCountry}
+          onRestart={() => {
+            setGameMode("career");
+            resetCareer("launcher");
+          }}
+          onMenu={() => setView("launcher")}
+        />
+      )}
+
+      {effectiveView === "launcher" && (
         <section className="launcher-page">
           <div className="launcher-copy">
             <p className="eyebrow">READY TO EARN</p>
@@ -1366,6 +1924,48 @@ export default function SideSwapApp() {
               <>Rise and <em>Grind</em></>
             </h1>
 
+            <div
+              role="group"
+              aria-label="Game mode"
+              style={{
+                display: "inline-flex",
+                gap: "0.4rem",
+                margin: "0.9rem 0 0.2rem",
+                padding: "0.25rem",
+                borderRadius: "999px",
+                background: "rgba(15, 18, 22, 0.35)",
+              }}
+            >
+              {(
+                [
+                  ["free", "Free drive"],
+                  ["career", "Career"],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  data-testid={`mode-${mode}`}
+                  aria-pressed={gameMode === mode}
+                  onClick={() => setGameMode(mode)}
+                  style={{
+                    padding: "0.45rem 1.1rem",
+                    borderRadius: "999px",
+                    border: "none",
+                    cursor: "pointer",
+                    font: "700 0.9rem/1 inherit",
+                    background:
+                      gameMode === mode ? "#f2c658" : "transparent",
+                    color: gameMode === mode ? "#1a1c1f" : "inherit",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {(gameMode === "free" || !careerSlice) && (
+            <>
             <p className="launcher-pick-label">Choose a city</p>
             <div
               className="launcher-destinations"
@@ -1394,18 +1994,38 @@ export default function SideSwapApp() {
                 );
               })}
             </div>
+            </>
+            )}
 
-            <div className="launcher-actions">
-              <button
-                className="primary-button launcher-primary"
-                type="button"
-                aria-label={`Start driving in ${destination.destinationName}`}
-                onClick={() => beginDrive(destination.freeDriveId, destination.id)}
-              >
-                Start driving
-                <span aria-hidden="true">→</span>
-              </button>
-            </div>
+            {gameMode === "free" ? (
+              <div className="launcher-actions">
+                <button
+                  className="primary-button launcher-primary"
+                  type="button"
+                  aria-label={`Start driving in ${destination.destinationName}`}
+                  onClick={() => beginDrive(destination.freeDriveId, destination.id)}
+                >
+                  Start driving
+                  <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            ) : (
+              <CareerSetupPanel
+                career={progress.career}
+                cityName={
+                  careerSlice
+                    ? getDestinationProfile(careerSlice.destinationId)
+                        .destinationName
+                    : destination.destinationName
+                }
+                country={careerCountry ?? country}
+                onStartCareer={startCareer}
+                onContinue={() => setView("career-garage")}
+                onViewLastRun={() => setView("career-over")}
+                onResetCorrupt={() => resetCareer("launcher")}
+                onStartFresh={() => resetCareer("launcher")}
+              />
+            )}
           </div>
 
           <div
@@ -1432,7 +2052,7 @@ export default function SideSwapApp() {
         </section>
       )}
 
-      {view !== "launcher" && (
+      {effectiveView !== "launcher" && (
         <footer className="app-footer">
           <span>Curbside Rush is familiarisation, not legal advice or driver instruction.</span>
           <span>Map data © OpenStreetMap contributors · ODbL</span>

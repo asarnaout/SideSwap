@@ -221,6 +221,12 @@ export interface GameHudSnapshot {
   playerX: number;
   playerZ: number;
   heading: number;
+  /**
+   * Deterministic sim-clock milliseconds since the session started (or last
+   * reset). Pauses with the sim, so the career day countdown derives from it
+   * rather than wall time.
+   */
+  simElapsedMs: number;
   scenarioClock?: string;
 }
 
@@ -10333,6 +10339,7 @@ class BabylonGameSession {
       playerX: this.playerState.x,
       playerZ: this.playerState.z,
       heading: this.playerState.heading,
+      simElapsedMs: this.simulationSnapshot.elapsedMs,
       scenarioClock: this.options.lesson?.scenarioClock?.label,
     });
   }
@@ -10489,6 +10496,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(
       playerX: 0,
       playerZ: 0,
       heading: 0,
+      simElapsedMs: 0,
     });
 
     callbackRef.current = {
