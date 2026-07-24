@@ -1,40 +1,51 @@
 /**
- * Removes the baked cursive "Diner" script from
+ * Removes the baked cursive "Diner" script and the sign-board fin from
  * `public/models/props/restaurant.glb`.
  *
  * WHY THIS SCRIPT EXISTS
  * ----------------------
  * The CC-BY "Diner" model (Poly by Google, via Poly Pizza) letters its roof
- * sign board with an extruded cursive "Diner" script. The glTF import's
- * handedness reflection renders that lettering back-to-front, so in game the
- * board reads as mirrored gibberish (#125). The glyphs are raised ~0.6 native
- * units proud of the board face, so they cannot be papered over at runtime —
- * any covering plane either floats visibly in front of the board or has the
- * letter tips poking through it. Instead we remove the script geometry here,
- * leaving the model's own white board (with its red frame and centre fin)
- * clean, and the game letters each venue's real name onto that board at
- * runtime (see `signBoard` in `PROP_MODEL_REGISTRY`). CC-BY permits
- * modification with attribution (see CREDITS.md).
+ * sign board with an extruded cursive "Diner" script, composed around a
+ * decorative fin that spears through the board (~1.2 m proud of its face).
+ * The glTF import's handedness reflection renders the lettering back-to-front,
+ * so in game the board read as mirrored gibberish (#125). The glyphs are
+ * raised ~0.6 native units proud of the board face, so they cannot be papered
+ * over at runtime — any covering plane either floats visibly in front of the
+ * board or has the letter tips poking through it. And once the script is gone,
+ * the fin stops reading as a sign assembly and starts reading as a glitch — a
+ * blank slab stabbed through a blank board — while also forcing any runtime
+ * lettering off-centre to dodge it. So both go: this leaves the model's white
+ * board (with its red frame) clean, and the game centres each venue's real
+ * name onto it at runtime (see `signBoard` in `PROP_MODEL_REGISTRY`). CC-BY
+ * permits modification with attribution (see CREDITS.md).
  *
  * WHAT IT REMOVES
  * ---------------
  * The model is two meshes (Box001 base slab + Box002 everything-else), with
- * Box002 split into one primitive per material. The script lives in the dark
- * red trim primitive (material `02___Default`) alongside the roof stripes and
- * sign fin. A triangle is dropped when all three of its vertices fall inside
- * GLYPH_BOX — the script's bounding box (x 16.2..73.7, y 65.4..88.7,
- * z -1.1..0.7 native) plus margin. Nothing else reaches into that box: the
- * board's own faces span the full board width, the fin sits at x -4.5..-2.3,
- * and the trim stripes stay below y 60. Only the primitive's index buffer is
- * rewritten (appended to the BIN chunk); vertices are left orphaned in place,
- * exactly like the gas-station cleaner.
+ * Box002 split into one primitive per material. Each CUT below drops every
+ * triangle of one material's primitive whose three vertices all fall inside
+ * an axis-aligned box (native units, with margin):
+ *   - the script glyphs (x 16.2..73.7, y 65.4..88.7, z -1.1..0.7) in the dark
+ *     red trim primitive;
+ *   - the fin's red slab (x -4.5..-2.3, y 54.5..104.4, z -14.5..14), same
+ *     primitive;
+ *   - the fin's white inset panels (same x, y 54.5..97.5, z -9.8..4.1) in the
+ *     white trim primitive;
+ *   - the fin's grey core and stepped crown (same x, y 54.5..102.8,
+ *     z -12.2..11.9) in the grey primitive — the fin is a three-material
+ *     sandwich, and the grey layer renders near-white, so missing it leaves a
+ *     ghost column spearing the board.
+ * Nothing else reaches into those boxes: the board's own faces and the eave
+ * stripes span far beyond them, and the chimney sits at x -61.5..-49.4. Only
+ * primitive index buffers are rewritten (appended to the BIN chunk); vertices
+ * are left orphaned in place, exactly like the gas-station cleaner.
  *
  * REPRODUCE
  * ---------
  *   node tools/clean-restaurant.mjs public/models/props/restaurant.glb        # apply
  *   node tools/clean-restaurant.mjs public/models/props/restaurant.glb --dry  # preview
  * Run on the raw Poly Pizza download (see git history). Idempotent: on an
- * already-cleaned file there is nothing left inside GLYPH_BOX to remove.
+ * already-cleaned file there is nothing left inside the cut boxes to remove.
  */
 import fs from "node:fs";
 
@@ -42,12 +53,29 @@ const path = process.argv[2] ?? "public/models/props/restaurant.glb";
 const dry = process.argv.includes("--dry");
 
 const TARGET_NODE = "Box002";
-const TARGET_MATERIAL = "02___Default";
-/** Native-unit AABB fully containing the script glyph solids (with margin). */
-const GLYPH_BOX = {
-  min: [15.5, 64.5, -1.6],
-  max: [74.5, 89.5, 1.2],
-};
+/** Per-material cut boxes (native units, AABB fully containing the target). */
+const CUTS = [
+  {
+    label: "cursive script",
+    material: "02___Default",
+    box: { min: [15.5, 64.5, -1.6], max: [74.5, 89.5, 1.2] },
+  },
+  {
+    label: "fin (red slab)",
+    material: "02___Default",
+    box: { min: [-5.0, 54.0, -15.0], max: [-1.8, 105.0, 14.5] },
+  },
+  {
+    label: "fin (white insets)",
+    material: "01___Default",
+    box: { min: [-5.0, 54.0, -15.0], max: [-1.8, 105.0, 14.5] },
+  },
+  {
+    label: "fin (grey core + crown)",
+    material: "07___Default",
+    box: { min: [-5.0, 54.0, -15.0], max: [-1.8, 105.0, 14.5] },
+  },
+];
 
 const buf = fs.readFileSync(path);
 if (buf.readUInt32LE(0) !== 0x46546c67) throw new Error(`not a glb: ${path}`);
@@ -68,19 +96,22 @@ let bin = Buffer.from(binChunk.data);
 
 const node = json.nodes.find((n) => n.name === TARGET_NODE);
 if (!node || node.mesh == null) throw new Error(`node ${TARGET_NODE} not found`);
-// The box below is authored in the node's own (= glb root) frame; a transform
-// on the node would silently shift it off the glyphs.
+// The cut boxes are authored in the node's own (= glb root) frame; a transform
+// on the node would silently shift them off their targets.
 if (node.matrix || node.translation || node.rotation || node.scale) {
   throw new Error(`${TARGET_NODE} unexpectedly carries a transform`);
 }
 const mesh = json.meshes[node.mesh];
-const prims = mesh.primitives.filter(
-  (pr) => json.materials[pr.material]?.name === TARGET_MATERIAL,
-);
-if (prims.length !== 1) {
-  throw new Error(`expected 1 ${TARGET_MATERIAL} primitive, found ${prims.length}`);
+
+function primForMaterial(name) {
+  const prims = mesh.primitives.filter(
+    (pr) => json.materials[pr.material]?.name === name,
+  );
+  if (prims.length !== 1) {
+    throw new Error(`expected 1 ${name} primitive, found ${prims.length}`);
+  }
+  return prims[0];
 }
-const prim = prims[0];
 
 function readAccessor(idx) {
   const acc = json.accessors[idx];
@@ -103,54 +134,70 @@ function readAccessor(idx) {
   return out;
 }
 
-const positions = readAccessor(prim.attributes.POSITION);
-const indices = readAccessor(prim.indices);
-const inBox = (p) =>
-  p[0] >= GLYPH_BOX.min[0] && p[0] <= GLYPH_BOX.max[0] &&
-  p[1] >= GLYPH_BOX.min[1] && p[1] <= GLYPH_BOX.max[1] &&
-  p[2] >= GLYPH_BOX.min[2] && p[2] <= GLYPH_BOX.max[2];
-
-const kept = [];
-let removed = 0;
-for (let t = 0; t < indices.length; t += 3) {
-  const tri = [indices[t], indices[t + 1], indices[t + 2]];
-  if (tri.every((i) => inBox(positions[i]))) removed++;
-  else kept.push(...tri);
+// Append `kept` as a fresh bufferView + accessor and point the primitive at
+// it; the old index data (and the cut vertices) stay behind as unreferenced
+// bytes, which glTF allows.
+function rewriteIndices(prim, kept, vertexCount) {
+  const useU32 = vertexCount > 0xffff;
+  const idxBytes = Buffer.alloc(kept.length * (useU32 ? 4 : 2));
+  kept.forEach((v, i) =>
+    useU32 ? idxBytes.writeUInt32LE(v, i * 4) : idxBytes.writeUInt16LE(v, i * 2),
+  );
+  if (bin.length % 4 !== 0) bin = Buffer.concat([bin, Buffer.alloc(4 - (bin.length % 4), 0)]);
+  json.bufferViews.push({
+    buffer: 0,
+    byteOffset: bin.length,
+    byteLength: idxBytes.length,
+    target: 34963, // ELEMENT_ARRAY_BUFFER
+  });
+  bin = Buffer.concat([bin, idxBytes]);
+  json.accessors.push({
+    bufferView: json.bufferViews.length - 1,
+    componentType: useU32 ? 5125 : 5123,
+    count: kept.length,
+    type: "SCALAR",
+  });
+  prim.indices = json.accessors.length - 1;
 }
 
-console.log(
-  `${TARGET_MATERIAL}: ${indices.length / 3} tris, ${removed} inside the script box, ${kept.length / 3} kept`,
-);
-if (removed === 0) {
+const inBox = (p, box) =>
+  p[0] >= box.min[0] && p[0] <= box.max[0] &&
+  p[1] >= box.min[1] && p[1] <= box.max[1] &&
+  p[2] >= box.min[2] && p[2] <= box.max[2];
+
+let totalRemoved = 0;
+const materials = [...new Set(CUTS.map((cut) => cut.material))];
+for (const material of materials) {
+  const cuts = CUTS.filter((cut) => cut.material === material);
+  const prim = primForMaterial(material);
+  const positions = readAccessor(prim.attributes.POSITION);
+  const indices = readAccessor(prim.indices);
+  const kept = [];
+  const removedPerCut = new Map(cuts.map((cut) => [cut.label, 0]));
+  for (let t = 0; t < indices.length; t += 3) {
+    const tri = [indices[t], indices[t + 1], indices[t + 2]];
+    const hit = cuts.find((cut) =>
+      tri.every((i) => inBox(positions[i], cut.box)),
+    );
+    if (hit) removedPerCut.set(hit.label, removedPerCut.get(hit.label) + 1);
+    else kept.push(...tri);
+  }
+  const removed = indices.length / 3 - kept.length / 3;
+  for (const [label, count] of removedPerCut) {
+    console.log(`${material}: ${label} — ${count} tris`);
+  }
+  console.log(`${material}: ${indices.length / 3} tris, ${removed} removed, ${kept.length / 3} kept`);
+  if (removed > 0 && !dry) rewriteIndices(prim, kept, positions.length);
+  totalRemoved += removed;
+}
+
+if (totalRemoved === 0) {
   console.log("nothing to remove — already clean");
   process.exit(0);
 }
 if (dry) process.exit(0);
 
-// Append the filtered index list as a fresh bufferView + accessor; the old one
-// (and the glyph vertices) stay behind as unreferenced bytes, which glTF allows.
-const useU32 = positions.length > 0xffff;
-const idxBytes = Buffer.alloc(kept.length * (useU32 ? 4 : 2));
-kept.forEach((v, i) =>
-  useU32 ? idxBytes.writeUInt32LE(v, i * 4) : idxBytes.writeUInt16LE(v, i * 2),
-);
-if (bin.length % 4 !== 0) bin = Buffer.concat([bin, Buffer.alloc(4 - (bin.length % 4), 0)]);
-json.bufferViews.push({
-  buffer: 0,
-  byteOffset: bin.length,
-  byteLength: idxBytes.length,
-  target: 34963, // ELEMENT_ARRAY_BUFFER
-});
-bin = Buffer.concat([bin, idxBytes]);
-json.accessors.push({
-  bufferView: json.bufferViews.length - 1,
-  componentType: useU32 ? 5125 : 5123,
-  count: kept.length,
-  type: "SCALAR",
-});
-prim.indices = json.accessors.length - 1;
 json.buffers[0].byteLength = bin.length;
-
 const jsonBytes = Buffer.from(new TextEncoder().encode(JSON.stringify(json)));
 const jsonPadded = Buffer.concat([jsonBytes, Buffer.alloc((4 - (jsonBytes.length % 4)) % 4, 0x20)]);
 if (bin.length % 4 !== 0) bin = Buffer.concat([bin, Buffer.alloc(4 - (bin.length % 4), 0)]);
@@ -168,4 +215,4 @@ out.writeUInt32LE(bin.length, p);
 out.writeUInt32LE(BIN_T, p + 4);
 bin.copy(out, p + 8);
 fs.writeFileSync(path, out);
-console.log(`removed ${removed} script tris; wrote ${out.length} bytes to ${path}`);
+console.log(`removed ${totalRemoved} tris total; wrote ${out.length} bytes to ${path}`);

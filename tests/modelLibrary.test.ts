@@ -179,55 +179,66 @@ describe("prop (environment building) model assets", () => {
   });
 
   // The diner ships with tools/clean-restaurant.mjs applied: its baked cursive
-  // "Diner" script (rendered back-to-front by the import reflection, #125) is
-  // stripped from the red-trim primitive, and the venue name is lettered onto
-  // the now-clean roof board at the registry's declared signBoard box. Guard
-  // both halves against a re-downloaded raw asset or a drifted registry box:
-  // referenced geometry must be absent where the script was, present where the
-  // board face is, and the box must clear the fin that crosses the board.
-  it("keeps restaurant.glb's script stripped and the signBoard on the board", async () => {
+  // "Diner" script (rendered back-to-front by the import reflection, #125) and
+  // the fin that speared through the sign board are stripped, and the venue
+  // name is lettered onto the now-clean board at the registry's declared
+  // signBoard box. Guard both halves against a re-downloaded raw asset or a
+  // drifted registry box: referenced geometry must be absent where the script
+  // and fin were, and present where the board face is.
+  it("keeps restaurant.glb's script+fin stripped and the signBoard on the board", async () => {
     const { container, scene, engine } = await load("restaurant.glb");
     const board = PROP_MODEL_REGISTRY.restaurant.signBoard!;
     // Local-space vertex data is the glb's native frame — the loader's
     // handedness flip lives on the root node, not in the buffers — so the
     // registry's native-unit box can be compared against it directly.
-    const referenced: [number, number, number][] = [];
-    for (const mesh of container.meshes) {
-      if (mesh.material?.name !== "02___Default") continue;
-      const positions = mesh.getVerticesData("position");
-      const indices = mesh.getIndices();
-      if (!positions || !indices) continue;
-      for (const index of indices) {
-        referenced.push([
-          positions[index * 3],
-          positions[index * 3 + 1],
-          positions[index * 3 + 2],
-        ]);
+    const referencedFor = (materialName: string) => {
+      const verts: [number, number, number][] = [];
+      for (const mesh of container.meshes) {
+        if (mesh.material?.name !== materialName) continue;
+        const positions = mesh.getVerticesData("position");
+        const indices = mesh.getIndices();
+        if (!positions || !indices) continue;
+        for (const index of indices) {
+          verts.push([
+            positions[index * 3],
+            positions[index * 3 + 1],
+            positions[index * 3 + 2],
+          ]);
+        }
       }
-    }
-    expect(referenced.length).toBeGreaterThan(0);
+      return verts;
+    };
+    const red = referencedFor("02___Default");
+    const white = referencedFor("01___Default");
+    const grey = referencedFor("07___Default");
+    expect(red.length).toBeGreaterThan(0);
+    expect(white.length).toBeGreaterThan(0);
+    expect(grey.length).toBeGreaterThan(0);
 
     // 1. The script glyphs (x 16.2..73.7, y 65.4..88.7, z -1.1..0.7) are gone.
-    const glyphVerts = referenced.filter(
+    const glyphVerts = red.filter(
       ([x, y, z]) =>
         x > 15.5 && x < 74.5 && y > 64.5 && y < 89.5 && z > -1.6 && z < 1.2,
     );
     expect(glyphVerts).toHaveLength(0);
 
-    // 2. The board's front face (z = 0.1) spans the declared text area.
-    const face = referenced.filter(([, , z]) => Math.abs(z - 0.1) < 0.01);
+    // 2. The fin (x -4.5..-2.3, up to y 104.4, spearing z -14.5..14 through
+    // the board) is gone from all three of its materials — it is a red/white/
+    // grey sandwich, and any surviving layer reads as a column through the
+    // lettering.
+    const inFinBox = ([x, y]: [number, number, number]) =>
+      x > -5.0 && x < -1.8 && y > 54.0;
+    expect(red.filter(inFinBox)).toHaveLength(0);
+    expect(white.filter(inFinBox)).toHaveLength(0);
+    expect(grey.filter(inFinBox)).toHaveLength(0);
+
+    // 3. The board's front face (z = 0.1) spans the declared text area.
+    const face = red.filter(([, , z]) => Math.abs(z - 0.1) < 0.01);
     expect(Math.min(...face.map(([x]) => x))).toBeLessThanOrEqual(board.min[0]);
     expect(Math.max(...face.map(([x]) => x))).toBeGreaterThanOrEqual(board.max[0]);
     expect(Math.min(...face.map(([, y]) => y))).toBeLessThanOrEqual(board.min[1]);
     expect(Math.max(...face.map(([, y]) => y))).toBeGreaterThanOrEqual(board.max[1]);
     expect(board.max[2]).toBeCloseTo(0.1, 5);
-
-    // 3. The text area sits clear of the striped fin crossing the board (the
-    // only red geometry above the board top, so it identifies itself).
-    const finMaxX = Math.max(
-      ...referenced.filter(([, y]) => y > 93).map(([x]) => x),
-    );
-    expect(board.min[0]).toBeGreaterThan(finMaxX);
     scene.dispose();
     engine.dispose();
   });

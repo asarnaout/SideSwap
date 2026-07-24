@@ -272,16 +272,15 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
     groundY: -0.92,
     stripMeshPattern: "Box001",
     // The diner's own roof sign board: a white face (x -34.7..99.7,
-    // y 51.8..84.0 at z 0.1) in a red frame, with a striped fin crossing it at
-    // x -4.5..-2.3 — where the model's baked cursive "Diner" script sat before
-    // tools/clean-restaurant.mjs removed it (the import reflection rendered it
-    // back-to-front, #125). The venue name is lettered into the white area
-    // beside the fin, echoing the original composition; z spans the board
-    // solid (-5.0..0.1) so the text lands proud of its road-facing face. The
-    // text's fin-side edge keeps the original script's ~2 m clearance: the fin
-    // pokes ~1.2 m proud of the board, so lettering any closer disappears
-    // behind it from the oblique angles the approach road actually offers.
-    signBoard: { min: [20, 55, -5.0], max: [95, 81, 0.1] },
+    // y 51.8..84.0 at z 0.1) in a red frame — where the model's baked cursive
+    // "Diner" script and its spear-through fin sat before
+    // tools/clean-restaurant.mjs removed them (the import reflection rendered
+    // the lettering back-to-front, and the fin both occluded runtime text from
+    // oblique angles and forced it off-centre, #125). The venue name is
+    // centred on the white face, lifted a touch above geometric centre so it
+    // reads centred under the red top band; z spans the board solid
+    // (-5.0..0.1) so the text lands proud of its road-facing face.
+    signBoard: { min: [-30, 56, -5.0], max: [95, 82, 0.1] },
   },
   // A second restaurant so two diners on one map are visibly different places.
   // This glb already ships for the NYC street wall (buildingCatalog's
