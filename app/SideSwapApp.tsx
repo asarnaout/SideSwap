@@ -1773,7 +1773,11 @@ export default function SideSwapApp() {
               }}
             >
               <span>
-                {careerVehicle?.visualKind === "bicycle" ? "Bike" : "Car"}
+                {careerVehicle?.visualKind === "bicycle"
+                  ? "Bike"
+                  : careerVehicle?.visualKind === "motorbike"
+                    ? "Motorbike"
+                    : "Car"}
               </span>
               <span>
                 {carCondition <= 0
@@ -1833,12 +1837,12 @@ export default function SideSwapApp() {
                 🚧
               </span>
               <span>
-                {careerVehicle?.visualKind === "bicycle"
+                {careerVehicle && careerVehicle.visualKind !== "car"
                   ? "Your bike's wrecked."
                   : "Your car's a write-off."}
               </span>
               <span style={{ fontSize: "0.95rem", opacity: 0.75 }}>
-                {careerVehicle?.visualKind === "bicycle"
+                {careerVehicle && careerVehicle.visualKind !== "car"
                   ? "Fixed up kerbside — "
                   : "Towed & repaired — "}
                 {formatMoney(REPAIR_FEE_BY_COUNTRY[driveCountry.id], driveCountry)}

@@ -400,6 +400,40 @@ describe("career mode flow", () => {
     expect(stored.walletByCountry.uk).toBe(20);
   });
 
+  it("rides the motorbike: composed visual kind, 24 cap, fuel gauge, deliveries only", async () => {
+    seedProgressWithCareer(
+      stampCareerChecksum({
+        ...createCareerSlice({
+          countryId: "uk",
+          destinationId: "uk-london",
+          careerSeed: 77,
+        }),
+        cash: 50,
+      }),
+    );
+    await enterCareerMode();
+    fireEvent.click(screen.getByTestId("career-continue"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+
+    const motoCard = screen.getByTestId("garage-vehicle-motorbike");
+    expect(motoCard).toBeEnabled();
+    expect(motoCard).toHaveTextContent(/Deliveries only/i);
+    expect(motoCard).toHaveTextContent(/12 L tank/i);
+    fireEvent.click(motoCard);
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+
+    const scene = await screen.findByLabelText("Mock driving scene");
+    expect(scene).toHaveAttribute("data-player-model", "default"); // composed, not a registry car
+    expect(scene).toHaveAttribute("data-visual-kind", "motorbike");
+    expect(scene).toHaveAttribute("data-max-speed", "24");
+    // Rent prepaid (50 - 8), and the 12 L tank gets a fuel gauge.
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("£42.00");
+    expect(screen.getByText(/^Fuel$/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("mock-exit"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+  });
+
   it("takes the van out with its own model and physics", async () => {
     seedProgressWithCareer(
       stampCareerChecksum({
@@ -488,8 +522,9 @@ describe("career mode flow", () => {
     fireEvent.click(screen.getByTestId("career-continue"));
     await screen.findByRole("heading", { name: /Pick today's ride/i });
 
-    // The finish line is visible from the garage: 200 toward the 180 buyout.
-    expect(screen.getByTestId("buyout-fund")).toHaveTextContent("£180.00");
+    // The finish line is visible from the garage: the cheapest escape is now
+    // the motorbike at 8 × 15 = 120.
+    expect(screen.getByTestId("buyout-fund")).toHaveTextContent("£120.00");
 
     fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
     const buy = screen.getByTestId("garage-buyout");

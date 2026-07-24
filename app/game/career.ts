@@ -77,6 +77,7 @@ export const ROADSIDE_CALLOUT_FEE_BY_COUNTRY: Readonly<Record<CountryId, number>
 
 export type CareerVehicleId =
   | "bicycle"
+  | "motorbike"
   | "compact-hatch"
   | "delivery-van"
   | "sport-sedan";
@@ -110,7 +111,7 @@ export interface CareerVehicleSpec {
   readonly name: string;
   /** Registry key for the rendered mesh; null for the composed bicycle rig. */
   readonly model: VehicleModel | null;
-  readonly visualKind: "car" | "bicycle";
+  readonly visualKind: "car" | "bicycle" | "motorbike";
   /** Owned outright (the starter bicycle): always available, never rented. */
   readonly owned: boolean;
   readonly rentByCountry: Readonly<Record<CountryId, number>>;
@@ -183,6 +184,38 @@ export const CAREER_VEHICLES: readonly CareerVehicleSpec[] = [
       instabilityLateralMps2: 5.5,
       playerRadiusM: 0.6,
       playerCapsuleHalfLengthM: 0.9,
+      playerCapsuleRadiusM: 0.55,
+    },
+  },
+  {
+    id: "motorbike",
+    name: "Motorbike",
+    model: null,
+    visualKind: "motorbike",
+    owned: false,
+    rentByCountry: { us: 8, uk: 8, fr: 10, jp: 800 },
+    buyoutEligible: true,
+    tankL: 12,
+    fuelLPerM: 0.0009,
+    fuelPriceFactor: 1,
+    allowedGigKinds: ["delivery"],
+    fareFactors: { delivery: 1.1, passenger: 1 },
+    paceFactor: 1.15,
+    physics: {
+      maxForwardSpeedMps: 24,
+      maxReverseSpeedMps: 3,
+      forwardAccelMps2: 6.8,
+      reverseAccelMps2: 2.5,
+      brakeBaseMps2: 3.2,
+      brakeStrengthMps2: 9,
+      dragBaseMps2: 0.28,
+      dragPerMps: 0.03,
+      steerBaseRate: 0.5,
+      steerAuthorityRate: 1,
+      steerAuthoritySpeedMps: 4.5,
+      instabilityLateralMps2: 9,
+      playerRadiusM: 0.62,
+      playerCapsuleHalfLengthM: 0.95,
       playerCapsuleRadiusM: 0.55,
     },
   },
