@@ -80,7 +80,13 @@ download.
 - **props/restaurant.glb** ("Diner") — by **"Poly by Google"** via Poly Pizza
   (<https://poly.pizza/m/4Xlqz9IfdrV>), licensed **CC-BY 3.0**
   (<https://creativecommons.org/licenses/by/3.0/>). Credit: "Poly by Google".
-  Diner used for restaurant gig venues.
+  Diner used for restaurant gig venues. **Modified:** the extruded cursive
+  "Diner" script on the roof sign board was removed — the glTF import's
+  handedness reflection rendered it back-to-front (#125) — along with the
+  decorative fin that speared through the board (without the script it read
+  as a stray slab and blocked the board's centre); see
+  `tools/clean-restaurant.mjs`. The game letters each venue's own name onto
+  the now-blank board at runtime.
 
 ### NYC Nightfall environment kit (CC-BY 3.0)
 
