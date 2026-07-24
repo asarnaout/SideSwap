@@ -45,7 +45,6 @@ import {
 } from "./game/progress";
 import {
   applySettlement,
-  CAREER_VEHICLES,
   careerDayTrafficSeed,
   careerFare,
   careerGigSeedBase,
@@ -1015,31 +1014,9 @@ export default function SideSwapApp() {
   const careerCountry = careerSlice
     ? getCountryProfile(careerSlice.countryId)
     : null;
-  // The bicycle ships in a later phase (needs the player-cyclist rig): the
-  // card is visible but locked, so the hatch is the interim starter.
-  const lockedCareerVehicles: Partial<Record<CareerVehicleId, string>> = {
-    bicycle: "Arriving soon — start with the hatchback",
-  };
-  // When nothing is affordable the cheapest unlocked vehicle may start with
-  // its rent carried into the day as negative cash — without this, a solvent
-  // settlement that lands under the cheapest rent would soft-lock the garage
-  // until the (free, owned) bicycle arrives in a later phase.
-  const unlockedVehicleSpecs = careerSlice
-    ? CAREER_VEHICLES.filter((vehicle) => !lockedCareerVehicles[vehicle.id])
-    : [];
-  const anyVehicleAffordable = careerSlice
-    ? unlockedVehicleSpecs.some(
-        (vehicle) => careerSlice.cash >= vehicleRent(vehicle, careerSlice),
-      )
-    : false;
-  const creditVehicleId: CareerVehicleId | null =
-    careerSlice && !anyVehicleAffordable && unlockedVehicleSpecs.length
-      ? unlockedVehicleSpecs.reduce((cheapest, vehicle) =>
-          vehicleRent(vehicle, careerSlice) < vehicleRent(cheapest, careerSlice)
-            ? vehicle
-            : cheapest,
-        ).id
-      : null;
+  // Every tier is live; the owned bicycle (rent 0) is the floor that makes a
+  // broke garage impossible to soft-lock.
+  const lockedCareerVehicles: Partial<Record<CareerVehicleId, string>> = {};
 
   const startCareer = () => {
     // App-layer randomness is fine (the sim's no-RNG rule protects replays,
@@ -1054,7 +1031,8 @@ export default function SideSwapApp() {
     const saved = writeCareer(progress, slice);
     setProgress(saved);
     saveProgress(saved);
-    setGarageVehicleId("compact-hatch");
+    // The career fantasy starts at the bottom: day 1 on your own bicycle.
+    setGarageVehicleId("bicycle");
     setView("career-garage");
   };
 
@@ -1070,7 +1048,7 @@ export default function SideSwapApp() {
     if (!careerSlice || careerSlice.state === "over") return;
     const vehicle = getCareerVehicle(vehicleId);
     const rent = vehicleRent(vehicle, careerSlice);
-    if (careerSlice.cash < rent && creditVehicleId !== vehicleId) return;
+    if (careerSlice.cash < rent) return;
     // Synchronously, inside the click: Safari only honours audio in the
     // gesture's own task (same constraint as beginDrive).
     primeAudioContext();
@@ -1153,6 +1131,11 @@ export default function SideSwapApp() {
     setProgress(saved);
     saveProgress(saved);
     setLastSettlement({ result: settlement, slice: nextSlice });
+    setGarageVehicleId((previous) =>
+      nextSlice.cash >= vehicleRent(getCareerVehicle(previous), nextSlice)
+        ? previous
+        : "bicycle",
+    );
     careerRunRef.current = null;
     setCareerRun(null);
     setGig(null);
@@ -1692,9 +1675,15 @@ export default function SideSwapApp() {
               <span aria-hidden="true" style={{ fontSize: "2rem" }}>
                 🚧
               </span>
-              <span>Your car&apos;s a write-off.</span>
+              <span>
+                {careerVehicle?.visualKind === "bicycle"
+                  ? "Your bike's wrecked."
+                  : "Your car's a write-off."}
+              </span>
               <span style={{ fontSize: "0.95rem", opacity: 0.75 }}>
-                Towed &amp; repaired —{" "}
+                {careerVehicle?.visualKind === "bicycle"
+                  ? "Fixed up kerbside — "
+                  : "Towed & repaired — "}
                 {formatMoney(REPAIR_FEE_BY_COUNTRY[driveCountry.id], driveCountry)}
               </span>
             </>
@@ -1889,7 +1878,6 @@ export default function SideSwapApp() {
             country={careerCountry}
             selectedVehicleId={garageVehicleId}
             lockedVehicles={lockedCareerVehicles}
-            creditVehicleId={creditVehicleId}
             onSelect={setGarageVehicleId}
             onStartDay={beginCareerDay}
             onAbandon={() => {
@@ -2027,7 +2015,18 @@ export default function SideSwapApp() {
                 }
                 country={careerCountry ?? country}
                 onStartCareer={startCareer}
-                onContinue={() => setView("career-garage")}
+                onContinue={() => {
+                  // A saved career may no longer afford the sticky garage
+                  // selection; fall back to the always-available bicycle.
+                  setGarageVehicleId((previous) =>
+                    careerSlice &&
+                    careerSlice.cash >=
+                      vehicleRent(getCareerVehicle(previous), careerSlice)
+                      ? previous
+                      : "bicycle",
+                  );
+                  setView("career-garage");
+                }}
                 onViewLastRun={() => setView("career-over")}
                 onResetCorrupt={() => resetCareer("launcher")}
                 onStartFresh={() => resetCareer("launcher")}

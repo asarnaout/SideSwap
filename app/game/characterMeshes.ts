@@ -33,6 +33,9 @@ export interface CharacterVisual {
   readonly root: TransformNode;
   /** Advances the cyclist's pedal cycle by a ground distance (cyclists only). */
   advancePedals?(distanceMeters: number): void;
+  /** Shows/hides the rider while keeping the bike parked (cyclists only) —
+   * the dismount illusion for the player's errand cutscenes. */
+  setRiderVisible?(visible: boolean): void;
   /** Pauses/resumes the walk clip so a stopped pedestrian stands still. */
   setMoving?(moving: boolean): void;
   /** Plays the stylised fall once, fitted to `seconds`, holding the final
@@ -473,6 +476,10 @@ export function buildCyclistVisual(
       phase += distanceMeters * PEDAL_CRANK_RATE;
       wheelAngle += distanceMeters * WHEEL_ROLL_RATE;
       poseCyclist(rig, phase, wheelAngle);
+    },
+    setRiderVisible(visible) {
+      if (disposed) return;
+      riderWrap.setEnabled(visible);
     },
     dispose() {
       if (disposed) return;

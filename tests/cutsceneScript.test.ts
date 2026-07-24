@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BIKE_CUTSCENE_BODY,
+  buildBikeErrandScript,
   cutsceneBodyProfile,
   DEFAULT_CUTSCENE_BODY,
   MAX_LEG_SECONDS,
@@ -340,6 +342,54 @@ describe("CutsceneBodyProfile", () => {
         expectClearOfBody(car, errand, VAN);
         const refuel = buildRefuelScript(car, steeringSide, target, 0.6, VAN);
         expectClearOfBody(car, refuel, VAN);
+      }
+    }
+  });
+});
+
+describe("buildBikeErrandScript", () => {
+  it("dismounts beside the bike with no door sounds and no suspension dip", () => {
+    for (const bike of CAR_POSES) {
+      const door = { x: bike.x + 7, z: bike.z - 4 };
+      const script = buildBikeErrandScript(bike, door);
+      // A bicycle has neither doors nor suspension: nothing in the scene may
+      // play a door/pump cue or dip the "car".
+      for (const step of script) {
+        expect(step.sound, step.action).toBeUndefined();
+        expect(step.carDip ?? false).toBe(false);
+      }
+      // Appears at the mount point just off the bike's flank...
+      const mount = script[0].path?.[0];
+      expect(script[0].action).toBe("show");
+      const mountLocal = local(bike, mount!);
+      expect(Math.abs(mountLocal.lat)).toBeCloseTo(
+        BIKE_CUTSCENE_BODY.doorLateralM,
+        5,
+      );
+      // ...reaches the venue door, and ends hidden (remounting).
+      const runOut = script[1];
+      expect(runOut.action).toBe("run");
+      expect(runOut.path?.[runOut.path.length - 1]).toEqual(door);
+      expect(script[script.length - 1].action).toBe("hide");
+      // The walk legs clear the bike's own tiny footprint.
+      for (const step of script) {
+        if (step.action !== "walk" && step.action !== "run") continue;
+        for (let index = 1; index < (step.path ?? []).length; index += 1) {
+          const a = step.path![index - 1];
+          const b = step.path![index];
+          const count = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.05));
+          for (let sample = 0; sample <= count; sample += 1) {
+            const t = sample / count;
+            const p = local(bike, {
+              x: a.x + (b.x - a.x) * t,
+              z: a.z + (b.z - a.z) * t,
+            });
+            const inside =
+              Math.abs(p.long) < BIKE_CUTSCENE_BODY.bodyHalfLongM - 0.05 &&
+              Math.abs(p.lat) < BIKE_CUTSCENE_BODY.bodyHalfLatM - 0.05;
+            expect(inside, "sample crosses the bike frame").toBe(false);
+          }
+        }
       }
     }
   });

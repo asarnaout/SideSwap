@@ -31,7 +31,10 @@ vi.mock("next/dynamic", () => ({
   default: () =>
     function MockGameCanvas(props: {
       lesson?: { readonly id: string };
-      playerVehicle?: { readonly model: string | null } | null;
+      playerVehicle?: {
+        readonly model: string | null;
+        readonly visualKind?: string;
+      } | null;
       vehiclePhysics?: { readonly maxForwardSpeedMps?: number } | null;
       onHudUpdate?: (snapshot: Record<string, unknown>) => void;
       onEvent?: (event: Record<string, unknown>) => void;
@@ -64,6 +67,7 @@ vi.mock("next/dynamic", () => ({
           aria-label="Mock driving scene"
           data-scenario={props.lesson?.id}
           data-player-model={props.playerVehicle?.model ?? "default"}
+          data-visual-kind={props.playerVehicle?.visualKind ?? "none"}
           data-max-speed={props.vehiclePhysics?.maxForwardSpeedMps ?? "default"}
         >
           <button
@@ -206,13 +210,16 @@ describe("career mode flow", () => {
     expect(typeof (stored as CareerSliceV1).checksum).toBe("string");
   });
 
-  it("locks the bicycle for now and starts the day on the hatch with rent prepaid", async () => {
+  it("starts day 1 on your own bicycle: free, fuel-less, deliveries-only", async () => {
     await enterCareerMode();
     fireEvent.click(screen.getByTestId("career-start"));
     await screen.findByRole("heading", { name: /Pick today's ride/i });
 
-    expect(screen.getByTestId("garage-vehicle-bicycle")).toBeDisabled();
-    expect(screen.getByTestId("garage-vehicle-compact-hatch")).toBeEnabled();
+    // The bike is owned and pre-selected; the day starts without rent.
+    const bikeCard = screen.getByTestId("garage-vehicle-bicycle");
+    expect(bikeCard).toBeEnabled();
+    expect(bikeCard).toHaveAttribute("aria-pressed", "true");
+    expect(bikeCard).toHaveTextContent(/no fuel needed/i);
 
     fireEvent.click(screen.getByTestId("garage-start-day"));
     const scene = await screen.findByLabelText("Mock driving scene");
@@ -220,6 +227,21 @@ describe("career mode flow", () => {
       "data-scenario",
       `career-${LONDON_FREE_DRIVE_ID}-d1`,
     );
+    expect(scene).toHaveAttribute("data-visual-kind", "bicycle");
+    expect(scene).toHaveAttribute("data-max-speed", "7.5");
+    // No rent charged, and the bike day has no fuel gauge at all.
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("£20.00");
+    expect(screen.queryByText(/^Fuel$/)).not.toBeInTheDocument();
+  });
+
+  it("charges the hatch rent up front when it is taken out instead", async () => {
+    await enterCareerMode();
+    fireEvent.click(screen.getByTestId("career-start"));
+    await screen.findByRole("heading", { name: /Pick today's ride/i });
+
+    fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+    await screen.findByLabelText("Mock driving scene");
     // Rent left the day cash before the first metre was driven.
     expect(screen.getByTestId("day-cash")).toHaveTextContent(
       `£${(UK_START_CASH - HATCH_RENT_UK).toFixed(2)}`,
@@ -232,6 +254,7 @@ describe("career mode flow", () => {
     await enterCareerMode();
     fireEvent.click(screen.getByTestId("career-start"));
     await screen.findByRole("heading", { name: /Pick today's ride/i });
+    fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
     fireEvent.click(screen.getByTestId("garage-start-day"));
     await screen.findByLabelText("Mock driving scene");
 
@@ -249,6 +272,7 @@ describe("career mode flow", () => {
     await enterCareerMode();
     fireEvent.click(screen.getByTestId("career-start"));
     await screen.findByRole("heading", { name: /Pick today's ride/i });
+    fireEvent.click(screen.getByTestId("garage-vehicle-compact-hatch"));
     fireEvent.click(screen.getByTestId("garage-start-day"));
     await screen.findByLabelText("Mock driving scene");
 
@@ -356,7 +380,7 @@ describe("career mode flow", () => {
     await screen.findByRole("heading", { name: /Pick today's ride/i });
   });
 
-  it("rents on credit when broke, and a shortfall under FINAL NOTICE ends the career", async () => {
+  it("falls back to the bike when broke, and a shortfall under FINAL NOTICE ends the career", async () => {
     seedProgressWithCareer(
       stampCareerChecksum({
         ...createCareerSlice({
@@ -374,14 +398,20 @@ describe("career mode flow", () => {
     await screen.findByRole("heading", { name: /Pick today's ride/i });
 
     expect(screen.getByRole("alert")).toHaveTextContent(/FINAL NOTICE/i);
-    expect(screen.getByText(/Rent on credit/i)).toBeVisible();
-    const startDay = screen.getByTestId("garage-start-day");
-    expect(startDay).toBeEnabled();
-    fireEvent.click(startDay);
-    await screen.findByLabelText("Mock driving scene");
-    // Rent went straight into the red.
-    expect(screen.getByTestId("day-cash")).toHaveTextContent("-£12.00");
+    // Broke: motor tiers are out of reach, the owned bike is auto-selected.
+    expect(screen.getByTestId("garage-vehicle-compact-hatch")).toBeDisabled();
+    const bikeCard = screen.getByTestId("garage-vehicle-bicycle");
+    expect(bikeCard).toBeEnabled();
+    expect(bikeCard).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("forecast-installment")).toHaveTextContent(
+      "£10.00",
+    );
 
+    fireEvent.click(screen.getByTestId("garage-start-day"));
+    await screen.findByLabelText("Mock driving scene");
+    expect(screen.getByTestId("day-cash")).toHaveTextContent("£0.00");
+
+    // Earn nothing: fee 3 + installment 10 on 0 cash under the notice = over.
     fireEvent.click(screen.getByTestId("mock-hud-end"));
     expect(
       await screen.findByRole("heading", { name: /The bank called it/i }),

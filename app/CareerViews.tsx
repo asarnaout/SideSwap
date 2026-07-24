@@ -62,7 +62,6 @@ export function GarageView({
   country,
   selectedVehicleId,
   lockedVehicles,
-  creditVehicleId,
   onSelect,
   onStartDay,
   onAbandon,
@@ -72,11 +71,6 @@ export function GarageView({
   selectedVehicleId: CareerVehicleId;
   /** Vehicles present but not yet playable, with the reason shown on the card. */
   lockedVehicles: Readonly<Partial<Record<CareerVehicleId, string>>>;
-  /**
-   * When no vehicle is affordable, this one may start anyway with its rent
-   * carried into the day as negative cash ("rent on credit").
-   */
-  creditVehicleId: CareerVehicleId | null;
   onSelect: (id: CareerVehicleId) => void;
   onStartDay: (id: CareerVehicleId) => void;
   onAbandon: () => void;
@@ -86,9 +80,7 @@ export function GarageView({
   );
   const selectedRent = selected ? vehicleRent(selected, slice) : 0;
   const selectedLocked = Boolean(lockedVehicles[selectedVehicleId]);
-  const selectedStartable =
-    !selectedLocked &&
-    (slice.cash >= selectedRent || creditVehicleId === selectedVehicleId);
+  const selectedStartable = !selectedLocked && slice.cash >= selectedRent;
   return (
     <section className="subpage" aria-label="Career garage">
       <div className="subpage-heading">
@@ -134,9 +126,7 @@ export function GarageView({
           const rent = vehicleRent(vehicle, slice);
           const lockedReason = lockedVehicles[vehicle.id];
           const affordable = slice.cash >= rent;
-          const startableOnCredit =
-            !affordable && creditVehicleId === vehicle.id;
-          const disabled = Boolean(lockedReason) || (!affordable && !startableOnCredit);
+          const disabled = Boolean(lockedReason) || !affordable;
           const active = selectedVehicleId === vehicle.id;
           const capability = vehicle.allowedGigKinds.includes("passenger")
             ? "Deliveries + rideshare"
@@ -176,10 +166,6 @@ export function GarageView({
               </small>
               {lockedReason ? (
                 <small style={{ color: "#f2c658" }}>{lockedReason}</small>
-              ) : startableOnCredit ? (
-                <small style={{ color: "#f2c658" }}>
-                  Rent on credit — you&apos;re short today
-                </small>
               ) : !affordable ? (
                 <small style={{ color: "#e0533f" }}>Can&apos;t afford today</small>
               ) : null}
