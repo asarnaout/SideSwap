@@ -4,6 +4,7 @@ import {
   getCountryProfile,
   getMapPack,
 } from "../app/game/content";
+import { buildFreeDriveLesson } from "../app/game/freeDriveLesson";
 import type { GameCanvasLesson, SpeedUnit as CanvasSpeedUnit } from "../app/game/GameCanvas";
 import {
   FIXED_STEP_SECONDS,
@@ -71,43 +72,13 @@ interface TrafficRunResult {
 const toCanvasSpeedUnit = (speedUnit: "mph" | "kmh"): CanvasSpeedUnit =>
   speedUnit === "mph" ? "mph" : "km/h";
 
-const freeDriveLesson = (
-  freeDrive: FreeDriveDefinition,
-): GameCanvasLesson => {
-  const country = getCountryProfile(freeDrive.countryId);
-  // Mirrors the self-contained free-drive contract assembled by SideSwapApp: the
-  // authored spawn places the vehicle in a legal lane, with no route guidance,
-  // ordered checkpoints or forced finish.
-  return {
-    id: freeDrive.id,
-    title: freeDrive.title,
-    kind: "free_drive",
-    trafficSide: country.trafficSide,
-    startSpawnId: freeDrive.startSpawnId,
-    route: [],
-    objectives: [
-      {
-        id: `${freeDrive.id}-acceptance-explore`,
-        label: "Explore safely with no fixed finish",
-      },
-    ],
-    trafficSeed: freeDrive.trafficSeed,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: [],
-    coachPrompts: [],
-    assessedRules: [],
-    scenarioClock: freeDrive.scenarioClock,
-  };
-};
-
 const freeDrivePath = (freeDrive: FreeDriveDefinition): PlayablePath => {
   const country = getCountryProfile(freeDrive.countryId);
   const mapPack = getMapPack(freeDrive.mapId);
   return {
     id: freeDrive.id,
     authoredSeed: freeDrive.trafficSeed,
-    lesson: freeDriveLesson(freeDrive),
+    lesson: buildFreeDriveLesson(freeDrive, country.trafficSide),
     mapPack,
     trafficSide: country.trafficSide,
     speedUnit: toCanvasSpeedUnit(country.speedUnit),

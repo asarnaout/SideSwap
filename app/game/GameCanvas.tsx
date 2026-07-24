@@ -3681,6 +3681,24 @@ class BabylonGameSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    // The per-frame QA hooks (installed in updateGuidanceVisuals) close over
+    // this session; left on window after dispose they pin the disposed scene
+    // graph — and hand QA a dead session — until the next mount overwrites them.
+    if (typeof window !== "undefined") {
+      const debugWindow = window as unknown as Record<string, unknown>;
+      for (const key of [
+        "__sideswapGuidanceDebug",
+        "__sideswapDriveControl",
+        "__sideswapAudioDebug",
+        "__sideswapMeshes",
+        "__sideswapPerfDebug",
+        "__sideswapCutsceneDebug",
+        "__sideswapLampDebug",
+        "__sideswapCrowdDebug",
+      ]) {
+        delete debugWindow[key];
+      }
+    }
     this.cancelCutscene();
     this.engine.stopRenderLoop(this.renderFrame);
     this.simulation.dispose();

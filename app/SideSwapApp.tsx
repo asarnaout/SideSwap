@@ -42,6 +42,7 @@ import {
   setFuel,
 } from "./game/progress";
 import { FULL_CONDITION_PCT, damageForCollision } from "./game/damage";
+import { buildFreeDriveLesson } from "./game/freeDriveLesson";
 import { resolveSimulationLaneAnchor } from "./game/simulationAdapter";
 import {
   FUEL_PUMP_REACH_M,
@@ -615,29 +616,10 @@ export default function SideSwapApp() {
   const activeScenarioId = activeSession?.scenarioId ?? destination.freeDriveId;
   const activeFreeDrive = getFreeDrive(activeScenarioId);
   const runtimeMap = getMapPack(activeFreeDrive.mapId);
-  // The open-world drive is self-contained: the authored spawn drops the car in
-  // a legal lane on the city map, with no route, checkpoints or finish line.
-  const runtimeLesson: GameCanvasLesson = {
-    id: activeFreeDrive.id,
-    title: activeFreeDrive.title,
-    kind: "free_drive",
-    trafficSide: driveCountry.trafficSide,
-    startSpawnId: activeFreeDrive.startSpawnId,
-    route: [],
-    objectives: [
-      {
-        id: `${activeFreeDrive.id}-explore`,
-        label: "Explore the city",
-      },
-    ],
-    trafficSeed: activeFreeDrive.trafficSeed,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: [],
-    coachPrompts: [],
-    assessedRules: [],
-    scenarioClock: activeFreeDrive.scenarioClock,
-  };
+  const runtimeLesson: GameCanvasLesson = buildFreeDriveLesson(
+    activeFreeDrive,
+    driveCountry.trafficSide,
+  );
 
   const themeDestination = view === "driving" ? driveDestination : destination;
   const themeStyle = {

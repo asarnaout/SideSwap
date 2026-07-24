@@ -11,6 +11,7 @@ import {
   type SimulationCoreConfig,
 } from "../app/game/simulation";
 import { buildSimulationCoreConfig } from "../app/game/simulationAdapter";
+import { buildFreeDriveLesson } from "../app/game/freeDriveLesson";
 import type { GameCanvasLesson } from "../app/game/GameCanvas";
 import type { FreeDriveDefinition, LaneSegment } from "../app/game/types";
 
@@ -201,27 +202,12 @@ describe("junction geometry stays smooth (#19)", () => {
   });
 });
 
-// Mirrors the runtime free-drive contract SideSwapApp assembles (see
-// simulationAdapter.test.ts / trafficSafetyAcceptance.test.ts).
-const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson => {
-  const country = getCountryProfile(freeDrive.countryId);
-  return {
-    id: freeDrive.id,
-    title: freeDrive.title,
-    kind: "free_drive",
-    trafficSide: country.trafficSide,
-    startSpawnId: freeDrive.startSpawnId,
-    route: [],
-    objectives: [{ id: `${freeDrive.id}-explore`, label: "Explore the city" }],
-    trafficSeed: freeDrive.trafficSeed,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: [],
-    coachPrompts: [],
-    assessedRules: [],
-    scenarioClock: freeDrive.scenarioClock,
-  };
-};
+// The runtime free-drive contract SideSwapApp assembles.
+const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson =>
+  buildFreeDriveLesson(
+    freeDrive,
+    getCountryProfile(freeDrive.countryId).trafficSide,
+  );
 
 describe("NPC heading dynamics (#19)", () => {
   // The physical yaw-rate cap in simulation.ts (NPC_YAW_RATE_MAX_RAD_S); the

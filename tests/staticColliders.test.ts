@@ -4,6 +4,7 @@ import {
   getCountryProfile,
   getMapPack,
 } from "../app/game/content";
+import { buildFreeDriveLesson } from "../app/game/freeDriveLesson";
 import type {
   GameCanvasLesson,
   SpeedUnit as CanvasSpeedUnit,
@@ -42,25 +43,11 @@ const LANE_SAMPLE_SPACING_M = 2;
 const toCanvasSpeedUnit = (speedUnit: "mph" | "kmh"): CanvasSpeedUnit =>
   speedUnit === "mph" ? "mph" : "km/h";
 
-const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson => {
-  const country = getCountryProfile(freeDrive.countryId);
-  return {
-    id: freeDrive.id,
-    title: freeDrive.title,
-    kind: "free_drive",
-    trafficSide: country.trafficSide,
-    startSpawnId: freeDrive.startSpawnId,
-    route: [],
-    objectives: [{ id: `${freeDrive.id}-explore`, label: "Explore" }],
-    trafficSeed: freeDrive.trafficSeed,
-    trafficDensity: "moderate",
-    vulnerableRoadUsers: { pedestrians: 8, cyclists: 4 },
-    checkpoints: [],
-    coachPrompts: [],
-    assessedRules: [],
-    scenarioClock: freeDrive.scenarioClock,
-  };
-};
+const freeDriveLesson = (freeDrive: FreeDriveDefinition): GameCanvasLesson =>
+  buildFreeDriveLesson(
+    freeDrive,
+    getCountryProfile(freeDrive.countryId).trafficSide,
+  );
 
 interface DriveWorld {
   readonly freeDrive: FreeDriveDefinition;
