@@ -110,6 +110,7 @@ import {
   modelMaterials,
   PROP_MODEL_REGISTRY,
   preloadModels,
+  type PropModelConfig,
   propModelUrls,
   vehicleModelUrls,
 } from "./modelLibrary";
@@ -5086,7 +5087,11 @@ class BabylonGameSession {
         if (pattern.test(mesh.name)) mesh.dispose();
       }
     }
-    if (label && config.roofSignMinY !== undefined) {
+    if (label && config.signBoard) {
+      // The model's sign surface is known exactly (declared in native units),
+      // so letter the venue name straight onto it.
+      this.addBoardSign(holder, root, label, config.signBoard);
+    } else if (label && config.roofSignMinY !== undefined) {
       // These models bake mirrored lettering; overlay a legible name on the
       // board so it reads as the venue rather than as gibberish.
       this.addRoofSign(holder, root, label, config.roofSignMinY);
@@ -5095,11 +5100,126 @@ class BabylonGameSession {
   }
 
   /**
-   * Overlays a legible name on a model's roof board — used where the glb bakes
-   * mirrored roof lettering (the gas station, the diner). The board is found
-   * geometrically (the largest elevated thin plate above `minCentreY`, in holder
-   * space so the search works at any yaw), then a text plane is laid over each of
-   * its two big faces so the readable name covers the mirrored original.
+   * Letters the venue name onto a model's own sign surface, declared as a
+   * native-units box in the registry (see PropModelConfig.signBoard). The box
+   * corners are pushed through the imported root's transform into holder space
+   * — which absorbs the loader's handedness flip and the registry scale — and
+   * one text plane is laid a few cm proud of the face that corresponds to the
+   * box's native +Z-max side (the face the model's own signage occupies; its
+   * reverse is typically unpainted). The lettering is drawn on a transparent
+   * texture, so what renders is red lettering sitting on the model's own board
+   * rather than a pasted-on billboard.
+   */
+  private addBoardSign(
+    holder: TransformNode,
+    root: TransformNode,
+    label: string,
+    board: NonNullable<PropModelConfig["signBoard"]>,
+  ): void {
+    holder.computeWorldMatrix(true);
+    root.computeWorldMatrix(true);
+    const toHolder = Matrix.Invert(holder.getWorldMatrix());
+    const toWorld = root.getWorldMatrix();
+    const inHolder = (x: number, y: number, z: number) =>
+      Vector3.TransformCoordinates(
+        Vector3.TransformCoordinates(new Vector3(x, y, z), toWorld),
+        toHolder,
+      );
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const corner of [0, 1, 2, 3, 4, 5, 6, 7]) {
+      const local = inHolder(
+        corner & 1 ? board.max[0] : board.min[0],
+        corner & 2 ? board.max[1] : board.min[1],
+        corner & 4 ? board.max[2] : board.min[2],
+      );
+      min.minimizeInPlace(local);
+      max.maximizeInPlace(local);
+    }
+    // Which holder-space side of the box the native front (+Z-max) face landed
+    // on — the imports rotate by multiples of 90°, so it maps to a box face.
+    const front = inHolder(
+      (board.min[0] + board.max[0]) / 2,
+      (board.min[1] + board.max[1]) / 2,
+      board.max[2],
+    );
+
+    const spanX = max.x - min.x;
+    const spanZ = max.z - min.z;
+    const alongX = spanX >= spanZ;
+    const width = alongX ? spanX : spanZ;
+    const height = max.y - min.y;
+    const centre = min.add(max).scale(0.5);
+    const side = alongX
+      ? Math.sign(front.z - centre.z)
+      : Math.sign(front.x - centre.x);
+
+    const textureHeight =
+      Math.max(64, Math.round((1024 * height) / width / 2)) * 2;
+    const texture = new DynamicTexture(
+      `${holder.name}-board-texture`,
+      { width: 1024, height: textureHeight },
+      this.scene,
+      true,
+    );
+    texture.hasAlpha = true;
+    const context = texture.getContext();
+    const text = label.toUpperCase();
+    let fontSize = Math.round(textureHeight * 0.62);
+    context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    while (fontSize > 40 && context.measureText(text).width > 1024 * 0.9) {
+      fontSize -= 10;
+      context.font = `bold ${fontSize}px Figtree, Arial, sans-serif`;
+    }
+    // null clear colour: the canvas stays transparent outside the glyphs.
+    texture.drawText(
+      text,
+      null,
+      null,
+      `bold ${fontSize}px Figtree, Arial, sans-serif`,
+      "#a63527",
+      null,
+      true,
+    );
+    texture.update();
+
+    const material = new StandardMaterial(
+      `${holder.name}-board-material`,
+      this.scene,
+    );
+    material.diffuseTexture = texture;
+    material.useAlphaFromDiffuseTexture = true;
+    // Emissive from the same texture so the lettering reads on the night maps
+    // (bloom picks it up like the rest of the signage).
+    material.emissiveTexture = texture;
+    material.specularColor = Color3.Black();
+
+    const faceOffset = (alongX ? spanZ : spanX) / 2 + 0.05;
+    const plane = MeshBuilder.CreatePlane(
+      `${holder.name}-board-sign`,
+      { width, height },
+      this.scene,
+    );
+    plane.parent = holder;
+    // Babylon planes face -z natively, so the +side face needs the π flip.
+    if (alongX) {
+      plane.position.set(centre.x, centre.y, centre.z + faceOffset * side);
+      plane.rotation.y = side === 1 ? Math.PI : 0;
+    } else {
+      plane.position.set(centre.x + faceOffset * side, centre.y, centre.z);
+      plane.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+    }
+    plane.material = material;
+  }
+
+  /**
+   * Overlays a legible name on a model's roof board — used where the glb has a
+   * free-standing board the venue name can cover whole (the gas station's
+   * billboard). The board is found geometrically (the largest elevated thin
+   * plate above `minCentreY`, in holder space so the search works at any yaw),
+   * then a text plane is laid over each of its two big faces. Models whose sign
+   * surface is merged into a larger primitive — invisible to this search —
+   * declare it as `signBoard` instead (the diner, see addBoardSign).
    */
   private addRoofSign(
     holder: TransformNode,

@@ -219,6 +219,18 @@ export interface PropModelConfig {
    */
   readonly roofSignMinY?: number;
   /**
+   * Text area for the venue name, declared as an axis-aligned box in the glb's
+   * own (native, unscaled) units — for models whose sign surface `addRoofSign`'s
+   * geometric board search cannot find because it is merged into a larger
+   * primitive. The name is lettered on a plane laid proud of the box's +Z-max
+   * face (the face the model's own signage occupies), so unlike `roofSignMinY`
+   * this writes one side only. Takes precedence over `roofSignMinY`.
+   */
+  readonly signBoard?: {
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+  };
+  /**
    * Mirrors the model across its local X axis on import. The glTF loader maps
    * right-handed glTF into left-handed Babylon with a reflection, which renders
    * any lettering baked into a model's texture back-to-front. Models carrying
@@ -259,8 +271,17 @@ export const PROP_MODEL_REGISTRY: Readonly<Record<string, PropModelConfig>> = {
     yawOffset: Math.PI / 2,
     groundY: -0.92,
     stripMeshPattern: "Box001",
-    // The diner's only flat sign surface is the low fascia over its windows.
-    roofSignMinY: 1.4,
+    // The diner's own roof sign board: a white face (x -34.7..99.7,
+    // y 51.8..84.0 at z 0.1) in a red frame, with a striped fin crossing it at
+    // x -4.5..-2.3 — where the model's baked cursive "Diner" script sat before
+    // tools/clean-restaurant.mjs removed it (the import reflection rendered it
+    // back-to-front, #125). The venue name is lettered into the white area
+    // beside the fin, echoing the original composition; z spans the board
+    // solid (-5.0..0.1) so the text lands proud of its road-facing face. The
+    // text's fin-side edge keeps the original script's ~2 m clearance: the fin
+    // pokes ~1.2 m proud of the board, so lettering any closer disappears
+    // behind it from the oblique angles the approach road actually offers.
+    signBoard: { min: [20, 55, -5.0], max: [95, 81, 0.1] },
   },
   // A second restaurant so two diners on one map are visibly different places.
   // This glb already ships for the NYC street wall (buildingCatalog's

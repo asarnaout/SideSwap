@@ -161,16 +161,75 @@ describe("prop (environment building) model assets", () => {
     }
   });
 
-  // Only models that bake mirrored lettering want a name overlay, and the
-  // board's height is model-specific — a wrong value silently finds a window,
-  // or nothing at all.
+  // Only models that need a name overlay want one, and where it goes is
+  // model-specific — a wrong roofSignMinY silently finds a window (or nothing),
+  // and a wrong signBoard letters a wall.
   it("keeps per-model import quirks on the config, not switched on by kind", () => {
     expect(PROP_MODEL_REGISTRY.restaurant.stripMeshPattern).toBe("Box001");
-    expect(PROP_MODEL_REGISTRY.restaurant.roofSignMinY).toBeGreaterThan(0);
+    // The diner declares its sign surface exactly (the geometric board search
+    // cannot see it — it is merged into the red-trim primitive), so it must
+    // not also carry the search-based path.
+    expect(PROP_MODEL_REGISTRY.restaurant.signBoard).toBeDefined();
+    expect(PROP_MODEL_REGISTRY.restaurant.roofSignMinY).toBeUndefined();
     expect(PROP_MODEL_REGISTRY.gas_station.roofSignMinY).toBeGreaterThan(0);
     // Models with nothing to strip must not inherit another model's surgery.
     expect(PROP_MODEL_REGISTRY.shop.stripMeshPattern).toBeUndefined();
     expect(PROP_MODEL_REGISTRY.residence.roofSignMinY).toBeUndefined();
+    expect(PROP_MODEL_REGISTRY.residence.signBoard).toBeUndefined();
+  });
+
+  // The diner ships with tools/clean-restaurant.mjs applied: its baked cursive
+  // "Diner" script (rendered back-to-front by the import reflection, #125) is
+  // stripped from the red-trim primitive, and the venue name is lettered onto
+  // the now-clean roof board at the registry's declared signBoard box. Guard
+  // both halves against a re-downloaded raw asset or a drifted registry box:
+  // referenced geometry must be absent where the script was, present where the
+  // board face is, and the box must clear the fin that crosses the board.
+  it("keeps restaurant.glb's script stripped and the signBoard on the board", async () => {
+    const { container, scene, engine } = await load("restaurant.glb");
+    const board = PROP_MODEL_REGISTRY.restaurant.signBoard!;
+    // Local-space vertex data is the glb's native frame — the loader's
+    // handedness flip lives on the root node, not in the buffers — so the
+    // registry's native-unit box can be compared against it directly.
+    const referenced: [number, number, number][] = [];
+    for (const mesh of container.meshes) {
+      if (mesh.material?.name !== "02___Default") continue;
+      const positions = mesh.getVerticesData("position");
+      const indices = mesh.getIndices();
+      if (!positions || !indices) continue;
+      for (const index of indices) {
+        referenced.push([
+          positions[index * 3],
+          positions[index * 3 + 1],
+          positions[index * 3 + 2],
+        ]);
+      }
+    }
+    expect(referenced.length).toBeGreaterThan(0);
+
+    // 1. The script glyphs (x 16.2..73.7, y 65.4..88.7, z -1.1..0.7) are gone.
+    const glyphVerts = referenced.filter(
+      ([x, y, z]) =>
+        x > 15.5 && x < 74.5 && y > 64.5 && y < 89.5 && z > -1.6 && z < 1.2,
+    );
+    expect(glyphVerts).toHaveLength(0);
+
+    // 2. The board's front face (z = 0.1) spans the declared text area.
+    const face = referenced.filter(([, , z]) => Math.abs(z - 0.1) < 0.01);
+    expect(Math.min(...face.map(([x]) => x))).toBeLessThanOrEqual(board.min[0]);
+    expect(Math.max(...face.map(([x]) => x))).toBeGreaterThanOrEqual(board.max[0]);
+    expect(Math.min(...face.map(([, y]) => y))).toBeLessThanOrEqual(board.min[1]);
+    expect(Math.max(...face.map(([, y]) => y))).toBeGreaterThanOrEqual(board.max[1]);
+    expect(board.max[2]).toBeCloseTo(0.1, 5);
+
+    // 3. The text area sits clear of the striped fin crossing the board (the
+    // only red geometry above the board top, so it identifies itself).
+    const finMaxX = Math.max(
+      ...referenced.filter(([, y]) => y > 93).map(([x]) => x),
+    );
+    expect(board.min[0]).toBeGreaterThan(finMaxX);
+    scene.dispose();
+    engine.dispose();
   });
 
   // Each committed glb must parse as real geometry (self-contained, no external
