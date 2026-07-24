@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ENGINE_PROFILE,
   ENGINE,
   ENGINE_CYLINDERS,
   GEAR_TOP_MPS,
   MAX_SPEED_MPS,
+  MOTORBIKE_ENGINE_PROFILE,
   SHIFT_BANDS,
   approach,
   createAudioParams,
@@ -545,5 +547,56 @@ describe("gear ratios", () => {
       expect(drops[i]).toBeLessThan(drops[i - 1]);
       expect(drops[i]).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("engine profiles", () => {
+  it("omitting the profile is byte-identical to passing the default explicitly", () => {
+    // The seeded `random` field is a closure — compare everything but it.
+    const bare = (state: ReturnType<typeof createAudioState>) => ({
+      ...state,
+      random: undefined,
+    });
+    const implicitState = createAudioState();
+    const explicitState = createAudioState(undefined, DEFAULT_ENGINE_PROFILE);
+    const implicitParams = createAudioParams();
+    const explicitParams = createAudioParams(DEFAULT_ENGINE_PROFILE);
+    expect(bare(explicitState)).toEqual(bare(implicitState));
+    expect(explicitParams).toEqual(implicitParams);
+    for (let tick = 0; tick < 600; tick += 1) {
+      const input = telemetry({
+        throttle: tick < 400 ? 0.9 : 0,
+        speedMps: Math.min(30, tick * 0.06),
+      });
+      updateAudioModel(implicitState, input, implicitParams);
+      updateAudioModel(explicitState, input, explicitParams, DEFAULT_ENGINE_PROFILE);
+    }
+    expect(bare(explicitState)).toEqual(bare(implicitState));
+    expect(explicitParams).toEqual(implicitParams);
+  });
+
+  it("the motorbike revs its own range with two-cylinder firing", () => {
+    const profile = MOTORBIKE_ENGINE_PROFILE;
+    const state = createAudioState(undefined, profile);
+    const params = createAudioParams(profile);
+    expect(state.rpm).toBe(1300);
+    for (let tick = 0; tick < 900; tick += 1) {
+      updateAudioModel(
+        state,
+        telemetry({ throttle: 1, speedMps: Math.min(24, tick * 0.05) }),
+        params,
+        profile,
+      );
+    }
+    // Held wide open at its 24 m/s cap the twin sits far above the car's
+    // 4200 redline, in top gear, firing two cylinders per cycle.
+    expect(state.rpm).toBeGreaterThan(5000);
+    expect(state.rpm).toBeLessThanOrEqual(profile.redlineRpm);
+    expect(state.gear).toBe(profile.gearTopMps.length);
+    expect(params.engineFiringHz).toBeCloseTo(params.engineFundamentalHz * 2, 5);
+    // The brighter character actually reaches the filter: cutoff beyond the
+    // car's ~1.4 kHz ceiling and the intake bark switched on.
+    expect(params.engineToneHz).toBeGreaterThan(1400);
+    expect(params.engineTopGain).toBeGreaterThan(0);
   });
 });

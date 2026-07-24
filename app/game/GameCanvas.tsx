@@ -79,6 +79,7 @@ import {
   type CutsceneStep,
 } from "./cutsceneScript";
 import { DriveAudio } from "./audio/DriveAudio";
+import { MOTORBIKE_ENGINE_PROFILE } from "./audio/audioMath";
 import {
   authoredSignalAspectAt,
   type AuthoredSignalAspect,
@@ -3561,6 +3562,9 @@ class BabylonGameSession {
       { master: this.options.masterVolume, effects: this.options.effectsVolume },
       this.options.inputCapabilities.touchFirst,
       this.options.playerVehicle?.visualKind === "bicycle",
+      this.options.playerVehicle?.visualKind === "motorbike"
+        ? MOTORBIKE_ENGINE_PROFILE
+        : undefined,
     );
     this.updatePlayerVisuals(1);
     this.callbacks.onInputPresentationChange?.(this.inputRouter.getPresentation());

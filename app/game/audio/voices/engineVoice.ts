@@ -7,7 +7,9 @@
  * ramped to zero — which is what makes the whole class of start/stop clicks
  * impossible rather than merely rare.
  */
-import { ENGINE, ENGINE_CYLINDERS, type DriveAudioParams } from "../audioMath";
+import {
+  DEFAULT_ENGINE_PROFILE,
+  type ResolvedEngineProfile, type DriveAudioParams } from "../audioMath";
 import {
   CONTINUOUS_LOOKAHEAD,
   EPSILON_GAIN,
@@ -64,12 +66,19 @@ export class EngineVoice {
     whineGain: -1,
   };
 
-  constructor(voice: VoiceContext) {
+  constructor(voice: VoiceContext, profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE) {
     const context = voice.context;
     this.context = context;
+    // Cylinder count and the harmonic-shape scalars are baked into the
+    // wavetable here — the construction-time half of an engine profile.
     const engineWave = periodicWave(
       context,
-      buildEngineHarmonics(undefined, ENGINE_CYLINDERS, ENGINE.harmonicRolloff, ENGINE.harmonicTilt),
+      buildEngineHarmonics(
+        undefined,
+        profile.cylinders,
+        profile.harmonicRolloff,
+        profile.harmonicTilt,
+      ),
     );
     const topWave = periodicWave(context, buildEngineTopHarmonics());
 

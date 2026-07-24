@@ -99,6 +99,87 @@ export const GEAR_RPM_PER_MPS: readonly number[] = GEAR_TOP_MPS.map(
 export const REVERSE_RPM_PER_MPS = ((ENGINE.shiftRpm - ENGINE.idleRpm) * 0.95) / MAX_REVERSE_MPS;
 
 /**
+ * A complete engine character: the acoustic constants above plus the gearbox
+ * speeds and cylinder count, as one swappable object. The default profile IS
+ * the historical car values, so every existing caller (which omits the
+ * parameter) is byte-identical to before profiles existed. Cylinders and the
+ * two harmonic-shape scalars are baked into the EngineVoice wavetable at
+ * construction; everything else is read per update.
+ */
+export interface EngineProfile {
+  readonly idleRpm: number;
+  readonly shiftRpm: number;
+  readonly redlineRpm: number;
+  readonly toneBase: number;
+  readonly toneRpmSpan: number;
+  readonly toneLoadBase: number;
+  readonly toneLoadRpmSpan: number;
+  readonly toneQ: number;
+  readonly toneQLoad: number;
+  readonly topGain: number;
+  readonly inductionLevel: number;
+  readonly harmonicRolloff: number;
+  readonly harmonicTilt: number;
+  readonly pitchMultiplier: number;
+  readonly level: number;
+  readonly cylinders: number;
+  readonly gearTopMps: readonly number[];
+  readonly reverseTopMps: number;
+}
+
+export interface ResolvedEngineProfile extends EngineProfile {
+  readonly gearRpmPerMps: readonly number[];
+  readonly reverseRpmPerMps: number;
+}
+
+/** Precomputes the per-gear rpm slopes once, so the 60 Hz path allocates nothing. */
+export function resolveEngineProfile(profile: EngineProfile): ResolvedEngineProfile {
+  return {
+    ...profile,
+    gearRpmPerMps: profile.gearTopMps.map(
+      (top) => (profile.shiftRpm - profile.idleRpm) / top,
+    ),
+    reverseRpmPerMps:
+      ((profile.shiftRpm - profile.idleRpm) * 0.95) / profile.reverseTopMps,
+  };
+}
+
+export const DEFAULT_ENGINE_PROFILE: ResolvedEngineProfile = resolveEngineProfile({
+  ...ENGINE,
+  cylinders: ENGINE_CYLINDERS,
+  gearTopMps: GEAR_TOP_MPS,
+  reverseTopMps: MAX_REVERSE_MPS,
+});
+
+/**
+ * A small parallel twin for the career motorbike: revs high and shifts high
+ * (the strongest character cue, inverted from the hatchback), a brighter
+ * lowpass that opens under load, a touch of intake bark, and two cylinders'
+ * lumpier firing pattern baked into the wavetable. Gear tops end at the
+ * motorbike's 24 m/s physics cap.
+ */
+export const MOTORBIKE_ENGINE_PROFILE: ResolvedEngineProfile = resolveEngineProfile({
+  idleRpm: 1300,
+  shiftRpm: 7200,
+  redlineRpm: 9800,
+  toneBase: 320,
+  toneRpmSpan: 700,
+  toneLoadBase: 420,
+  toneLoadRpmSpan: 1400,
+  toneQ: 0.8,
+  toneQLoad: 0.2,
+  topGain: 0.18,
+  inductionLevel: 0.09,
+  harmonicRolloff: 0.9,
+  harmonicTilt: 70,
+  pitchMultiplier: 1,
+  level: 0.9,
+  cylinders: 2,
+  gearTopMps: [7, 12, 17, 21, 24.4],
+  reverseTopMps: 3,
+});
+
+/**
  * Peak level of the wind layer, before the speed curve and camera trim. Set this
  * to 0 to remove wind noise entirely — nothing else depends on it, and the road
  * layer alone still conveys speed, just less vividly.
@@ -202,9 +283,12 @@ export interface DriveAudioParams {
   load: number;
 }
 
-export function createAudioState(seed = 20260719): DriveAudioState {
+export function createAudioState(
+  seed = 20260719,
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
+): DriveAudioState {
   return {
-    rpm: ENGINE.idleRpm,
+    rpm: profile.idleRpm,
     load: 0,
     gear: 1,
     secondsInGear: 0,
@@ -216,8 +300,10 @@ export function createAudioState(seed = 20260719): DriveAudioState {
   };
 }
 
-export function createAudioParams(): DriveAudioParams {
-  const idle = ENGINE.idleRpm;
+export function createAudioParams(
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
+): DriveAudioParams {
+  const idle = profile.idleRpm;
   return {
     engineFundamentalHz: idle / 120,
     engineFiringHz: idle / 30,
@@ -255,8 +341,15 @@ export function createAudioParams(): DriveAudioParams {
  * Speed at which gear `gear` (1-based) upshifts. Coasting short-shifts at 82%
  * of the wide-open-throttle speed; full throttle holds on to the redline.
  */
-export function upshiftSpeed(gear: number, load: number): number {
-  return GEAR_TOP_MPS[gear - 1] * (SHORT_SHIFT_FLOOR + (1 - SHORT_SHIFT_FLOOR) * load);
+export function upshiftSpeed(
+  gear: number,
+  load: number,
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
+): number {
+  return (
+    profile.gearTopMps[gear - 1] *
+    (SHORT_SHIFT_FLOOR + (1 - SHORT_SHIFT_FLOOR) * load)
+  );
 }
 
 /** Exposed so the suite can assert the no-hunting invariant documented above. */
@@ -278,13 +371,14 @@ export function selectGear(
   speedMps: number,
   load: number,
   dtSeconds: number,
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
 ): boolean {
   state.secondsInGear += dtSeconds;
   const gear = state.gear;
   if (
-    gear < GEAR_TOP_MPS.length &&
+    gear < profile.gearTopMps.length &&
     state.secondsInGear >= UPSHIFT_HOLD_S &&
-    speedMps > upshiftSpeed(gear, load)
+    speedMps > upshiftSpeed(gear, load, profile)
   ) {
     state.gear = gear + 1;
     state.secondsInGear = 0;
@@ -294,7 +388,7 @@ export function selectGear(
   if (
     gear > 1 &&
     state.secondsInGear >= DOWNSHIFT_HOLD_S &&
-    speedMps < upshiftSpeed(gear - 1, load) * HYSTERESIS
+    speedMps < upshiftSpeed(gear - 1, load, profile) * HYSTERESIS
   ) {
     state.gear = gear - 1;
     state.secondsInGear = 0;
@@ -309,17 +403,23 @@ export function selectGear(
  * car slips its clutch off the line so revs lead road speed, and below 6 m/s is
  * where city driving actually happens.
  */
-export function targetRpm(gear: number, speedMps: number, load: number, reverse: boolean): number {
-  const span = ENGINE.shiftRpm - ENGINE.idleRpm;
+export function targetRpm(
+  gear: number,
+  speedMps: number,
+  load: number,
+  reverse: boolean,
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
+): number {
+  const span = profile.shiftRpm - profile.idleRpm;
   const geared = reverse
-    ? ENGINE.idleRpm + speedMps * REVERSE_RPM_PER_MPS
-    : ENGINE.idleRpm + speedMps * GEAR_RPM_PER_MPS[gear - 1];
+    ? profile.idleRpm + speedMps * profile.reverseRpmPerMps
+    : profile.idleRpm + speedMps * profile.gearRpmPerMps[gear - 1];
   // Scaled to the rev range so the flare stays proportional rather than jumping
   // most of the way to the shift point off the line.
   const flare = span * 0.17 * load * clamp(1 - speedMps / 6, 0, 1);
   // Deceleration fuel cut-off pulls the revs slightly under the geared value.
   const overrun = span * 0.024 * (1 - load);
-  return clamp(geared + flare - overrun, ENGINE.idleRpm * 0.94, ENGINE.redlineRpm);
+  return clamp(geared + flare - overrun, profile.idleRpm * 0.94, profile.redlineRpm);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +436,7 @@ export function updateAudioModel(
   state: DriveAudioState,
   telemetry: DriveAudioTelemetry,
   out: DriveAudioParams,
+  profile: ResolvedEngineProfile = DEFAULT_ENGINE_PROFILE,
 ): void {
   const dt = clamp(telemetry.dtSeconds, 0, 0.1);
   const speed = Math.max(0, telemetry.speedMps);
@@ -359,12 +460,12 @@ export function updateAudioModel(
       state.gear = 1;
       state.secondsInGear = 0;
     }
-    shifted = selectGear(state, speed, load, dt);
+    shifted = selectGear(state, speed, load, dt, profile);
   }
   state.shiftFlashSeconds = Math.max(0, state.shiftFlashSeconds - dt);
 
   // --- Revs -----------------------------------------------------------------
-  const wantRpm = targetRpm(reverse ? 1 : state.gear, speed, load, reverse);
+  const wantRpm = targetRpm(reverse ? 1 : state.gear, speed, load, reverse, profile);
   state.rpm = approach(state.rpm, wantRpm, dt, state.shiftFlashSeconds > 0 ? 0.032 : 0.055);
 
   // Out of fuel the sim already zeroes throttle, but an engine with no fuel
@@ -380,7 +481,11 @@ export function updateAudioModel(
     state.rpm = approach(state.rpm, 0, dt, 0.5);
   }
 
-  const rpmNorm = clamp((state.rpm - ENGINE.idleRpm) / (ENGINE.redlineRpm - ENGINE.idleRpm), 0, 1);
+  const rpmNorm = clamp(
+    (state.rpm - profile.idleRpm) / (profile.redlineRpm - profile.idleRpm),
+    0,
+    1,
+  );
   const speedNorm = clamp(speed / MAX_SPEED_MPS, 0, 1);
 
   // --- Engine voice ---------------------------------------------------------
@@ -388,10 +493,10 @@ export function updateAudioModel(
   // revolutions), which makes partial k correspond to engine order k/2 — so the
   // half-orders that give a piston engine its lumpiness are simply the odd
   // partials of the wavetable.
-  const cycleHz = (state.rpm / 120) * ENGINE.pitchMultiplier;
+  const cycleHz = (state.rpm / 120) * profile.pitchMultiplier;
   out.engineFundamentalHz = Math.max(1, cycleHz);
-  out.engineFiringHz = Math.max(1, cycleHz * ENGINE_CYLINDERS);
-  out.engineGain = (0.16 + 0.34 * rpmNorm) * (0.42 + 0.58 * load) * alive * ENGINE.level;
+  out.engineFiringHz = Math.max(1, cycleHz * profile.cylinders);
+  out.engineGain = (0.16 + 0.34 * rpmNorm) * (0.42 + 0.58 * load) * alive * profile.level;
 
   // The cutoff tracking load is what makes accelerating and coasting sound
   // different at the same road speed — closed throttle means low cylinder
@@ -399,19 +504,20 @@ export function updateAudioModel(
   // far it opens is the difference between a road car and a race car, and it is
   // deliberately held low here.
   out.engineToneHz =
-    ENGINE.toneBase +
-    rpmNorm * ENGINE.toneRpmSpan +
-    load * (ENGINE.toneLoadBase + rpmNorm * ENGINE.toneLoadRpmSpan);
-  out.engineToneQ = ENGINE.toneQ + load * ENGINE.toneQLoad;
+    profile.toneBase +
+    rpmNorm * profile.toneRpmSpan +
+    load * (profile.toneLoadBase + rpmNorm * profile.toneLoadRpmSpan);
+  out.engineToneQ = profile.toneQ + load * profile.toneQLoad;
   // Intake howl only appears when the engine is genuinely working — and this
   // road car keeps it off entirely (topGain 0).
-  out.engineTopGain = ENGINE.topGain * rampFrom(rpmNorm, 0.45) * rampFrom(load, 0.35) * alive;
+  out.engineTopGain =
+    profile.topGain * rampFrom(rpmNorm, 0.45) * rampFrom(load, 0.35) * alive;
 
   // Broadband air: intake rush and exhaust turbulence. Without this the engine
   // stays recognisably synthetic however good the harmonic table is.
   out.inductionHz = 180 + rpmNorm * 1500;
   out.inductionGain =
-    ENGINE.inductionLevel * (0.3 + 0.7 * load) * (0.25 + 0.75 * rpmNorm) * alive;
+    profile.inductionLevel * (0.3 + 0.7 * load) * (0.25 + 0.75 * rpmNorm) * alive;
 
   // Idle hunts; a revving engine is steady.
   out.jitterCents = 35 - 29 * rpmNorm;
@@ -420,7 +526,7 @@ export function updateAudioModel(
   // it makes reverse identifiable without looking at the HUD.
   out.reverseWhineHz = clamp((26 * state.rpm) / 60, 20, 6000);
   out.reverseWhineGain = reverse
-    ? (0.018 + 0.045 * clamp(speed / MAX_REVERSE_MPS, 0, 1)) * alive
+    ? (0.018 + 0.045 * clamp(speed / profile.reverseTopMps, 0, 1)) * alive
     : 0;
 
   // --- Wind and road --------------------------------------------------------
